@@ -28,3 +28,11 @@ additional_redirect_urls = ["https://app.gojolo.io"]
 # Edge Function: skip gateway JWT verification; we verify the user inside the function (is_org_admin).
 [functions.imap-test-and-save]
 verify_jwt = false
+
+# imap-sync: cron calls with x-cron-secret; manual calls with JWT (org admin).
+[functions.imap-sync]
+verify_jwt = false
+
+# inbox-send-reply: JWT required; org membership checked inside.
+[functions.inbox-send-reply]
+verify_jwt = false

@@ -13,6 +13,7 @@ import {
   ChevronDown,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
 } from 'lucide-react'
 
@@ -102,6 +103,8 @@ export default function Admin() {
   const [smtpTestMessage, setSmtpTestMessage] = useState<string | null>(null)
   const [editingImapId, setEditingImapId] = useState<string | null>(null)
   const [imapView, setImapView] = useState<'list' | 'form'>('list')
+  const [imapSyncAccountId, setImapSyncAccountId] = useState<string | null>(null)
+  const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
   useEffect(() => {
     if (section === 'imap') setImapView('list')
@@ -283,6 +286,42 @@ export default function Admin() {
       setImapTestMessage('IMAP connection successful.')
     }
     setImapTestLoading(false)
+  }
+
+  const callImapSync = async (accountId: string) => {
+    if (!currentOrg?.id) return { error: 'No workspace selected.' }
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) return { error: 'Please sign in again.' }
+    const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ orgId: currentOrg.id, accountId }),
+    })
+    const data = (await res.json().catch(() => ({}))) as { error?: string; messagesInserted?: number; threadsCreated?: number; errors?: string[] }
+    if (data?.error) return { error: data.error }
+    if (data?.errors?.length) return { error: data.errors.join('; ') }
+    return {
+      messagesInserted: data?.messagesInserted ?? 0,
+      threadsCreated: data?.threadsCreated ?? 0,
+    }
+  }
+
+  const handleSyncImap = async (accountId: string) => {
+    setImapSyncAccountId(accountId)
+    setImapSyncMessage(null)
+    const result = await callImapSync(accountId)
+    setImapSyncAccountId(null)
+    if (result?.error) {
+      setImapSyncMessage(result.error)
+    } else {
+      const { messagesInserted = 0, threadsCreated = 0 } = result as { messagesInserted?: number; threadsCreated?: number }
+      setImapSyncMessage(messagesInserted > 0 ? `Synced. ${messagesInserted} message(s), ${threadsCreated} thread(s).` : 'Sync complete. No new messages.')
+    }
   }
 
   const handleTestSmtp = async () => {
@@ -595,6 +634,15 @@ export default function Admin() {
                           <span className={`text-xs px-2 py-1 rounded ${acc.is_active ? 'bg-accent/20 text-accent' : 'text-gray-500'}`}>{acc.is_active ? 'On' : 'Off'}</span>
                           <button
                             type="button"
+                            onClick={() => handleSyncImap(acc.id)}
+                            disabled={imapSyncAccountId !== null}
+                            className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted disabled:opacity-50"
+                            title="Sync now"
+                          >
+                            <RefreshCw className={`w-4 h-4 ${imapSyncAccountId === acc.id ? 'animate-spin' : ''}`} />
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => startEditImap(acc)}
                             className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"
                             title="Edit account"
@@ -613,6 +661,11 @@ export default function Admin() {
                       </li>
                     ))}
                   </ul>
+                )}
+                {imapSyncMessage && (
+                  <p className={`px-4 py-2 text-sm border-t border-border ${imapSyncMessage.startsWith('Synced') || imapSyncMessage.startsWith('Sync complete') ? 'text-accent' : 'text-red-400'}`}>
+                    {imapSyncMessage}
+                  </p>
                 )}
               </div>
             </>

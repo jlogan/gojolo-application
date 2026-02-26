@@ -27,6 +27,7 @@ import CompaniesList from '@/pages/companies/CompaniesList'
 import CompanyDetail from '@/pages/companies/CompanyDetail'
 import CompanyForm from '@/pages/companies/CompanyForm'
 import ChatView from '@/pages/ChatView'
+import InboxPage from '@/pages/Inbox'
 
 type AppMode = 'software' | 'chat'
 
@@ -269,7 +270,7 @@ export default function AppShell() {
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
               <Route path="/companies/:id/edit" element={<CompanyForm />} />
-              <Route path="/inbox" element={<InboxPlaceholder />} />
+              <Route path="/inbox" element={<InboxPage />} />
               <Route path="/profile" element={<Profile />} />
               <Route path="/settings" element={<OrgSettings />} />
               <Route path="/organizations" element={<OrganizationsList />} />
@@ -282,13 +283,3 @@ export default function AppShell() {
   )
 }
 
-function InboxPlaceholder() {
-  return (
-    <div className="p-4 md:p-6" data-testid="inbox-page">
-      <h1 className="text-xl font-semibold text-white mb-2">Inbox</h1>
-      <p className="text-gray-400 text-sm">
-        Threads (email + SMS) will appear here. Connect IMAP and Twilio in a later phase.
-      </p>
-    </div>
-  )
-}
