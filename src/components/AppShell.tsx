@@ -9,16 +9,17 @@ import {
   Building2,
   Inbox,
   LogOut,
-  ChevronDown,
   Menu,
   X,
   User,
-  ArrowLeftRight,
   Shield,
+  Settings,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
 import Admin from '@/pages/Admin'
+import OrgSettings from '@/pages/OrgSettings'
+import OrganizationsList from '@/pages/OrganizationsList'
 import ContactsList from '@/pages/contacts/ContactsList'
 import ContactDetail from '@/pages/contacts/ContactDetail'
 import ContactForm from '@/pages/contacts/ContactForm'
@@ -38,7 +39,7 @@ const NAV = [
 
 export default function AppShell() {
   const { signOut } = useAuth()
-  const { currentOrg, memberships, setCurrentOrg, isPlatformAdmin } = useOrg()
+  const { currentOrg, isPlatformAdmin, isOrgAdmin } = useOrg()
   const location = useLocation()
   const navigate = useNavigate()
   const [mode, setMode] = useState<AppMode>(() => {
@@ -46,7 +47,6 @@ export default function AppShell() {
     return m === 'chat' ? 'chat' : 'software'
   })
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [orgDropdownOpen, setOrgDropdownOpen] = useState(false)
 
   const setModeAndStore = (m: AppMode) => {
     setMode(m)
@@ -134,6 +134,23 @@ export default function AppShell() {
                   </Link>
                 </li>
               ))}
+              {isOrgAdmin && (
+                <li>
+                  <Link
+                    to="/settings"
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                      location.pathname === '/settings'
+                        ? 'bg-surface-muted text-white'
+                        : 'text-gray-400 hover:bg-surface-muted hover:text-gray-200'
+                    }`}
+                    data-testid="nav-settings"
+                    onClick={() => setSidebarOpen(false)}
+                  >
+                    <Settings className="w-4 h-4 shrink-0" />
+                    Settings
+                  </Link>
+                </li>
+              )}
             </ul>
           </nav>
         )}
@@ -159,66 +176,19 @@ export default function AppShell() {
           </nav>
         )}
 
-        {/* Org name first, then Admin, Profile, Sign out */}
+        {/* Org / Workspace link, then Admin, Profile, Sign out */}
         <div className="border-t border-border p-2 space-y-0.5">
-          {memberships.length > 1 ? (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setOrgDropdownOpen((o) => !o)}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-surface-muted text-left"
-                data-testid="org-switcher"
-                title="Switch workspace"
-              >
-                <ArrowLeftRight className="w-4 h-4 shrink-0 text-gray-400" aria-hidden />
-                <span className="flex-1 truncate text-sm font-medium text-white">
-                  {currentOrg?.name ?? 'No org'}
-                </span>
-                <ChevronDown className="w-4 h-4 shrink-0 text-gray-400" aria-hidden />
-              </button>
-              {orgDropdownOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-10"
-                    aria-hidden
-                    onClick={() => setOrgDropdownOpen(false)}
-                  />
-                  <ul
-                    className="absolute bottom-full left-2 right-2 mb-1 py-1 bg-surface-elevated border border-border rounded-lg shadow-lg z-20 max-h-48 overflow-y-auto"
-                    data-testid="org-dropdown"
-                  >
-                    {memberships.map(({ org }) => (
-                      <li key={org.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCurrentOrg(org)
-                            setOrgDropdownOpen(false)
-                          }}
-                          className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 ${
-                            currentOrg?.id === org.id ? 'bg-surface-muted text-white' : 'text-gray-300 hover:bg-surface-muted'
-                          }`}
-                        >
-                          <Building2 className="w-3.5 h-3.5 shrink-0 opacity-70" />
-                          {org.name}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </div>
-          ) : (
-            <div
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400"
-              data-testid="org-current"
-              title="Current workspace"
-            >
-              <Building2 className="w-4 h-4 shrink-0" />
-              <span className="truncate font-medium text-gray-300">{currentOrg?.name ?? '—'}</span>
-            </div>
-          )}
-          {isPlatformAdmin && (
+          <Link
+            to="/organizations"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 hover:bg-surface-muted hover:text-white transition-colors"
+            data-testid="nav-organizations"
+            title="Organizations"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <Building2 className="w-4 h-4 shrink-0" />
+            <span className="truncate">{currentOrg?.name ?? 'Organizations'}</span>
+          </Link>
+          {(isPlatformAdmin || isOrgAdmin) && (
             <Link
               to="/admin"
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -301,6 +271,8 @@ export default function AppShell() {
               <Route path="/companies/:id/edit" element={<CompanyForm />} />
               <Route path="/inbox" element={<InboxPlaceholder />} />
               <Route path="/profile" element={<Profile />} />
+              <Route path="/settings" element={<OrgSettings />} />
+              <Route path="/organizations" element={<OrganizationsList />} />
               <Route path="/admin" element={<Admin />} />
             </Routes>
           </main>

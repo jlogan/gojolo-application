@@ -19,7 +19,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 function RequireOrg({ children }: { children: React.ReactNode }) {
-  const { currentOrg, memberships, loading } = useOrg()
+  const { currentOrg, loading } = useOrg()
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-surface" data-testid="org-loading">
@@ -27,7 +27,6 @@ function RequireOrg({ children }: { children: React.ReactNode }) {
       </div>
     )
   }
-  if (memberships.length === 0) return <Navigate to="/workspace" replace />
   if (!currentOrg) return <Navigate to="/workspace" replace />
   return <>{children}</>
 }
