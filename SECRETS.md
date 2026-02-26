@@ -16,6 +16,19 @@ supabase secrets set RESEND_API_KEY=re_xxxx
 supabase secrets set RESEND_FROM="jolo <notifications@gojolo.io>"
 ```
 
+**IMAP account test/save (`imap-test-and-save`):**
+
+```bash
+# 32-byte hex key for encrypting stored IMAP/SMTP passwords (generate: openssl rand -hex 32)
+supabase secrets set ENCRYPTION_KEY=your64charhex...
+```
+
+This function skips gateway JWT verification (see `supabase/config.toml`) and verifies the user inside the function. If you deploy without using the repo’s config, deploy with:
+
+```bash
+supabase functions deploy imap-test-and-save --no-verify-jwt
+```
+
 **Future (add when you implement):**
 
 ```bash

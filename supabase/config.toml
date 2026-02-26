@@ -24,3 +24,7 @@ additional_redirect_urls = ["https://app.gojolo.io"]
 
 # Google OAuth: configure in Supabase Dashboard (Authentication → Providers) for your linked project.
 # For local `supabase start`, add [auth.external.google] with client_id and secret here.
+
+# Edge Function: skip gateway JWT verification; we verify the user inside the function (is_org_admin).
+[functions.imap-test-and-save]
+verify_jwt = false

@@ -11,6 +11,9 @@ import {
   Phone,
   Inbox,
   ChevronDown,
+  Pencil,
+  Plus,
+  Trash2,
 } from 'lucide-react'
 
 type Role = { id: string; name: string }
@@ -42,6 +45,15 @@ type ImapAccount = {
   org_id: string
   label: string | null
   email: string
+  host: string | null
+  port: number | null
+  imap_encryption: string | null
+  imap_username: string | null
+  addresses: string[] | null
+  smtp_host: string | null
+  smtp_port: number | null
+  smtp_use_tls: boolean | null
+  smtp_username: string | null
   is_active: boolean
 }
 
@@ -70,8 +82,8 @@ export default function Admin() {
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteMessage, setInviteMessage] = useState<string | null>(null)
 
-  const [imapEmail, setImapEmail] = useState('')
   const [imapLabel, setImapLabel] = useState('')
+  const [imapAliases, setImapAliases] = useState('')
   const [imapHost, setImapHost] = useState('imap.gmail.com')
   const [imapPort, setImapPort] = useState(993)
   const [imapEncryption, setImapEncryption] = useState<'none' | 'tls' | 'ssl'>('ssl')
@@ -86,6 +98,14 @@ export default function Admin() {
   const [imapTestLoading, setImapTestLoading] = useState(false)
   const [smtpTestLoading, setSmtpTestLoading] = useState(false)
   const [imapMessage, setImapMessage] = useState<string | null>(null)
+  const [imapTestMessage, setImapTestMessage] = useState<string | null>(null)
+  const [smtpTestMessage, setSmtpTestMessage] = useState<string | null>(null)
+  const [editingImapId, setEditingImapId] = useState<string | null>(null)
+  const [imapView, setImapView] = useState<'list' | 'form'>('list')
+
+  useEffect(() => {
+    if (section === 'imap') setImapView('list')
+  }, [section])
 
   useEffect(() => {
     if (!currentOrg?.id || (!isOrgAdmin && !isPlatformAdmin)) {
@@ -106,7 +126,7 @@ export default function Admin() {
           .is('used_at', null)
           .order('created_at', { ascending: false }),
         supabase.from('phone_numbers').select('id, org_id, phone_number, friendly_name, is_active').eq('org_id', currentOrg.id).order('phone_number'),
-        supabase.from('imap_accounts').select('id, org_id, label, email, is_active').eq('org_id', currentOrg.id),
+        supabase.from('imap_accounts').select('id, org_id, label, email, host, port, imap_encryption, imap_username, addresses, smtp_host, smtp_port, smtp_use_tls, smtp_username, is_active').eq('org_id', currentOrg.id),
       ])
       setRoles((rolesRes.data as Role[]) ?? [])
       setMembers((membersRes.data as unknown as OrgMember[]) ?? [])
@@ -136,7 +156,16 @@ export default function Admin() {
 
   const refetchImap = async () => {
     if (!currentOrg?.id) return
-    const { data } = await supabase.from('imap_accounts').select('id, org_id, label, email, is_active').eq('org_id', currentOrg.id)
+    const { data, error } = await supabase
+      .from('imap_accounts')
+      .select('id, org_id, label, email, host, port, imap_encryption, imap_username, addresses, smtp_host, smtp_port, smtp_use_tls, smtp_username, is_active')
+      .eq('org_id', currentOrg.id)
+      .order('created_at', { ascending: false })
+    if (error) {
+      console.error('Failed to fetch IMAP accounts:', error)
+      setImapMessage('Could not load IMAP accounts. You may need to refresh.')
+      return
+    }
     setImapAccounts((data as ImapAccount[]) ?? [])
   }
 
@@ -172,100 +201,184 @@ export default function Admin() {
 
   const callImapEdge = async (save: boolean, testSmtpOnly?: boolean) => {
     if (!currentOrg?.id) return { error: { message: 'No workspace selected.' } }
-    if (!testSmtpOnly && (!imapEmail.trim() || !imapHost.trim() || !imapUsername.trim() || !imapPassword)) {
-      return { error: { message: 'Fill in email, host, username, and password.' } }
+    const isEdit = Boolean(editingImapId)
+    if (!testSmtpOnly && (!imapHost.trim() || !imapUsername.trim())) {
+      return { error: { message: 'Fill in host and username.' } }
+    }
+    if (!testSmtpOnly && !imapPassword && !(save && isEdit)) {
+      return { error: { message: 'Fill in password (required to test; leave blank when saving only to keep current).' } }
     }
     if (testSmtpOnly && (!smtpHost.trim() || !smtpUsername.trim() || !smtpPassword)) {
       return { error: { message: 'Fill in SMTP host, username, and password.' } }
+    }
+    const addresses = [
+      imapUsername.trim().toLowerCase(),
+      ...imapAliases
+        .split(/[\n,]+/)
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s && s.includes('@')),
+    ].filter((s, i, a) => a.indexOf(s) === i)
+    const body = {
+      orgId: currentOrg.id,
+      accountId: editingImapId || null,
+      email: imapUsername.trim(),
+      host: imapHost.trim(),
+      port: imapPort || (imapEncryption === 'ssl' ? 993 : 143),
+      imapEncryption,
+      username: imapUsername.trim(),
+      password: imapPassword || null,
+      label: imapLabel.trim() || null,
+      addresses: addresses.length ? addresses : [imapUsername.trim().toLowerCase()],
+      save,
+      testSmtpOnly: testSmtpOnly || false,
+      smtpHost: smtpHost.trim() || null,
+      smtpPort: smtpPort || 587,
+      smtpEncryption,
+      smtpUsername: smtpUsername.trim() || null,
+      smtpPassword: smtpPassword || null,
     }
     const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-test-and-save`
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) {
       return { error: { message: 'Please sign in again.' } }
     }
-    await supabase.auth.refreshSession()
-    const { data: { session: freshSession } } = await supabase.auth.getSession()
-    const token = freshSession?.access_token ?? session.access_token
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
+        'Authorization': `Bearer ${session.access_token}`,
         'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
       },
-      body: JSON.stringify({
-        orgId: currentOrg.id,
-        email: imapEmail.trim(),
-        host: imapHost.trim(),
-        port: imapPort || (imapEncryption === 'ssl' ? 993 : 143),
-        imapEncryption,
-        username: imapUsername.trim(),
-        password: imapPassword,
-        label: imapLabel.trim() || null,
-        save,
-        testSmtpOnly: testSmtpOnly || false,
-        smtpHost: smtpHost.trim() || null,
-        smtpPort: smtpPort || 587,
-        smtpEncryption,
-        smtpUsername: smtpUsername.trim() || null,
-        smtpPassword: smtpPassword || null,
-      }),
+      body: JSON.stringify(body),
     })
-    const data = await res.json().catch(() => ({})) as { ok?: boolean; error?: string; message?: string }
-    const errMsg = data?.error ?? (!res.ok ? (data?.message || res.statusText || `Request failed (${res.status})`) : null)
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; message?: string }
+    let errMsg = data?.error ?? (!res.ok ? (data?.message || res.statusText || `Request failed (${res.status})`) : null)
+    if (res.status === 401 && errMsg?.toLowerCase().includes('jwt')) {
+      try {
+        const payload = JSON.parse(atob(session.access_token.split('.')[1]))
+        const iss = payload.iss ?? 'unknown'
+        const expectedOrigin = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, '')
+        const tokenOrigin = iss.replace('/auth/v1', '')
+        if (tokenOrigin !== expectedOrigin) {
+          errMsg = `Invalid JWT: session was issued by ${tokenOrigin} but the app is calling ${expectedOrigin}. Sign out and sign in again.`
+        } else {
+          errMsg = `Invalid JWT: token issuer matches (${iss}). Try signing out and back in, or check Project Settings → API → JWT Secret hasn’t been rotated.`
+        }
+      } catch {
+        errMsg = `Invalid JWT. Sign out and sign in again, then retry.`
+      }
+    }
     if (errMsg) return { error: { message: errMsg } }
     return { data }
   }
 
   const handleTestImap = async () => {
     setImapTestLoading(true)
-    setImapMessage(null)
+    setImapTestMessage(null)
+    setSmtpTestMessage(null)
     const { error } = await callImapEdge(false)
     if (error) {
-      setImapMessage(error.message)
+      setImapTestMessage(error.message)
     } else {
-      setImapMessage('IMAP connection successful.')
+      setImapTestMessage('IMAP connection successful.')
     }
     setImapTestLoading(false)
   }
 
   const handleTestSmtp = async () => {
     setSmtpTestLoading(true)
-    setImapMessage(null)
+    setSmtpTestMessage(null)
+    setImapTestMessage(null)
     const { error } = await callImapEdge(false, true)
     if (error) {
-      setImapMessage(error.message)
+      setSmtpTestMessage(error.message)
     } else {
-      setImapMessage('SMTP connection successful.')
+      setSmtpTestMessage('SMTP connection successful.')
     }
     setSmtpTestLoading(false)
   }
 
+  const startEditImap = (acc: ImapAccount) => {
+    setImapView('form')
+    setEditingImapId(acc.id)
+    setImapLabel(acc.label ?? '')
+    setImapUsername(acc.imap_username ?? acc.email)
+    setImapAliases((acc.addresses ?? [acc.email]).filter((a) => a !== (acc.imap_username ?? acc.email)).join('\n'))
+    setImapHost(acc.host ?? 'imap.gmail.com')
+    setImapPort(acc.port ?? 993)
+    setImapEncryption((acc.imap_encryption as 'none' | 'tls' | 'ssl') ?? 'ssl')
+    setImapPassword('')
+    setSmtpHost(acc.smtp_host ?? 'smtp.gmail.com')
+    setSmtpPort(acc.smtp_port ?? 587)
+    setSmtpEncryption(acc.smtp_use_tls ? 'tls' : 'ssl')
+    setSmtpUsername(acc.smtp_username ?? '')
+    setSmtpPassword('')
+    setImapMessage(null)
+    setImapTestMessage(null)
+    setSmtpTestMessage(null)
+  }
+
+  const cancelEditImap = () => {
+    setEditingImapId(null)
+    setImapLabel('')
+    setImapUsername('')
+    setImapAliases('')
+    setImapHost('imap.gmail.com')
+    setImapPort(993)
+    setImapEncryption('ssl')
+    setImapPassword('')
+    setSmtpHost('smtp.gmail.com')
+    setSmtpPort(587)
+    setSmtpEncryption('tls')
+    setSmtpUsername('')
+    setSmtpPassword('')
+    setImapMessage(null)
+    setImapTestMessage(null)
+    setSmtpTestMessage(null)
+  }
+
+  const handleRemoveImap = async (id: string) => {
+    if (!currentOrg?.id) return
+    if (!window.confirm('Remove this IMAP account? This cannot be undone.')) return
+    const { error } = await supabase.from('imap_accounts').delete().eq('id', id).eq('org_id', currentOrg.id)
+    if (error) setImapMessage(error.message)
+    else {
+      setImapMessage('Account removed.')
+      if (editingImapId === id) {
+        cancelEditImap()
+        setImapView('list')
+      }
+      refetchImap()
+    }
+  }
+
   const handleAddImap = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!currentOrg?.id || !imapEmail.trim() || !imapHost.trim() || !imapUsername.trim() || !imapPassword) {
-      setImapMessage('Fill in email, host, username, and password.')
+    const isEdit = Boolean(editingImapId)
+    if (!currentOrg?.id || !imapHost.trim() || !imapUsername.trim()) {
+      setImapMessage('Fill in host and username.')
+      return
+    }
+    if (!isEdit && !imapPassword) {
+      setImapMessage('Fill in password when adding an account.')
+      return
+    }
+    const primaryEmail = imapUsername.trim().toLowerCase()
+    if (!isEdit && imapAccounts.some((acc) => (acc.imap_username ?? acc.email).toLowerCase() === primaryEmail)) {
+      setImapMessage('This account is already added for this workspace.')
       return
     }
     setImapLoading(true)
     setImapMessage(null)
+    setImapTestMessage(null)
+    setSmtpTestMessage(null)
     const { error } = await callImapEdge(true)
     if (error) {
       setImapMessage(error.message)
     } else {
-      setImapMessage('IMAP account added. You can turn sync on from the Inbox once it’s set up.')
-      setImapEmail('')
-      setImapLabel('')
-      setImapHost('imap.gmail.com')
-      setImapPort(993)
-      setImapEncryption('ssl')
-      setImapUsername('')
-      setImapPassword('')
-      setSmtpHost('smtp.gmail.com')
-      setSmtpPort(587)
-      setSmtpEncryption('tls')
-      setSmtpUsername('')
-      setSmtpPassword('')
+      setImapMessage(editingImapId ? 'Account updated.' : 'IMAP account added. You can turn sync on from the Inbox once it’s set up.')
+      cancelEditImap()
+      setImapView('list')
       refetchImap()
     }
     setImapLoading(false)
@@ -448,24 +561,70 @@ export default function Admin() {
             </>
           )}
 
-          {section === 'imap' && (
+          {section === 'imap' && imapView === 'list' && (
             <>
               <h2 className="text-xl font-semibold text-white mb-2">IMAP accounts</h2>
               <p className="text-gray-400 text-sm mb-6">
                 Email accounts to monitor in the Inbox. For Gmail use an App Password (Account → Security → 2-Step Verification → App passwords).
               </p>
-              <form onSubmit={handleAddImap} className="rounded-lg border border-border bg-surface-elevated p-4 mb-4 space-y-3">
-                <div>
-                  <label htmlFor="admin-imap-email" className="block text-xs font-medium text-gray-500 mb-1">Email</label>
-                  <input
-                    id="admin-imap-email"
-                    type="email"
-                    value={imapEmail}
-                    onChange={(e) => setImapEmail(e.target.value)}
-                    placeholder="inbox@example.com"
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
-                  />
-                </div>
+              <div className="mb-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    cancelEditImap()
+                    setImapView('form')
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add account
+                </button>
+              </div>
+              <div className="rounded-lg border border-border bg-surface-elevated">
+                {imapAccounts.length === 0 ? (
+                  <p className="p-4 text-gray-400 text-sm">No IMAP accounts yet.</p>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {imapAccounts.map((acc) => (
+                      <li key={acc.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                        <div>
+                          <p className="text-gray-200 font-medium">{acc.label || acc.email}</p>
+                          <p className="text-gray-500 text-xs">{acc.email}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`text-xs px-2 py-1 rounded ${acc.is_active ? 'bg-accent/20 text-accent' : 'text-gray-500'}`}>{acc.is_active ? 'On' : 'Off'}</span>
+                          <button
+                            type="button"
+                            onClick={() => startEditImap(acc)}
+                            className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"
+                            title="Edit account"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveImap(acc.id)}
+                            className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted"
+                            title="Remove account"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+
+          {section === 'imap' && imapView === 'form' && (
+            <>
+              <h2 className="text-xl font-semibold text-white mb-2">{editingImapId ? 'Edit IMAP account' : 'Add IMAP account'}</h2>
+              <p className="text-gray-400 text-sm mb-6">
+                For Gmail use an App Password (Account → Security → 2-Step Verification → App passwords).
+              </p>
+              <form onSubmit={handleAddImap} className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
                 <div>
                   <label htmlFor="admin-imap-label" className="block text-xs font-medium text-gray-500 mb-1">Label (optional)</label>
                   <input
@@ -473,9 +632,36 @@ export default function Admin() {
                     type="text"
                     value={imapLabel}
                     onChange={(e) => setImapLabel(e.target.value)}
-                    placeholder="Support inbox"
+                    placeholder="e.g. Jason - Brogrammers"
                     className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
                   />
+                </div>
+
+                <h3 className="text-sm font-medium text-white pt-1">IMAP settings</h3>
+                <div>
+                  <label htmlFor="admin-imap-username" className="block text-xs font-medium text-gray-500 mb-1">IMAP username</label>
+                  <input
+                    id="admin-imap-username"
+                    type="text"
+                    value={imapUsername}
+                    onChange={(e) => setImapUsername(e.target.value)}
+                    placeholder="jason@jaylogan.com"
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
+                    autoComplete="username"
+                  />
+                  <p className="text-gray-500 text-xs mt-1">Your email address for this account (used to sign in). This is also the primary address for send/receive.</p>
+                </div>
+                <div>
+                  <label htmlFor="admin-imap-aliases" className="block text-xs font-medium text-gray-500 mb-1">Aliases</label>
+                  <textarea
+                    id="admin-imap-aliases"
+                    value={imapAliases}
+                    onChange={(e) => setImapAliases(e.target.value)}
+                    placeholder={'jason@brogrammers.agency\njason@pymuapp.com'}
+                    rows={3}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent resize-y"
+                  />
+                  <p className="text-gray-500 text-xs mt-1">Other addresses that send and receive through this account (one per line or comma-separated). You can send as and receive mail to any of these when replying.</p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
@@ -517,29 +703,30 @@ export default function Admin() {
                   </div>
                 </div>
                 <div>
-                  <label htmlFor="admin-imap-username" className="block text-xs font-medium text-gray-500 mb-1">IMAP username</label>
-                  <input
-                    id="admin-imap-username"
-                    type="text"
-                    value={imapUsername}
-                    onChange={(e) => setImapUsername(e.target.value)}
-                    placeholder="your@email.com or Gmail address"
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
-                    autoComplete="username"
-                  />
-                </div>
-                <div>
                   <label htmlFor="admin-imap-password" className="block text-xs font-medium text-gray-500 mb-1">IMAP password</label>
                   <input
                     id="admin-imap-password"
                     type="password"
                     value={imapPassword}
                     onChange={(e) => setImapPassword(e.target.value)}
-                    placeholder="App password for Gmail"
+                    placeholder={editingImapId ? 'Leave blank to keep current' : 'App password for Gmail'}
                     className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
                     autoComplete="current-password"
                   />
                 </div>
+                <div className="flex flex-wrap gap-2 pb-2">
+                  <button
+                    type="button"
+                    onClick={handleTestImap}
+                    disabled={imapTestLoading || !imapHost.trim() || !imapUsername.trim() || !imapPassword}
+                    className="px-4 py-2 rounded-lg border border-border bg-surface-muted text-gray-200 text-sm font-medium hover:bg-surface-muted/80 disabled:opacity-50"
+                  >
+                    {imapTestLoading ? 'Testing…' : 'Test connection'}
+                  </button>
+                </div>
+                {imapTestMessage && (
+                  <p className={`text-sm ${imapTestMessage.includes('successful') ? 'text-accent' : 'text-red-400'}`}>{imapTestMessage}</p>
+                )}
 
                 <h3 className="text-sm font-medium text-white pt-2 border-t border-border mt-4">SMTP settings</h3>
                 <p className="text-gray-500 text-xs">For sending replies from this account. Optional.</p>
@@ -616,39 +803,27 @@ export default function Admin() {
                     {smtpTestLoading ? 'Testing…' : 'Test SMTP connection'}
                   </button>
                 </div>
+                {smtpTestMessage && (
+                  <p className={`text-sm ${smtpTestMessage.includes('successful') ? 'text-accent' : 'text-red-400'}`}>{smtpTestMessage}</p>
+                )}
 
-                {imapMessage && <p className={`text-sm ${imapMessage.includes('added') || imapMessage.includes('successful') ? 'text-accent' : 'text-red-400'}`}>{imapMessage}</p>}
-                <div className="flex flex-wrap gap-2">
+                {imapMessage && <p className={`text-sm ${imapMessage.includes('added') || imapMessage.includes('updated') || imapMessage.includes('removed') ? 'text-accent' : 'text-red-400'}`}>{imapMessage}</p>}
+                <div className="flex flex-wrap gap-2 pt-2">
                   <button
                     type="button"
-                    onClick={handleTestImap}
-                    disabled={imapTestLoading || !imapEmail.trim() || !imapHost.trim() || !imapUsername.trim() || !imapPassword}
-                    className="px-4 py-2 rounded-lg border border-border bg-surface-muted text-gray-200 text-sm font-medium hover:bg-surface-muted/80 disabled:opacity-50"
+                    onClick={() => {
+                      cancelEditImap()
+                      setImapView('list')
+                    }}
+                    className="px-4 py-2 rounded-lg border border-border bg-surface-muted text-gray-200 text-sm font-medium hover:bg-surface-muted/80"
                   >
-                    {imapTestLoading ? 'Testing…' : 'Test connection'}
+                    Cancel
                   </button>
-                  <button type="submit" disabled={imapLoading || !imapEmail.trim() || !imapHost.trim() || !imapUsername.trim() || !imapPassword} className="px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50">
-                    {imapLoading ? 'Adding…' : 'Add IMAP account'}
+                  <button type="submit" disabled={imapLoading || !imapHost.trim() || !imapUsername.trim() || (!!editingImapId ? false : !imapPassword)} className="px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                    {imapLoading ? (editingImapId ? 'Updating…' : 'Adding…') : (editingImapId ? 'Update account' : 'Add IMAP account')}
                   </button>
                 </div>
               </form>
-              <div className="rounded-lg border border-border bg-surface-elevated">
-                {imapAccounts.length === 0 ? (
-                  <p className="p-4 text-gray-400 text-sm">No IMAP accounts yet.</p>
-                ) : (
-                  <ul className="divide-y divide-border">
-                    {imapAccounts.map((acc) => (
-                      <li key={acc.id} className="flex items-center justify-between px-4 py-3 text-sm">
-                        <div>
-                          <p className="text-gray-200 font-medium">{acc.label || acc.email}</p>
-                          <p className="text-gray-500 text-xs">{acc.email}</p>
-                        </div>
-                        <span className={`text-xs px-2 py-1 rounded ${acc.is_active ? 'bg-accent/20 text-accent' : 'text-gray-500'}`}>{acc.is_active ? 'On' : 'Off'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
             </>
           )}
 

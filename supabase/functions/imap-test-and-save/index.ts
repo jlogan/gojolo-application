@@ -13,13 +13,15 @@ const encryptionKeyHex = Deno.env.get('ENCRYPTION_KEY')
 
 interface Body {
   orgId: string
+  accountId?: string | null
   email: string
   host: string
   port: number
   imapEncryption?: 'none' | 'tls' | 'ssl'
   username: string
-  password: string
+  password?: string | null
   label?: string | null
+  addresses?: string[]
   save?: boolean
   testSmtpOnly?: boolean
   smtpHost?: string | null
@@ -27,6 +29,7 @@ interface Body {
   smtpEncryption?: 'none' | 'tls' | 'ssl'
   smtpUsername?: string | null
   smtpPassword?: string | null
+  is_active?: boolean
 }
 
 function cors() {
@@ -85,6 +88,7 @@ serve(async (req) => {
 
   const {
     orgId,
+    accountId,
     email,
     host,
     port,
@@ -92,6 +96,7 @@ serve(async (req) => {
     username,
     password,
     label,
+    addresses,
     save,
     testSmtpOnly,
     smtpHost,
@@ -99,7 +104,9 @@ serve(async (req) => {
     smtpEncryption = 'tls',
     smtpUsername,
     smtpPassword,
+    is_active,
   } = body
+  const isUpdate = Boolean(save && accountId?.trim())
 
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: auth } },
@@ -145,31 +152,38 @@ serve(async (req) => {
     )
   }
 
-  if (!email?.trim() || !host?.trim() || !username?.trim() || !password) {
+  if (!email?.trim() || !host?.trim() || !username?.trim()) {
     return new Response(
-      JSON.stringify({ error: 'Missing required fields: orgId, email, host, username, password' }),
+      JSON.stringify({ error: 'Missing required fields: email, host, username' }),
       { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
     )
   }
-
-  const secureImap = imapEncryption === 'ssl' || imapEncryption === 'tls'
-  const imapPortNum = Number(port) || (imapEncryption === 'ssl' ? 993 : 143)
-  const client = new ImapFlow({
-    host: host.trim(),
-    port: imapPortNum,
-    secure: secureImap,
-    auth: { user: username.trim(), pass: password },
-  })
-
-  try {
-    await client.connect()
-    await client.logout()
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+  if (!isUpdate && !password) {
     return new Response(
-      JSON.stringify({ error: 'IMAP connection failed: ' + message }),
+      JSON.stringify({ error: 'Password is required when adding an account' }),
       { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
     )
+  }
+  const passwordToTest = password && String(password).trim() ? String(password).trim() : null
+  if (passwordToTest) {
+    const secureImap = imapEncryption === 'ssl' || imapEncryption === 'tls'
+    const imapPortNum = Number(port) || (imapEncryption === 'ssl' ? 993 : 143)
+    const client = new ImapFlow({
+      host: host.trim(),
+      port: imapPortNum,
+      secure: secureImap,
+      auth: { user: username.trim(), pass: passwordToTest },
+    })
+    try {
+      await client.connect()
+      await client.logout()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return new Response(
+        JSON.stringify({ error: 'IMAP connection failed: ' + message }),
+        { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+      )
+    }
   }
 
   if (save) {
@@ -179,14 +193,25 @@ serve(async (req) => {
         { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
       )
     }
-    let credentialsEncrypted: string
-    try {
-      credentialsEncrypted = await encrypt(password, encryptionKeyHex.slice(0, 64))
-    } catch (e) {
+    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    if (!serviceKey) {
       return new Response(
-        JSON.stringify({ error: 'Encryption failed' }),
+        JSON.stringify({ error: 'Server misconfiguration (missing service role key)' }),
         { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
       )
+    }
+    const service = createClient(supabaseUrl, serviceKey)
+
+    let credentialsEncrypted: string | null = null
+    if (passwordToTest) {
+      try {
+        credentialsEncrypted = await encrypt(passwordToTest, encryptionKeyHex.slice(0, 64))
+      } catch (e) {
+        return new Response(
+          JSON.stringify({ error: 'Encryption failed' }),
+          { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+        )
+      }
     }
 
     let smtpCredentialsEncrypted: string | null = null
@@ -201,16 +226,9 @@ serve(async (req) => {
       }
     }
 
-    const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-    if (!serviceKey) {
-      return new Response(
-        JSON.stringify({ error: 'Server misconfiguration (missing service role key)' }),
-        { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
-      )
-    }
-    const service = createClient(supabaseUrl, serviceKey)
+    const secureImap = imapEncryption === 'ssl' || imapEncryption === 'tls'
+    const imapPortNum = Number(port) || (imapEncryption === 'ssl' ? 993 : 143)
     const row: Record<string, unknown> = {
-      org_id: orgId,
       email: email.trim(),
       label: label?.trim() || null,
       host: host.trim(),
@@ -218,22 +236,65 @@ serve(async (req) => {
       use_tls: secureImap,
       imap_encryption: imapEncryption,
       imap_username: username.trim(),
-      credentials_encrypted: credentialsEncrypted,
-      is_active: true,
+      addresses: Array.isArray(addresses) && addresses.length > 0 ? addresses : [email.trim()],
+      is_active: is_active !== false,
     }
+    if (credentialsEncrypted) row.credentials_encrypted = credentialsEncrypted
     if (smtpHost?.trim()) {
       row.smtp_host = smtpHost.trim()
       row.smtp_port = Number(smtpPort) || (smtpEncryption === 'ssl' ? 465 : 587)
       row.smtp_use_tls = smtpEncryption === 'tls' || smtpEncryption === 'ssl'
       row.smtp_username = smtpUsername?.trim() || null
       if (smtpCredentialsEncrypted) row.smtp_credentials_encrypted = smtpCredentialsEncrypted
+    } else {
+      row.smtp_host = null
+      row.smtp_port = null
+      row.smtp_use_tls = null
+      row.smtp_username = null
+      row.smtp_credentials_encrypted = null
     }
-    const { error: insertError } = await service.from('imap_accounts').insert(row)
-    if (insertError) {
-      return new Response(
-        JSON.stringify({ error: insertError.message }),
-        { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+
+    if (isUpdate) {
+      const { error: updateError } = await service
+        .from('imap_accounts')
+        .update(row)
+        .eq('id', accountId!.trim())
+        .eq('org_id', orgId)
+      if (updateError) {
+        return new Response(
+          JSON.stringify({ error: updateError.message }),
+          { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+        )
+      }
+    } else {
+      (row as Record<string, unknown>).org_id = orgId
+      if (!credentialsEncrypted) {
+        return new Response(
+          JSON.stringify({ error: 'Password is required when adding an account' }),
+          { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+        )
+      }
+      const primary = email.trim().toLowerCase()
+      const { data: existingRows } = await service
+        .from('imap_accounts')
+        .select('id, email, imap_username')
+        .eq('org_id', orgId)
+      const alreadyExists = existingRows?.some(
+        (r) => (r.email?.trim().toLowerCase() === primary) || (r.imap_username?.trim().toLowerCase() === primary)
       )
+      if (alreadyExists) {
+        return new Response(
+          JSON.stringify({ error: 'This account is already added for this workspace.' }),
+          { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+        )
+      }
+      const { error: insertError } = await service.from('imap_accounts').insert(row)
+      if (insertError) {
+        return new Response(
+          JSON.stringify({ error: insertError.message }),
+          { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+        )
+      }
     }
   }
 
