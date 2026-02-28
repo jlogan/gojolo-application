@@ -5,6 +5,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
+import PostalMime from 'npm:postal-mime'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -36,6 +37,8 @@ async function decrypt(ciphertextB64: string, keyHex: string): Promise<string> {
 interface SyncBody {
   orgId?: string
   accountId?: string
+  /** When true, re-fetch recent messages and update their bodies (proper MIME parsing). Use with accountId. */
+  resync?: boolean
 }
 
 interface ImapAccountRow {
@@ -58,13 +61,28 @@ function getTrashMailboxPath(host: string): string {
   return host && host.toLowerCase().includes('gmail.com') ? '[Gmail]/Trash' : 'Trash'
 }
 
-function parseBodyFromSource(source: Uint8Array | Buffer): string {
+/** Raw fallback: everything after headers (no MIME parsing). */
+function parseBodyFromSourceRaw(source: Uint8Array | Buffer): string {
   const raw = typeof source === 'string' ? source : new TextDecoder().decode(source)
   const idx = raw.indexOf('\r\n\r\n')
   const bodyStart = idx >= 0 ? idx + 4 : raw.indexOf('\n\n') >= 0 ? raw.indexOf('\n\n') + 2 : 0
   let body = raw.slice(bodyStart).replace(/\r\n/g, '\n').trim()
   if (body.length > 50000) body = body.slice(0, 50000) + '…'
   return body
+}
+
+const MAX_BODY_LENGTH = 50000
+
+/** Parse MIME and return a single clean body (HTML preferred, else plain text). On failure, fall back to raw slice. */
+async function parseBodyFromSource(source: Uint8Array | Buffer): Promise<string> {
+  try {
+    const parsed = await PostalMime.parse(source as Uint8Array)
+    const body = (parsed.html ?? parsed.text ?? '').trim()
+    if (body.length > MAX_BODY_LENGTH) return body.slice(0, MAX_BODY_LENGTH) + '…'
+    return body || parseBodyFromSourceRaw(source)
+  } catch {
+    return parseBodyFromSourceRaw(source)
+  }
 }
 
 function getHeader(source: Uint8Array | Buffer, name: string): string | null {
@@ -165,6 +183,7 @@ serve(async (req) => {
 
   let totalThreads = 0
   let totalMessages = 0
+  let totalMessagesUpdated = 0
   const errors: string[] = []
 
   for (const acc of accounts as ImapAccountRow[]) {
@@ -204,6 +223,46 @@ serve(async (req) => {
     try {
       lock = await client.getMailboxLock(mailboxPath)
       const lastUid = acc.last_fetched_uid ?? 0
+
+      // Resync: re-fetch recent messages and update bodies with proper MIME parsing (PostalMime).
+      const doResync = body.resync === true && body.accountId === acc.id && lastUid >= 1
+      if (doResync) {
+        const resyncStart = Math.max(1, lastUid - 499)
+        const resyncRange = `${resyncStart}:${lastUid}`
+        let messagesUpdated = 0
+        try {
+          const resyncMessages = await client.fetchAll(
+            resyncRange,
+            { envelope: true, source: true, uid: true },
+            { uid: true }
+          )
+          for (const msg of resyncMessages) {
+            const uid = msg.uid as number
+            const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; date?: Date }
+            const fromAddr = envelope?.from?.[0]?.address ?? ''
+            const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
+            const date = envelope?.date ? new Date(envelope.date) : new Date()
+            const source = msg.source as Uint8Array | Buffer | undefined
+            const bodyText = source ? await parseBodyFromSource(source) : ''
+            const { error: updateErr } = await service
+              .from('inbox_messages')
+              .update({
+                body: bodyText,
+                from_identifier: fromAddr,
+                to_identifier: toAddr,
+                received_at: date.toISOString(),
+              })
+              .eq('imap_account_id', acc.id)
+              .eq('external_uid', uid)
+            if (!updateErr) messagesUpdated++
+          }
+          totalMessagesUpdated += messagesUpdated
+        } catch (resyncErr) {
+          const msg = resyncErr instanceof Error ? resyncErr.message : String(resyncErr)
+          errors.push(`${acc.imap_username}: resync: ${msg}`)
+        }
+      }
+
       let range: string
       if (lastUid > 0) {
         range = `${lastUid + 1}:*`
@@ -239,7 +298,7 @@ serve(async (req) => {
         const referencesRaw = source ? getHeader(source, 'References') : null
         const inReplyTo = normalizeMessageId(inReplyToRaw)
         const refsList = referencesRaw ? referencesRaw.split(/\s+/).map((r) => normalizeMessageId(r)).filter(Boolean) as string[]
-        const body = source ? parseBodyFromSource(source) : ''
+        const body = source ? await parseBodyFromSource(source) : ''
 
         const externalId = messageId ?? `uid-${acc.id}-${uid}`
 
@@ -381,7 +440,7 @@ serve(async (req) => {
             const source = msg.source as Uint8Array | Buffer | undefined
             const rawMessageId = source ? getHeader(source, 'Message-ID') : null
             const messageId = normalizeMessageId(rawMessageId)
-            const body = source ? parseBodyFromSource(source) : ''
+            const body = source ? await parseBodyFromSource(source) : ''
             const externalId = messageId ?? `trash-${acc.id}-${uid}`
 
             const { data: existingByMsgId } = messageId
@@ -463,6 +522,7 @@ serve(async (req) => {
       synced: (accounts as ImapAccountRow[]).length,
       threadsCreated: totalThreads,
       messagesInserted: totalMessages,
+      messagesUpdated: totalMessagesUpdated,
       errors: errors.length ? errors : undefined,
     }),
     { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }

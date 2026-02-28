@@ -288,7 +288,7 @@ export default function Admin() {
     setImapTestLoading(false)
   }
 
-  const callImapSync = async (accountId: string) => {
+  const callImapSync = async (accountId: string, resync = true) => {
     if (!currentOrg?.id) return { error: 'No workspace selected.' }
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) return { error: 'Please sign in again.' }
@@ -300,13 +300,20 @@ export default function Admin() {
         'Authorization': `Bearer ${session.access_token}`,
         'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
       },
-      body: JSON.stringify({ orgId: currentOrg.id, accountId }),
+      body: JSON.stringify({ orgId: currentOrg.id, accountId, resync }),
     })
-    const data = (await res.json().catch(() => ({}))) as { error?: string; messagesInserted?: number; threadsCreated?: number; errors?: string[] }
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: string
+      messagesInserted?: number
+      messagesUpdated?: number
+      threadsCreated?: number
+      errors?: string[]
+    }
     if (data?.error) return { error: data.error }
     if (data?.errors?.length) return { error: data.errors.join('; ') }
     return {
       messagesInserted: data?.messagesInserted ?? 0,
+      messagesUpdated: data?.messagesUpdated ?? 0,
       threadsCreated: data?.threadsCreated ?? 0,
     }
   }
@@ -319,8 +326,17 @@ export default function Admin() {
     if (result?.error) {
       setImapSyncMessage(result.error)
     } else {
-      const { messagesInserted = 0, threadsCreated = 0 } = result as { messagesInserted?: number; threadsCreated?: number }
-      setImapSyncMessage(messagesInserted > 0 ? `Synced. ${messagesInserted} message(s), ${threadsCreated} thread(s).` : 'Sync complete. No new messages.')
+      const { messagesInserted = 0, messagesUpdated = 0, threadsCreated = 0 } = result as {
+        messagesInserted?: number
+        messagesUpdated?: number
+        threadsCreated?: number
+      }
+      const parts: string[] = []
+      if (messagesUpdated > 0) parts.push(`${messagesUpdated} message(s) re-downloaded`)
+      if (messagesInserted > 0) parts.push(`${messagesInserted} new message(s), ${threadsCreated} thread(s)`)
+      setImapSyncMessage(
+        parts.length > 0 ? `Sync complete. ${parts.join('; ')}.` : 'Sync complete. No new messages.'
+      )
     }
   }
 
