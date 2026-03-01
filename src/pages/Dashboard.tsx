@@ -11,6 +11,9 @@ export default function Dashboard() {
       <p className="text-gray-400 text-sm">
         Use the sidebar to open Contacts, Companies, or switch to Chat mode.
       </p>
+      <p className="text-gray-400 text-sm mt-1">
+        Manage your Projects &amp; Tasks from the sidebar, or ask the AI in Chat mode.
+      </p>
     </div>
   )
 }
