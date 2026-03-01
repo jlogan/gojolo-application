@@ -122,20 +122,25 @@ export default function ProjectsList() {
             <li key={p.id}>
               <Link
                 to={`/projects/${p.id}`}
-                className="flex items-center gap-4 p-4 hover:bg-surface-muted transition-colors"
+                className="flex items-center gap-3 p-4 hover:bg-surface-muted transition-colors"
               >
-                <div className="w-10 h-10 rounded-lg bg-surface-muted flex items-center justify-center shrink-0">
+                <div className="w-9 h-9 rounded-lg bg-surface-muted flex items-center justify-center shrink-0 hidden sm:flex">
                   <FolderKanban className="w-5 h-5 text-accent" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-white truncate">{p.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-white truncate">{p.name}</p>
+                    <span className={`text-xs px-2 py-0.5 rounded font-medium shrink-0 ${STATUS_COLORS[p.status] ?? 'text-gray-400'}`}>
+                      {p.status.replace('_', ' ')}
+                    </span>
+                  </div>
                   {p.description && (
-                    <p className="text-sm text-gray-400 truncate">{p.description}</p>
+                    <p className="text-sm text-gray-400 truncate mt-0.5">{p.description}</p>
+                  )}
+                  {p.due_date && (
+                    <p className="text-xs text-gray-500 mt-1 sm:hidden">{p.due_date}</p>
                   )}
                 </div>
-                <span className={`text-xs px-2 py-1 rounded font-medium shrink-0 ${STATUS_COLORS[p.status] ?? 'text-gray-400'}`}>
-                  {p.status.replace('_', ' ')}
-                </span>
                 {p.due_date && (
                   <span className="text-xs text-gray-500 shrink-0 hidden sm:block">{p.due_date}</span>
                 )}

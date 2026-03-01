@@ -336,7 +336,17 @@ export default function ProjectDetail() {
                         <Icon className={`w-5 h-5 ${t.status === 'done' ? 'text-green-400' : t.status === 'in_progress' ? 'text-accent' : 'text-gray-500'}`} />
                       </button>
                       <div className="flex-1 min-w-0">
-                        <p className={`font-medium text-sm ${t.status === 'done' ? 'line-through text-gray-500' : 'text-white'}`}>{t.title}</p>
+                        <div className="flex items-start justify-between gap-2">
+                          <p className={`font-medium text-sm ${t.status === 'done' ? 'line-through text-gray-500' : 'text-white'}`}>{t.title}</p>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button type="button" title="Upload file" onClick={() => setSelectedTaskForUpload(selectedTaskForUpload === t.id ? null : t.id)}
+                              className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Upload className="w-3.5 h-3.5" /></button>
+                            <button type="button" title="Edit task" onClick={() => startEditTask(t)}
+                              className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Pencil className="w-3.5 h-3.5" /></button>
+                            <button type="button" title="Delete task" onClick={() => handleDeleteTask(t.id)}
+                              className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </div>
                         {t.description && <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{t.description}</p>}
                         <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs">
                           <span className={PRIORITY_COLORS[t.priority] ?? 'text-gray-400'}>{t.priority}</span>
@@ -344,7 +354,6 @@ export default function ProjectDetail() {
                           {t.assigned_to && <span className="text-gray-400">{getUserName(t.assigned_to)}</span>}
                           {taskAtts.length > 0 && <span className="text-gray-500 flex items-center gap-0.5"><Paperclip className="w-3 h-3" />{taskAtts.length}</span>}
                         </div>
-                        {/* Attachments for this task */}
                         {taskAtts.length > 0 && (
                           <div className="mt-2 space-y-1">
                             {taskAtts.map(a => (
@@ -362,14 +371,6 @@ export default function ProjectDetail() {
                               className="text-xs text-gray-400" disabled={uploading} />
                           </div>
                         )}
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button type="button" title="Upload file" onClick={() => setSelectedTaskForUpload(selectedTaskForUpload === t.id ? null : t.id)}
-                          className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Upload className="w-3.5 h-3.5" /></button>
-                        <button type="button" title="Edit task" onClick={() => startEditTask(t)}
-                          className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Pencil className="w-3.5 h-3.5" /></button>
-                        <button type="button" title="Delete task" onClick={() => handleDeleteTask(t.id)}
-                          className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted"><Trash2 className="w-3.5 h-3.5" /></button>
                       </div>
                     </div>
                   </li>

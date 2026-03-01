@@ -243,27 +243,30 @@ export default function AppShell() {
         />
       )}
 
-      {/* Main content or Chat full view */}
-      {mode === 'chat' ? (
-        <main className="flex-1 flex flex-col min-w-0" data-testid="main-chat">
-          <ChatView />
-        </main>
-      ) : (
-        <>
-          <header className="md:hidden flex items-center h-14 px-4 border-b border-border shrink-0">
-            <button
-              type="button"
-              className="p-2 rounded-lg hover:bg-surface-muted"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="Open menu"
-              data-testid="menu-toggle"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <span className="ml-2 text-sm font-medium text-white truncate">
-              {currentOrg?.name}
-            </span>
-          </header>
+      {/* Right side: mobile header + main content */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        {/* Mobile header (both modes) */}
+        <header className="md:hidden flex items-center h-14 px-4 border-b border-border shrink-0">
+          <button
+            type="button"
+            className="p-2 rounded-lg hover:bg-surface-muted"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open menu"
+            data-testid="menu-toggle"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <span className="ml-2 text-sm font-medium text-white truncate">
+            {mode === 'chat' ? 'Chat' : currentOrg?.name}
+          </span>
+        </header>
+
+        {/* Main content or Chat full view */}
+        {mode === 'chat' ? (
+          <main className="flex-1 flex flex-col min-w-0 min-h-0" data-testid="main-chat">
+            <ChatView />
+          </main>
+        ) : (
           <main className="flex-1 overflow-y-auto min-w-0" data-testid="main-content">
             <Routes>
               <Route path="/" element={<Dashboard />} />
@@ -286,8 +289,8 @@ export default function AppShell() {
               <Route path="/admin" element={<Admin />} />
             </Routes>
           </main>
-        </>
-      )}
+        )}
+      </div>
     </div>
   )
 }
