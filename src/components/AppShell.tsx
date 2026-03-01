@@ -14,6 +14,7 @@ import {
   User,
   Shield,
   Settings,
+  FolderKanban,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -28,11 +29,15 @@ import CompanyDetail from '@/pages/companies/CompanyDetail'
 import CompanyForm from '@/pages/companies/CompanyForm'
 import ChatView from '@/pages/ChatView'
 import InboxPage from '@/pages/Inbox'
+import ProjectsList from '@/pages/projects/ProjectsList'
+import ProjectDetail from '@/pages/projects/ProjectDetail'
+import ProjectForm from '@/pages/projects/ProjectForm'
 
 type AppMode = 'software' | 'chat'
 
 const NAV = [
   { to: '/', label: 'Home', icon: LayoutGrid, testId: 'nav-home' },
+  { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
   { to: '/companies', label: 'Companies', icon: Building2, testId: 'nav-companies' },
   { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
@@ -266,6 +271,10 @@ export default function AppShell() {
               <Route path="/contacts/new" element={<ContactForm />} />
               <Route path="/contacts/:id" element={<ContactDetail />} />
               <Route path="/contacts/:id/edit" element={<ContactForm />} />
+              <Route path="/projects" element={<ProjectsList />} />
+              <Route path="/projects/new" element={<ProjectForm />} />
+              <Route path="/projects/:id" element={<ProjectDetail />} />
+              <Route path="/projects/:id/edit" element={<ProjectForm />} />
               <Route path="/companies" element={<CompaniesList />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />

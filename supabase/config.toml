@@ -36,3 +36,7 @@ verify_jwt = false
 # inbox-send-reply: JWT required; org membership checked inside.
 [functions.inbox-send-reply]
 verify_jwt = false
+
+# ai-chat: JWT verified inside the function via getUser().
+[functions.ai-chat]
+verify_jwt = false
