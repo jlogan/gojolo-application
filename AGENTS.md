@@ -12,6 +12,7 @@
 |---------|---------|------|-------|
 | Vite dev server | `npm run dev` | 5173 | React SPA frontend |
 | Supabase (local) | `sudo supabase start` | 54321 (API), 54322 (DB), 54323 (Studio) | Requires Docker; runs Postgres, Auth, Edge Functions, Studio |
+| Edge Functions | `sudo supabase functions serve --no-verify-jwt --env-file <file>` | via 54321 | Required for AI chat; env file must contain `OPENAI_API_KEY` |
 
 ### Running locally
 
@@ -33,6 +34,21 @@
 - `npx tsc -b` — TypeScript type-check. There are pre-existing type errors in `src/pages/Inbox.tsx`. These don't block the dev server (Vite skips type-checking).
 - `npm run build` — runs `tsc -b && vite build`. Fails due to the TS errors above, but `npx vite build` (Vite-only) succeeds.
 - No automated test framework is configured in the repo.
+
+### Edge Functions (AI Chat)
+
+- The `ai-chat` Edge Function powers Chat mode. It requires `OPENAI_API_KEY` in the Deno runtime environment.
+- For local dev, `supabase functions serve` does **not** inherit shell env vars. Pass them via `--env-file`: create a file with `OPENAI_API_KEY=sk-...` and reference it.
+- `supabase start` alone does **not** serve Edge Functions for local requests. You must also run `supabase functions serve` in a separate process.
+- The function uses OpenAI function-calling (`gpt-4o-mini`) with 15 tools covering projects, tasks, contacts, companies, and team members.
+
+### Projects & Tasks module
+
+- Tables: `projects`, `tasks`, `project_members`, `project_companies`, `project_contacts`, `task_attachments`, `chat_messages`.
+- File uploads use Supabase Storage bucket `task-attachments`.
+- Project detail page (`/projects/:id`) has inline task CRUD, team member management, and company/contact linking.
+- "My projects" filter on the list page shows only projects the user is a member of (via `project_members`).
+- Anything doable in the UI can also be done via Chat mode (AI function-calling).
 
 ### Database
 
