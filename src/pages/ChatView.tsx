@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { MessageSquare, Send, Bot, User, Loader2 } from 'lucide-react'
+import { Send, Bot, User, Loader2 } from 'lucide-react'
 import { useOrg } from '@/contexts/OrgContext'
-import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 
 type ChatMessage = {
@@ -11,7 +10,6 @@ type ChatMessage = {
 
 export default function ChatView() {
   const { currentOrg } = useOrg()
-  const { user } = useAuth()
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
