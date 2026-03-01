@@ -35,10 +35,20 @@
 - `npm run build` — runs `tsc -b && vite build`. Fails due to the TS errors above, but `npx vite build` (Vite-only) succeeds.
 - No automated test framework is configured in the repo.
 
+### Supabase CLI (hosted project)
+
+- The CLI authenticates via the `SUPABASE_ACCESS_TOKEN` env var (personal access token from supabase.com/dashboard/account/tokens).
+- Link to the hosted project: `supabase link --project-ref $SUPABASE_PROJECT_REF`.
+- Push migrations: `supabase db push`.
+- Deploy Edge Functions: `supabase functions deploy <name> --no-verify-jwt`.
+- Manage secrets: `supabase secrets set KEY=value`, `supabase secrets list`.
+- All sensitive keys (OPENAI_API_KEY, RESEND_API_KEY, ENCRYPTION_KEY, etc.) live in Supabase secrets — never in `.env` or Vercel.
+
 ### Edge Functions (AI Chat)
 
 - The `ai-chat` Edge Function powers Chat mode. It requires `OPENAI_API_KEY` in the Deno runtime environment.
-- For local dev, `supabase functions serve` does **not** inherit shell env vars. Pass them via `--env-file`: create a file with `OPENAI_API_KEY=sk-...` and reference it.
+- **Hosted:** `OPENAI_API_KEY` is stored via `supabase secrets set`. The deployed function reads it automatically.
+- **Local dev:** `supabase functions serve` does **not** inherit shell env vars. Pass them via `--env-file`: create a file with `OPENAI_API_KEY=sk-...` and reference it.
 - `supabase start` alone does **not** serve Edge Functions for local requests. You must also run `supabase functions serve` in a separate process.
 - The function uses OpenAI function-calling (`gpt-4o-mini`) with 15 tools covering projects, tasks, contacts, companies, and team members.
 
