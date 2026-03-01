@@ -13,17 +13,6 @@
   --accent-foreground: #fff;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --surface: #fafafa;
-    --surface-elevated: #fff;
-    --surface-muted: #f4f4f5;
-    --border: #e4e4e7;
-    --accent: #0d9488;
-    --accent-foreground: #fff;
-  }
-}
-
 * {
   box-sizing: border-box;
 }
@@ -38,12 +27,6 @@ body {
   background: var(--surface);
   color: #e4e4e7;
   min-height: 100vh;
-}
-
-@media (prefers-color-scheme: light) {
-  body {
-    color: #18181b;
-  }
 }
 
 /* Focus visible for accessibility */
