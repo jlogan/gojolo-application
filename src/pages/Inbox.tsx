@@ -140,7 +140,10 @@ export default function Inbox() {
           .eq('user_id', userId)
         if (error) throw error
         const threadList = (assignments ?? [])
-          .map((a: { thread_id: string; inbox_threads: InboxThread | null }) => a.inbox_threads)
+          .map((a: { thread_id: string; inbox_threads: InboxThread | InboxThread[] | null }) => {
+            const t = a.inbox_threads
+            return Array.isArray(t) ? t[0] ?? null : t
+          })
           .filter(Boolean) as InboxThread[]
         threadList.sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
         setThreads(threadList)
@@ -198,10 +201,10 @@ export default function Inbox() {
       .eq('org_id', currentOrg.id)
       .then(({ data }) => {
         setMembers(
-          (data ?? []).map((r: { user_id: string; profiles: { display_name: string | null } | null }) => ({
-            user_id: r.user_id,
-            display_name: r.profiles?.display_name ?? null,
-          }))
+          (data ?? []).map((r: { user_id: string; profiles: { display_name: string | null } | { display_name: string | null }[] | null }) => {
+            const p = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles
+            return { user_id: r.user_id, display_name: p?.display_name ?? null }
+          })
         )
       })
   }, [currentOrg?.id])
@@ -241,24 +244,6 @@ export default function Inbox() {
 
   const currentAssigneeId = (selectedThread?.inbox_thread_assignments?.[0] as { user_id?: string } | undefined)?.user_id ?? ''
   const currentUserDisplayName = userId ? (members.find((m) => m.user_id === userId)?.display_name ?? 'Me') : 'Me'
-
-  const handleAssignToMe = async () => {
-    if (!selectedThreadId || !userId) return
-    setActionLoading(true)
-    setMessage(null)
-    try {
-      await supabase.from('inbox_thread_assignments').upsert(
-        { thread_id: selectedThreadId, user_id: userId },
-        { onConflict: 'thread_id' }
-      )
-      await fetchThreads()
-      setMessage(null)
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : 'Failed to assign')
-    } finally {
-      setActionLoading(false)
-    }
-  }
 
   const handleAssignTo = async (assignUserId: string) => {
     if (!selectedThreadId) return
