@@ -290,134 +290,116 @@ serve(async (req) => {
         range = `${start}:*`
       }
 
-      // Fetch headers only (envelope + headers for threading) — no body/source download
+      // Fetch headers only — no body/source download
       const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references'], uid: true }, { uid: true })
 
-      const sorted = envelopes
+      const newMsgs = envelopes
         .filter((m) => (m.uid as number) > lastUid)
         .sort((a, b) => (a.uid as number) - (b.uid as number))
+
+      if (newMsgs.length === 0) {
+        // Nothing new — skip all processing
+        await service.from('imap_accounts').update({ last_fetch_at: new Date().toISOString(), last_error: null }).eq('id', acc.id)
+        if (lock) await lock.release()
+        lock = null
+        await client.logout().catch(() => client.close())
+        continue
+      }
+
+      // Pre-parse all message metadata in one pass (CPU only, no DB)
+      const parsed = newMsgs.map(msg => {
+        const uid = msg.uid as number
+        const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
+        const hdrs = msg.headers as Map<string, string[]> | undefined
+        const messageId = normalizeMessageId(hdrs?.get('message-id')?.[0] ?? null)
+        const inReplyTo = normalizeMessageId(hdrs?.get('in-reply-to')?.[0] ?? null)
+        const refsRaw = hdrs?.get('references')?.[0] ?? null
+        const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map(r => normalizeMessageId(r)).filter(Boolean) as string[]) : []
+        return {
+          uid, messageId, inReplyTo, refsList,
+          fromAddr: envelope?.from?.[0]?.address ?? '',
+          toAddr: envelope?.to?.[0]?.address ?? '',
+          subject: envelope?.subject ?? '',
+          date: envelope?.date ? new Date(envelope.date) : new Date(),
+          externalId: messageId ?? `uid-${acc.id}-${uid}`,
+        }
+      })
+
+      // Batch pre-fetch: all reference IDs → thread mapping (1 query)
+      const allRefIds = [...new Set(parsed.flatMap(p => [p.messageId, p.inReplyTo, ...p.refsList].filter(Boolean) as string[]))]
+      const refMap = new Map<string, string>()
+      if (allRefIds.length > 0) {
+        const { data: refRows } = await service.from('inbox_messages')
+          .select('external_id, thread_id').eq('imap_account_id', acc.id)
+          .in('external_id', allRefIds.slice(0, 200))
+        for (const r of (refRows ?? []) as { external_id: string; thread_id: string }[]) {
+          refMap.set(r.external_id, r.thread_id)
+        }
+      }
+
+      // Batch pre-fetch: recent threads for subject matching (1 query)
+      const { data: recentThreads } = await service.from('inbox_threads')
+        .select('id, subject').eq('org_id', acc.org_id).eq('channel', 'email')
+        .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+        .order('last_message_at', { ascending: false }).limit(100)
+      const subjectThreadMap = new Map<string, string>()
+      for (const t of (recentThreads ?? []) as { id: string; subject: string }[]) {
+        const norm = (t.subject ?? '').replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+        if (norm && !subjectThreadMap.has(norm)) subjectThreadMap.set(norm, t.id)
+      }
 
       let highestUid = lastUid
       let threadsCreated = 0
       let messagesInserted = 0
 
-      for (const msg of sorted) {
-        const uid = msg.uid as number
-        if (uid > highestUid) highestUid = uid
+      // Batch insert rows (with ON CONFLICT skip for dedup via unique index)
+      const insertRows: Record<string, unknown>[] = []
 
-        const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
-        const fromAddr = envelope?.from?.[0]?.address ?? ''
-        const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
-        const subject = (envelope?.subject as string) ?? ''
-        const date = envelope?.date ? new Date(envelope.date) : new Date()
+      for (const p of parsed) {
+        if (p.uid > highestUid) highestUid = p.uid
 
-        // Extract threading headers from the lightweight headers fetch
-        const hdrs = msg.headers as Map<string, string[]> | undefined
-        const rawMessageId = hdrs?.get('message-id')?.[0] ?? null
-        const messageId = normalizeMessageId(rawMessageId)
-        const inReplyToRaw = hdrs?.get('in-reply-to')?.[0] ?? null
-        const referencesRaw = hdrs?.get('references')?.[0] ?? null
-        const inReplyTo = normalizeMessageId(inReplyToRaw)
-        const refsList: string[] = referencesRaw ? (referencesRaw.split(/\s+/).map((r) => normalizeMessageId(r)).filter(Boolean) as string[]) : []
-
-        const externalId = messageId ?? `uid-${acc.id}-${uid}`
-
-        const { data: existing } = await service
-          .from('inbox_messages')
-          .select('id')
-          .eq('imap_account_id', acc.id)
-          .eq('external_uid', uid)
-          .limit(1)
-        if (existing?.length) continue
-
-        let threadId: string
-
-        const refIds = [inReplyTo, ...refsList].filter(Boolean)
-        let found = false
-        for (const refId of refIds) {
-          if (!refId) continue
-          const { data: refMsg } = await service
-            .from('inbox_messages')
-            .select('thread_id')
-            .eq('imap_account_id', acc.id)
-            .eq('external_id', refId)
-            .limit(1)
-          if (refMsg?.[0]?.thread_id) {
-            threadId = refMsg[0].thread_id
-            found = true
-            break
-          }
+        // Thread matching: references → subject → new thread
+        let threadId: string | undefined
+        for (const refId of [p.inReplyTo, ...p.refsList]) {
+          if (refId && refMap.has(refId)) { threadId = refMap.get(refId); break }
         }
-
-        if (!found && subject) {
-          const normSubject = subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-          if (normSubject) {
-            const { data: recentThreads } = await service
-              .from('inbox_threads')
-              .select('id, subject, last_message_at')
-              .eq('org_id', acc.org_id)
-              .eq('channel', 'email')
-              .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
-              .order('last_message_at', { ascending: false })
-              .limit(50)
-            for (const t of recentThreads ?? []) {
-              const existingNorm = ((t as { subject?: string }).subject ?? '')
-                .replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '')
-                .trim()
-                .toLowerCase()
-              if (existingNorm === normSubject) {
-                threadId = (t as { id: string }).id
-                found = true
-                break
-              }
-            }
-          }
+        if (!threadId) {
+          const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+          if (normSubject) threadId = subjectThreadMap.get(normSubject)
         }
-        if (!found) {
-          const { data: newThread, error: threadErr } = await service
-            .from('inbox_threads')
-            .insert({
-              org_id: acc.org_id,
-              channel: 'email',
-              status: 'open',
-              subject: subject || '(No subject)',
-              last_message_at: date.toISOString(),
-            })
-            .select('id')
-            .single()
-          if (threadErr || !newThread) {
-            errors.push(`${acc.imap_username}: failed to create thread: ${(threadErr as Error)?.message}`)
-            continue
-          }
+        if (!threadId) {
+          const { data: newThread, error: threadErr } = await service.from('inbox_threads')
+            .insert({ org_id: acc.org_id, channel: 'email', status: 'open', subject: p.subject || '(No subject)', last_message_at: p.date.toISOString(), imap_account_id: acc.id, from_address: p.fromAddr })
+            .select('id').single()
+          if (threadErr || !newThread) { errors.push(`${acc.imap_username}: thread: ${threadErr?.message}`); continue }
           threadId = newThread.id
           threadsCreated++
+          const norm = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+          if (norm) subjectThreadMap.set(norm, threadId)
         } else {
-          await service
-            .from('inbox_threads')
-            .update({ last_message_at: date.toISOString(), updated_at: date.toISOString(), status: 'open' })
-            .eq('id', threadId!)
+          await service.from('inbox_threads')
+            .update({ last_message_at: p.date.toISOString(), updated_at: p.date.toISOString(), status: 'open' })
+            .eq('id', threadId)
         }
 
-        // Headers-only insert — body is null, fetched lazily when user opens the thread
-        const { error: msgErr } = await service.from('inbox_messages').insert({
-          thread_id: threadId!,
-          channel: 'email',
-          direction: 'inbound',
-          from_identifier: fromAddr,
-          to_identifier: toAddr,
-          body: null,
-          html_body: null,
-          external_id: messageId ?? externalId,
-          external_uid: uid,
-          imap_account_id: acc.id,
-          received_at: date.toISOString(),
+        // Track for future reference lookups within this batch
+        if (p.messageId) refMap.set(p.messageId, threadId)
+
+        insertRows.push({
+          thread_id: threadId, channel: 'email', direction: 'inbound',
+          from_identifier: p.fromAddr, to_identifier: p.toAddr,
+          body: null, html_body: null,
+          external_id: p.externalId, external_uid: p.uid,
+          imap_account_id: acc.id, received_at: p.date.toISOString(),
         })
-        if (msgErr) {
-          errors.push(`${acc.imap_username}: insert message: ${msgErr.message}`)
-          continue
-        }
+      }
 
-        messagesInserted++
+      // Batch insert all messages (unique index on imap_account_id+external_uid handles dedup)
+      if (insertRows.length > 0) {
+        const { error: batchErr, count } = await service.from('inbox_messages')
+          .insert(insertRows, { count: 'exact' })
+        if (batchErr) errors.push(`${acc.imap_username}: batch insert: ${batchErr.message}`)
+        else messagesInserted = count ?? insertRows.length
       }
 
       await service
