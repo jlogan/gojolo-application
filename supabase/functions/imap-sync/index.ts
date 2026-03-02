@@ -280,39 +280,28 @@ serve(async (req) => {
         }
       }
 
-      const MAX_BATCH = 25
-
       let range: string
       if (lastUid > 0) {
         range = `${lastUid + 1}:*`
       } else {
         const status = await client.status(mailboxPath, { uidNext: true })
         const uidNext = (status?.uidNext as number) ?? 1
-        const start = Math.max(1, uidNext - MAX_BATCH + 1)
+        const start = Math.max(1, uidNext - 199)
         range = `${start}:*`
       }
 
-      // First fetch just envelopes + UIDs (lightweight) to get the list
-      const envelopes = await client.fetchAll(range, { envelope: true, uid: true }, { uid: true })
+      // Fetch headers only (envelope + headers for threading) — no body/source download
+      const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references'], uid: true }, { uid: true })
 
-      // Sort by UID and limit batch size
       const sorted = envelopes
         .filter((m) => (m.uid as number) > lastUid)
         .sort((a, b) => (a.uid as number) - (b.uid as number))
-        .slice(0, MAX_BATCH)
 
       let highestUid = lastUid
       let threadsCreated = 0
       let messagesInserted = 0
 
-      // Process one message at a time to control memory
-      for (const envMsg of sorted) {
-        // Fetch full source for this single message
-        const fullMsgs = await client.fetchAll(
-          String(envMsg.uid), { envelope: true, source: true, uid: true }, { uid: true }
-        )
-        const msg = fullMsgs[0]
-        if (!msg) continue
+      for (const msg of sorted) {
         const uid = msg.uid as number
         if (uid > highestUid) highestUid = uid
 
@@ -321,14 +310,15 @@ serve(async (req) => {
         const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
         const subject = (envelope?.subject as string) ?? ''
         const date = envelope?.date ? new Date(envelope.date) : new Date()
-        const source = msg.source as Uint8Array | Buffer | undefined
-        const rawMessageId = source ? getHeader(source, 'Message-ID') : null
+
+        // Extract threading headers from the lightweight headers fetch
+        const hdrs = msg.headers as Map<string, string[]> | undefined
+        const rawMessageId = hdrs?.get('message-id')?.[0] ?? null
         const messageId = normalizeMessageId(rawMessageId)
-        const inReplyToRaw = source ? getHeader(source, 'In-Reply-To') : null
-        const referencesRaw = source ? getHeader(source, 'References') : null
+        const inReplyToRaw = hdrs?.get('in-reply-to')?.[0] ?? null
+        const referencesRaw = hdrs?.get('references')?.[0] ?? null
         const inReplyTo = normalizeMessageId(inReplyToRaw)
         const refsList: string[] = referencesRaw ? (referencesRaw.split(/\s+/).map((r) => normalizeMessageId(r)).filter(Boolean) as string[]) : []
-        const parsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
 
         const externalId = messageId ?? `uid-${acc.id}-${uid}`
 
@@ -408,47 +398,23 @@ serve(async (req) => {
             .eq('id', threadId!)
         }
 
-        let finalHtml = parsed.htmlBody
-        const inlineAtts = parsed.attachments.filter(a => a.cid)
-        if (finalHtml && inlineAtts.length > 0) {
-          for (const att of inlineAtts) {
-            const storagePath = `${acc.org_id}/${threadId!}/${Date.now()}-${att.filename}`
-            const { error: upErr } = await service.storage.from('inbox-attachments').upload(storagePath, att.content, { contentType: att.contentType })
-            if (!upErr) {
-              const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(storagePath)
-              finalHtml = finalHtml!.replace(new RegExp(`cid:${att.cid!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'), urlData.publicUrl)
-            }
-          }
-        }
-
-        const { data: insertedMsg, error: msgErr } = await service.from('inbox_messages').insert({
+        // Headers-only insert — body is null, fetched lazily when user opens the thread
+        const { error: msgErr } = await service.from('inbox_messages').insert({
           thread_id: threadId!,
           channel: 'email',
           direction: 'inbound',
           from_identifier: fromAddr,
           to_identifier: toAddr,
-          body: parsed.body,
-          html_body: finalHtml,
+          body: null,
+          html_body: null,
           external_id: messageId ?? externalId,
           external_uid: uid,
           imap_account_id: acc.id,
           received_at: date.toISOString(),
-        }).select('id').single()
+        })
         if (msgErr) {
           errors.push(`${acc.imap_username}: insert message: ${msgErr.message}`)
           continue
-        }
-
-        const fileAtts = parsed.attachments.filter(a => !a.cid)
-        for (const att of fileAtts) {
-          const storagePath = `${acc.org_id}/${threadId!}/${Date.now()}-${att.filename}`
-          const { error: upErr } = await service.storage.from('inbox-attachments').upload(storagePath, att.content, { contentType: att.contentType })
-          if (!upErr && insertedMsg) {
-            await service.from('inbox_attachments').insert({
-              message_id: insertedMsg.id, thread_id: threadId!, file_name: att.filename,
-              file_path: storagePath, file_size: att.content.length, content_type: att.contentType,
-            })
-          }
         }
 
         messagesInserted++
@@ -479,14 +445,11 @@ serve(async (req) => {
       if (trashLock) {
         try {
           const lastUidTrash = (acc as ImapAccountRow).last_fetched_uid_trash ?? 0
-          const trashRange = lastUidTrash > 0 ? `${lastUidTrash + 1}:*` : `${Math.max(1, (client.mailbox?.uidNext ?? 1) - MAX_BATCH)}:*`
-          const trashEnvelopes = await client.fetchAll(trashRange, { envelope: true, uid: true }, { uid: true })
-          const trashBatch = trashEnvelopes.filter(m => (m.uid as number) > lastUidTrash).sort((a, b) => (a.uid as number) - (b.uid as number)).slice(0, MAX_BATCH)
+          const trashRange = lastUidTrash > 0 ? `${lastUidTrash + 1}:*` : `${Math.max(1, (client.mailbox?.uidNext ?? 1) - 50)}:*`
+          const trashEnvelopes = await client.fetchAll(trashRange, { envelope: true, headers: ['message-id'], uid: true }, { uid: true })
+          const trashBatch = trashEnvelopes.filter(m => (m.uid as number) > lastUidTrash).sort((a, b) => (a.uid as number) - (b.uid as number))
           let highestTrashUid = lastUidTrash
-          for (const envMsg of trashBatch) {
-            const fullMsgs = await client.fetchAll(String(envMsg.uid), { envelope: true, source: true, uid: true }, { uid: true })
-            const msg = fullMsgs[0]
-            if (!msg) continue
+          for (const msg of trashBatch) {
             const uid = msg.uid as number
             if (uid > highestTrashUid) highestTrashUid = uid
             const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
@@ -494,10 +457,9 @@ serve(async (req) => {
             const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
             const subject = (envelope?.subject as string) ?? ''
             const date = envelope?.date ? new Date(envelope.date) : new Date()
-            const source = msg.source as Uint8Array | Buffer | undefined
-            const rawMessageId = source ? getHeader(source, 'Message-ID') : null
+            const hdrs = msg.headers as Map<string, string[]> | undefined
+            const rawMessageId = hdrs?.get('message-id')?.[0] ?? null
             const messageId = normalizeMessageId(rawMessageId)
-            const trashParsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
             const externalId = messageId ?? `trash-${acc.id}-${uid}`
 
             const { data: existingByMsgId } = messageId
@@ -541,8 +503,8 @@ serve(async (req) => {
               direction: 'inbound',
               from_identifier: fromAddr,
               to_identifier: toAddr,
-              body: trashParsed.body,
-              html_body: trashParsed.htmlBody,
+              body: null,
+              html_body: null,
               external_id: messageId ?? externalId,
               external_uid: uid,
               imap_account_id: acc.id,

@@ -178,12 +178,38 @@ export default function Inbox() {
     const { data } = await supabase.from('inbox_messages')
       .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
       .eq('thread_id', tid).order('received_at', { ascending: true })
-    setMessages((data as InboxMessage[]) ?? [])
+    const msgs = (data as InboxMessage[]) ?? []
+    setMessages(msgs)
     setMessagesLoading(false)
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+
     // Mark as read
     if (userId) {
       await supabase.from('inbox_thread_reads').upsert({ thread_id: tid, user_id: userId, last_read_at: new Date().toISOString() }, { onConflict: 'thread_id,user_id' })
+    }
+
+    // Lazy-load bodies for messages that haven't been fetched yet
+    const needBody = msgs.filter(m => m.body === null && m.html_body === null && m.direction === 'inbound')
+    if (needBody.length > 0) {
+      console.log(`[Inbox] Lazy-loading body for ${needBody.length} message(s)`)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) return
+
+      for (const m of needBody) {
+        try {
+          const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-fetch-body`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+            body: JSON.stringify({ messageId: m.id }),
+          })
+          const result = await res.json().catch(() => ({}))
+          if (result.body || result.htmlBody) {
+            setMessages(prev => prev.map(pm => pm.id === m.id ? { ...pm, body: result.body ?? pm.body, html_body: result.htmlBody ?? pm.html_body } : pm))
+          }
+        } catch (err) {
+          console.error(`[Inbox] Failed to lazy-load body for ${m.id}:`, err)
+        }
+      }
     }
   }, [userId])
 
