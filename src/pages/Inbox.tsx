@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -54,9 +54,23 @@ export default function Inbox() {
   const { currentOrg } = useOrg()
   const { user } = useAuth()
   const { threadId: urlThreadId } = useParams<{ threadId?: string }>()
+  const navigate = useNavigate()
   const [filter, setFilter] = useState<InboxFilter>('inbox')
   const [threads, setThreads] = useState<InboxThread[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(urlThreadId ?? null)
+
+  // If opened via direct URL, use "all" filter so the thread is always visible
+  const [filter_init] = useState(() => urlThreadId ? 'all' as InboxFilter : 'inbox' as InboxFilter)
+  useEffect(() => { if (urlThreadId) setFilter(filter_init) }, [])
+
+  // Update browser URL when thread selection changes
+  useEffect(() => {
+    const currentPath = window.location.pathname
+    const targetPath = selectedThreadId ? `/inbox/${selectedThreadId}` : '/inbox'
+    if (currentPath !== targetPath) {
+      navigate(targetPath, { replace: true })
+    }
+  }, [selectedThreadId, navigate])
   const [messages, setMessages] = useState<InboxMessage[]>([])
   const [comments, setComments] = useState<InboxComment[]>([])
   const [inboxUsers, setInboxUsers] = useState<InboxUser[]>([])
