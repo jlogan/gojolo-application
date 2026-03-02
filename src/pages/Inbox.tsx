@@ -10,6 +10,7 @@ import {
   Search, User, Circle, Link2,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
+import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
@@ -676,23 +677,23 @@ export default function Inbox() {
                       }
                       const m = item.data
                       const { html, content } = cleanMessageBody(m)
-                      const safe = content.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '').replace(/on\w+="[^"]*"/gi, '')
+                      const sanitized = html ? sanitizeEmailHtml(content) : content
                       return (
-                        <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden bg-surface-elevated/50">
-                          <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                        <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden">
+                          <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 bg-surface-elevated/50">
                             <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
                             {m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
                             {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
                             <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                           </header>
-                          <div className="p-4 text-gray-200">
+                          <div className="bg-white">
                             {html ? (
-                              <iframe title="Email" srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank"><style>body{margin:0;padding:0;font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;color:#e5e7eb;background:transparent;}a{color:#14b8a6;}img{max-width:100%;height:auto;}</style></head><body>${safe}</body></html>`}
-                                className="w-full border-0 rounded bg-transparent" sandbox="allow-same-origin"
+                              <iframe title="Email" srcDoc={buildEmailSrcDoc(sanitized)}
+                                className="w-full border-0 rounded-b" sandbox="allow-same-origin"
                                 onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
-                                style={{ minHeight: '80px' }} />
+                                style={{ minHeight: '80px', background: '#fff' }} />
                             ) : (
-                              <div className="text-sm whitespace-pre-wrap break-words">{content}</div>
+                              <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-800">{content}</div>
                             )}
                           </div>
                         </article>
