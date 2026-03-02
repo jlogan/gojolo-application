@@ -45,6 +45,10 @@ verify_jwt = false
 [functions.imap-flag-sync]
 verify_jwt = false
 
-# imap-idle: near-real-time IMAP IDLE sync. Called by cron every 1 minute.
+# imap-idle: near-real-time IMAP IDLE sync. Called by cron every 2 minutes.
 [functions.imap-idle]
+verify_jwt = false
+
+# imap-fetch-body: lazy-load email body on demand when user opens a thread.
+[functions.imap-fetch-body]
 verify_jwt = false
