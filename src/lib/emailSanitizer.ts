@@ -82,22 +82,47 @@ export function sanitizeEmailHtml(rawHtml: string): string {
 }
 
 /**
- * Build the full srcDoc for the email iframe.
- * Does NOT inject colors or backgrounds that would override the email's own styles.
- * Only adds minimal safety CSS.
+ * Detect if HTML email has its own background/color styling.
+ * If it does, we render on white (preserve original design).
+ * If not (plain/simple), we render with dark theme colors.
  */
-export function buildEmailSrcDoc(sanitizedHtml: string): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<base target="_blank">
+function hasOwnStyling(html: string): boolean {
+  if (/background(-color)?\s*:/i.test(html)) return true
+  if (/bgcolor\s*=/i.test(html)) return true
+  if (/<style[\s>]/i.test(html) && /(?:color|background|font-family)\s*:/i.test(html)) return true
+  if (/<table\b[^>]*(?:bgcolor|background|style\s*=\s*"[^"]*(?:background|color))/i.test(html)) return true
+  if (/<div\b[^>]*style\s*=\s*"[^"]*(?:background|color)/i.test(html)) return true
+  return false
+}
+
+/**
+ * Build the full srcDoc for the email iframe.
+ * - Rich HTML with own styling → white background, preserve email's CSS
+ * - Plain/simple HTML → dark background with light text (matches app theme)
+ */
+export function buildEmailSrcDoc(sanitizedHtml: string): { srcDoc: string; isDark: boolean } {
+  const rich = hasOwnStyling(sanitizedHtml)
+
+  if (rich) {
+    return {
+      isDark: false,
+      srcDoc: `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><base target="_blank">
+<style>img{max-width:100%;height:auto;}body{margin:0;padding:0;}</style>
+</head><body>${sanitizedHtml}</body></html>`,
+    }
+  }
+
+  return {
+    isDark: true,
+    srcDoc: `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><base target="_blank">
 <style>
-/* Minimal safety styles — do NOT override email's own colors/backgrounds */
-img { max-width: 100%; height: auto; }
-body { margin: 0; padding: 0; }
+body{margin:0;padding:12px;font-family:system-ui,sans-serif;font-size:14px;line-height:1.6;color:#e4e4e7;background:#0f0f0f;}
+a{color:#14b8a6;}
+img{max-width:100%;height:auto;}
+blockquote{margin:8px 0;padding:8px 12px;border-left:3px solid #2a2a2a;color:#a1a1aa;}
 </style>
-</head>
-<body>${sanitizedHtml}</body>
-</html>`
+</head><body>${sanitizedHtml}</body></html>`,
+  }
 }

@@ -799,16 +799,19 @@ export default function Inbox() {
                             {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
                             <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                           </header>
-                          <div className="bg-white">
-                            {html ? (
-                              <iframe title="Email" srcDoc={buildEmailSrcDoc(sanitized)}
-                                className="w-full border-0 rounded-b" sandbox="allow-same-origin"
-                                onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
-                                style={{ minHeight: '80px', background: '#fff' }} />
-                            ) : (
-                              <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-800">{content}</div>
-                            )}
-                          </div>
+                          {html ? (() => {
+                            const { srcDoc, isDark } = buildEmailSrcDoc(sanitized)
+                            return (
+                              <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
+                                <iframe title="Email" srcDoc={srcDoc}
+                                  className="w-full border-0 rounded-b" sandbox="allow-same-origin"
+                                  onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
+                                  style={{ minHeight: '80px', background: isDark ? '#0f0f0f' : '#fff' }} />
+                              </div>
+                            )
+                          })() : (
+                            <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
+                          )}
                         </article>
                       )
                     })
