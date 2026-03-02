@@ -7,7 +7,7 @@ import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive,
   List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
   RotateCcw, Send, RefreshCw, Paperclip, Download, AtSign,
-  Search, User, Circle,
+  Search, User, Circle, Link2,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 
@@ -88,8 +88,10 @@ export default function Inbox() {
 
   // Contacts, attachments, all contacts for autocomplete
   const [threadContacts, setThreadContacts] = useState<ContactMatch[]>([])
-  const [_allContacts, setAllContacts] = useState<{ id: string; name: string; email: string | null }[]>([])
+  const [allContacts, setAllContacts] = useState<{ id: string; name: string; email: string | null }[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [toSuggestions, setToSuggestions] = useState<{ name: string; email: string }[]>([])
+  const [showToSuggestions, setShowToSuggestions] = useState(false)
 
   // Drag state
   const [isDragging, setIsDragging] = useState(false)
@@ -370,6 +372,23 @@ export default function Inbox() {
 
   const insertMention = (u: InboxUser) => { setCommentText(prev => prev + `@${u.display_name ?? u.email ?? 'user'} `); setShowMentionPicker(false) }
 
+  const updateToSuggestions = (val: string) => {
+    setReplyTo(val)
+    const lastPart = val.split(',').pop()?.trim().toLowerCase() ?? ''
+    if (lastPart.length < 2) { setShowToSuggestions(false); return }
+    const matches = allContacts.filter(c => c.email && (c.name.toLowerCase().includes(lastPart) || c.email.toLowerCase().includes(lastPart))).slice(0, 5)
+    setToSuggestions(matches.map(c => ({ name: c.name, email: c.email! })))
+    setShowToSuggestions(matches.length > 0)
+  }
+
+  const selectToSuggestion = (email: string) => {
+    const parts = replyTo.split(',').map(s => s.trim()).filter(Boolean)
+    parts.pop()
+    parts.push(email)
+    setReplyTo(parts.join(', ') + ', ')
+    setShowToSuggestions(false)
+  }
+
   const handleCreateContact = async (email: string) => {
     if (!currentOrg?.id || !email) return
     const name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -425,9 +444,22 @@ export default function Inbox() {
             </select>
           </div>
         )}
-        <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">To</label>
-          <input type="text" value={replyTo} onChange={e => setReplyTo(e.target.value)} placeholder="recipient@example.com"
-            className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+        <div className="flex items-center gap-2 relative"><label className="text-xs text-gray-500 w-12 shrink-0">To</label>
+          <div className="flex-1 relative">
+            <input type="text" value={replyTo} onChange={e => updateToSuggestions(e.target.value)} onBlur={() => setTimeout(() => setShowToSuggestions(false), 200)} placeholder="recipient@example.com"
+              className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+            {showToSuggestions && (
+              <div className="absolute top-full left-0 mt-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-full z-20">
+                {toSuggestions.map(s => (
+                  <button key={s.email} type="button" onMouseDown={() => selectToSuggestion(s.email)}
+                    className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted flex items-center justify-between">
+                    <span>{s.name}</span>
+                    <span className="text-xs text-gray-500">{s.email}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
         </div>
         {showCcBcc && (
@@ -567,6 +599,10 @@ export default function Inbox() {
                   <button type="button" onClick={() => { setSelectedThreadId(null); setReplyMode(null) }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                   <h2 className="text-white font-medium truncate flex-1 text-sm">{selectedThread.subject || '(No subject)'}</h2>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${selectedThread.status === 'open' ? 'bg-accent/20 text-accent' : selectedThread.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{selectedThread.status}</span>
+                  <button type="button" onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/inbox/${selectedThread.id}`); toast('Thread link copied') }}
+                    className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted" title="Copy thread link">
+                    <Link2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <select value={currentAssigneeId} onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}

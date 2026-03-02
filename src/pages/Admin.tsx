@@ -773,22 +773,35 @@ export default function Admin() {
 
           {section === 'imap' && imapView === 'list' && (
             <>
-              <h2 className="text-xl font-semibold text-white mb-2">IMAP accounts</h2>
+              <h2 className="text-xl font-semibold text-white mb-2">Email accounts</h2>
               <p className="text-gray-400 text-sm mb-6">
-                Email accounts to monitor in the Inbox. For Gmail use an App Password (Account → Security → 2-Step Verification → App passwords).
+                Connect email accounts to monitor in the Inbox.
               </p>
-              <div className="mb-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    cancelEditImap()
-                    setImapView('form')
-                  }}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90"
-                >
-                  <Plus className="w-4 h-4" />
-                  Add account
+              <div className="flex gap-3 mb-6">
+                <button type="button" onClick={() => {
+                  cancelEditImap()
+                  setImapHost('imap.gmail.com'); setImapPort(993); setImapEncryption('ssl')
+                  setSmtpHost('smtp.gmail.com'); setSmtpPort(587); setSmtpEncryption('tls')
+                  setImapView('form')
+                }}
+                  className="flex-1 flex flex-col items-center gap-2 p-4 rounded-lg border border-border hover:border-accent/50 hover:bg-surface-muted/50 transition-colors cursor-pointer">
+                  <svg className="w-8 h-8" viewBox="0 0 24 24"><path fill="#EA4335" d="M1 5.64L12 13.14L23 5.64V18.36C23 19.26 22.26 20 21.36 20H2.64C1.74 20 1 19.26 1 18.36V5.64Z"/><path fill="#4285F4" d="M23 5.64L12 13.14L1 5.64L12 0L23 5.64Z" opacity="0.8"/></svg>
+                  <span className="text-sm font-medium text-white">Google Gmail</span>
+                  <span className="text-xs text-gray-500">App Password required</span>
                 </button>
+                <button type="button" onClick={() => {
+                  cancelEditImap()
+                  setImapHost(''); setImapPort(993); setImapEncryption('ssl')
+                  setSmtpHost(''); setSmtpPort(587); setSmtpEncryption('tls')
+                  setImapView('form')
+                }}
+                  className="flex-1 flex flex-col items-center gap-2 p-4 rounded-lg border border-border hover:border-accent/50 hover:bg-surface-muted/50 transition-colors cursor-pointer">
+                  <Mail className="w-8 h-8 text-gray-400" />
+                  <span className="text-sm font-medium text-white">Other IMAP</span>
+                  <span className="text-xs text-gray-500">Custom server settings</span>
+                </button>
+              </div>
+              <div>
               </div>
               <div className="rounded-lg border border-border bg-surface-elevated">
                 {imapAccounts.length === 0 ? (
@@ -844,27 +857,10 @@ export default function Admin() {
 
           {section === 'imap' && imapView === 'form' && (
             <>
-              <h2 className="text-xl font-semibold text-white mb-2">{editingImapId ? 'Edit IMAP account' : 'Add IMAP account'}</h2>
+              <h2 className="text-xl font-semibold text-white mb-2">{editingImapId ? 'Edit account' : 'Add email account'}</h2>
               <p className="text-gray-400 text-sm mb-6">
-                For Gmail use an App Password (Account → Security → 2-Step Verification → App passwords).
+                {imapHost.includes('gmail.com') ? 'Gmail detected — only email and App Password are needed. Get your App Password from Account → Security → 2-Step Verification → App passwords.' : 'Enter your IMAP and SMTP server details below.'}
               </p>
-              {!editingImapId && (
-                <div className="flex gap-2 mb-4">
-                  {[
-                    { label: 'Google / Gmail', imap: 'imap.gmail.com', imapPort: 993, enc: 'ssl' as const, smtp: 'smtp.gmail.com', smtpPort: 587, smtpEnc: 'tls' as const },
-                    { label: 'Outlook / 365', imap: 'outlook.office365.com', imapPort: 993, enc: 'ssl' as const, smtp: 'smtp.office365.com', smtpPort: 587, smtpEnc: 'tls' as const },
-                    { label: 'Yahoo', imap: 'imap.mail.yahoo.com', imapPort: 993, enc: 'ssl' as const, smtp: 'smtp.mail.yahoo.com', smtpPort: 465, smtpEnc: 'ssl' as const },
-                  ].map(preset => (
-                    <button key={preset.label} type="button" onClick={() => {
-                      setImapHost(preset.imap); setImapPort(preset.imapPort); setImapEncryption(preset.enc)
-                      setSmtpHost(preset.smtp); setSmtpPort(preset.smtpPort); setSmtpEncryption(preset.smtpEnc)
-                    }}
-                      className="px-3 py-2 rounded-lg border border-border text-xs font-medium text-gray-300 hover:bg-surface-muted hover:border-accent/50 transition-colors">
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-              )}
               <form onSubmit={handleAddImap} className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
                 <div>
                   <label htmlFor="admin-imap-label" className="block text-xs font-medium text-gray-500 mb-1">Label (optional)</label>
@@ -878,9 +874,9 @@ export default function Admin() {
                   />
                 </div>
 
-                <h3 className="text-sm font-medium text-white pt-1">IMAP settings</h3>
+                <h3 className="text-sm font-medium text-white pt-1">{imapHost.includes('gmail.com') ? 'Gmail account' : 'IMAP settings'}</h3>
                 <div>
-                  <label htmlFor="admin-imap-username" className="block text-xs font-medium text-gray-500 mb-1">IMAP username</label>
+                  <label htmlFor="admin-imap-username" className="block text-xs font-medium text-gray-500 mb-1">{imapHost.includes('gmail.com') ? 'Email address' : 'IMAP username'}</label>
                   <input
                     id="admin-imap-username"
                     type="text"
@@ -904,6 +900,7 @@ export default function Admin() {
                   />
                   <p className="text-gray-500 text-xs mt-1">Other addresses that send and receive through this account (one per line or comma-separated). You can send as and receive mail to any of these when replying.</p>
                 </div>
+                {!imapHost.includes('gmail.com') && (<>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="admin-imap-host" className="block text-xs font-medium text-gray-500 mb-1">IMAP host</label>
@@ -943,8 +940,9 @@ export default function Admin() {
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" aria-hidden />
                   </div>
                 </div>
+                </>)}
                 <div>
-                  <label htmlFor="admin-imap-password" className="block text-xs font-medium text-gray-500 mb-1">IMAP password</label>
+                  <label htmlFor="admin-imap-password" className="block text-xs font-medium text-gray-500 mb-1">{imapHost.includes('gmail.com') ? 'App Password' : 'IMAP password'}</label>
                   <input
                     id="admin-imap-password"
                     type="password"
@@ -969,8 +967,10 @@ export default function Admin() {
                   <p className={`text-sm ${imapTestMessage.includes('successful') ? 'text-accent' : 'text-red-400'}`}>{imapTestMessage}</p>
                 )}
 
+                {!imapHost.includes('gmail.com') && (
+                <>
                 <h3 className="text-sm font-medium text-white pt-2 border-t border-border mt-4">SMTP settings</h3>
-                <p className="text-gray-500 text-xs">For sending replies from this account. Optional.</p>
+                <p className="text-gray-500 text-xs">For sending replies from this account.</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label htmlFor="admin-smtp-host" className="block text-xs font-medium text-gray-500 mb-1">SMTP host</label>
@@ -1046,6 +1046,8 @@ export default function Admin() {
                 </div>
                 {smtpTestMessage && (
                   <p className={`text-sm ${smtpTestMessage.includes('successful') ? 'text-accent' : 'text-red-400'}`}>{smtpTestMessage}</p>
+                )}
+                </>
                 )}
 
                 {imapMessage && <p className={`text-sm ${imapMessage.includes('added') || imapMessage.includes('updated') || imapMessage.includes('removed') ? 'text-accent' : 'text-red-400'}`}>{imapMessage}</p>}
