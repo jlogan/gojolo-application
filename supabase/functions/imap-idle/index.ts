@@ -123,20 +123,24 @@ Deno.serve(async (req: Request) => {
 
         gotNew = await idlePromise
 
-        // Whether we got a notification or timed out, fetch any new messages since last UID
+        const MAX_BATCH = 25
         const lastUid = acc.last_fetched_uid ?? 0
         const range = lastUid > 0 ? `${lastUid + 1}:*` : (() => {
-          const start = Math.max(1, (client.mailbox?.uidNext ?? 1) - 20)
+          const start = Math.max(1, (client.mailbox?.uidNext ?? 1) - MAX_BATCH)
           return `${start}:*`
         })()
 
-        const messages = await client.fetchAll(range, { envelope: true, source: true, uid: true }, { uid: true })
+        // Fetch envelopes first (lightweight), then full source one at a time
+        const envelopes = await client.fetchAll(range, { envelope: true, uid: true }, { uid: true })
+        const batch = envelopes.filter(m => (m.uid as number) > lastUid).sort((a, b) => (a.uid as number) - (b.uid as number)).slice(0, MAX_BATCH)
         let highestUid = lastUid
         let inserted = 0
 
-        for (const msg of messages) {
+        for (const envMsg of batch) {
+          const fullMsgs = await client.fetchAll(String(envMsg.uid), { envelope: true, source: true, uid: true }, { uid: true })
+          const msg = fullMsgs[0]
+          if (!msg) continue
           const uid = msg.uid as number
-          if (uid <= lastUid) continue
           if (uid > highestUid) highestUid = uid
 
           const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
