@@ -218,6 +218,12 @@ export default function Inbox() {
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
+  // Auto-refresh polling (30s fallback for real-time)
+  useEffect(() => {
+    const interval = setInterval(() => { fetchThreads() }, 30_000)
+    return () => clearInterval(interval)
+  }, [fetchThreads])
+
   // Realtime
   useEffect(() => {
     if (!currentOrg?.id) return
