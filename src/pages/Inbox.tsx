@@ -710,7 +710,6 @@ export default function Inbox() {
           ))}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${realtimeConnected ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} title={realtimeConnected ? 'Live updates active' : 'Reconnecting...'} />
           <button type="button" onClick={handleSync} disabled={syncing} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50" title="Sync emails">
             <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
           </button>
