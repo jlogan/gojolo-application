@@ -263,6 +263,7 @@ export default function AppShell() {
               <Route path="/companies/:id" element={<CompanyDetail />} />
               <Route path="/companies/:id/edit" element={<CompanyForm />} />
               <Route path="/inbox" element={<InboxPage />} />
+              <Route path="/inbox/:threadId" element={<InboxPage />} />
               <Route path="/profile" element={<Profile />} />
               <Route path="/settings" element={<OrgSettings />} />
               <Route path="/organizations" element={<OrganizationsList />} />

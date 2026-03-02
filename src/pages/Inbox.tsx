@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
-  Inbox as InboxIcon, User, Mail, MessageSquare, Check, Archive,
+  Inbox as InboxIcon, Mail, MessageSquare, Check, Archive,
   List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
-  RotateCcw, Send, RefreshCw, UserPlus, Paperclip, Download, AtSign,
+  RotateCcw, Send, RefreshCw, Paperclip, Download, AtSign,
+  Search, User, Circle,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 
@@ -27,31 +28,34 @@ type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
   mentions: string[] | null; created_at: string; display_name?: string | null
 }
-type Attachment = {
-  id: string; message_id: string | null; thread_id: string
-  file_name: string; file_path: string; file_size: number | null; created_at: string
-}
-type TimelineItem =
-  | { kind: 'message'; data: InboxMessage; ts: string }
-  | { kind: 'comment'; data: InboxComment; ts: string }
+type Attachment = { id: string; message_id: string | null; thread_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string }
+type TimelineItem = { kind: 'message'; data: InboxMessage; ts: string } | { kind: 'comment'; data: InboxComment; ts: string }
 type InboxUser = { user_id: string; display_name: string | null; email: string | null }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
 type ContactMatch = { contact_id: string; name: string; email: string | null }
+type ReadStatus = { thread_id: string; last_read_at: string }
 
 const FILTERS: { id: InboxFilter; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'inbox', label: 'Inbox', icon: InboxIcon },
-  { id: 'assigned', label: 'Assigned to me', icon: User },
+  { id: 'assigned', label: 'Mine', icon: User },
   { id: 'closed', label: 'Closed', icon: Check },
   { id: 'trash', label: 'Trash', icon: Archive },
   { id: 'all', label: 'All', icon: List },
 ]
 
+// Resolve email to contact name
+function resolveEmail(email: string, contacts: ContactMatch[]): { name: string | null; contactId: string | null } {
+  const match = contacts.find(c => c.email?.toLowerCase() === email?.toLowerCase())
+  return match ? { name: match.name, contactId: match.contact_id } : { name: null, contactId: null }
+}
+
 export default function Inbox() {
   const { currentOrg } = useOrg()
   const { user } = useAuth()
-  const [filter, setFilter] = useState<InboxFilter>('all')
+  const { threadId: urlThreadId } = useParams<{ threadId?: string }>()
+  const [filter, setFilter] = useState<InboxFilter>('inbox')
   const [threads, setThreads] = useState<InboxThread[]>([])
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(urlThreadId ?? null)
   const [messages, setMessages] = useState<InboxMessage[]>([])
   const [comments, setComments] = useState<InboxComment[]>([])
   const [inboxUsers, setInboxUsers] = useState<InboxUser[]>([])
@@ -61,6 +65,10 @@ export default function Inbox() {
   const [actionLoading, setActionLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+
+  // Read tracking
+  const [readStatuses, setReadStatuses] = useState<ReadStatus[]>([])
 
   // Reply
   const [replyMode, setReplyMode] = useState<'reply' | 'reply_all' | 'forward' | 'compose' | null>(null)
@@ -78,9 +86,13 @@ export default function Inbox() {
   const [commentText, setCommentText] = useState('')
   const [showMentionPicker, setShowMentionPicker] = useState(false)
 
-  // Contacts & attachments
+  // Contacts, attachments, all contacts for autocomplete
   const [threadContacts, setThreadContacts] = useState<ContactMatch[]>([])
+  const [_allContacts, setAllContacts] = useState<{ id: string; name: string; email: string | null }[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
+
+  // Drag state
+  const [isDragging, setIsDragging] = useState(false)
 
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
@@ -118,6 +130,7 @@ export default function Inbox() {
     ...comments.map(c => ({ kind: 'comment' as const, data: c, ts: c.created_at })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
 
+  // Data fetching
   const fetchThreads = useCallback(async () => {
     if (!currentOrg?.id || !userId) return
     setLoading(true)
@@ -148,7 +161,11 @@ export default function Inbox() {
     setMessages((data as InboxMessage[]) ?? [])
     setMessagesLoading(false)
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
-  }, [])
+    // Mark as read
+    if (userId) {
+      await supabase.from('inbox_thread_reads').upsert({ thread_id: tid, user_id: userId, last_read_at: new Date().toISOString() }, { onConflict: 'thread_id,user_id' })
+    }
+  }, [userId])
 
   const fetchComments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
@@ -176,25 +193,26 @@ export default function Inbox() {
     setAttachments((data as Attachment[]) ?? [])
   }, [])
 
-  // Load inbox users (anyone with inbox.view permission)
+  // Load inbox users, accounts, all contacts, read statuses
   useEffect(() => {
     if (!currentOrg?.id) return
     supabase.rpc('org_users_with_permission', { p_org_id: currentOrg.id, p_permission: 'inbox.view' })
-      .then(({ data }) => {
-        setInboxUsers((data ?? []) as InboxUser[])
-      })
-  }, [currentOrg?.id])
-
-  // Load IMAP accounts
-  useEffect(() => {
-    if (!currentOrg?.id) return
+      .then(({ data }) => setInboxUsers((data ?? []) as InboxUser[]))
     supabase.from('imap_accounts').select('id, email, label, addresses').eq('org_id', currentOrg.id).eq('is_active', true)
       .then(({ data }) => {
         const accs = (data as ImapAccount[]) ?? []
         setImapAccounts(accs)
         if (accs.length > 0 && !selectedAccountId) setSelectedAccountId(accs[0].id)
       })
+    supabase.from('contacts').select('id, name, email').eq('org_id', currentOrg.id).order('name')
+      .then(({ data }) => setAllContacts((data as { id: string; name: string; email: string | null }[]) ?? []))
   }, [currentOrg?.id])
+
+  useEffect(() => {
+    if (!userId) return
+    supabase.from('inbox_thread_reads').select('thread_id, last_read_at').eq('user_id', userId)
+      .then(({ data }) => setReadStatuses((data as ReadStatus[]) ?? []))
+  }, [userId])
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
@@ -224,6 +242,17 @@ export default function Inbox() {
   const currentAssigneeId = (selectedThread?.inbox_thread_assignments?.[0] as { user_id?: string } | undefined)?.user_id ?? ''
   const toast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), 3000) }
 
+  const isUnread = (t: InboxThread) => {
+    const readStatus = readStatuses.find(r => r.thread_id === t.id)
+    if (!readStatus) return true
+    return new Date(t.last_message_at) > new Date(readStatus.last_read_at)
+  }
+
+  // Filtered threads by search
+  const filteredThreads = searchQuery.trim()
+    ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
+    : threads
+
   // Sync
   const handleSync = async () => {
     if (!currentOrg?.id || syncing) return
@@ -237,19 +266,16 @@ export default function Inbox() {
         body: JSON.stringify({ orgId: currentOrg.id }),
       })
       const data = await res.json().catch(() => ({}))
-      const inserted = data?.messagesInserted ?? 0
-      toast(inserted > 0 ? `Synced ${inserted} new message(s)` : 'No new messages')
+      toast(data?.messagesInserted > 0 ? `Synced ${data.messagesInserted} new message(s)` : 'No new messages')
     } catch (e) { toast((e as Error).message) }
-    setSyncing(false)
-    fetchThreads()
+    setSyncing(false); fetchThreads()
   }
 
   const handleAssignTo = async (uid: string) => {
     if (!selectedThreadId) return
     setActionLoading(true)
     await supabase.from('inbox_thread_assignments').upsert({ thread_id: selectedThreadId, user_id: uid }, { onConflict: 'thread_id' })
-    await fetchThreads(); setActionLoading(false)
-    toast(`Assigned to ${getUserName(uid)}`)
+    await fetchThreads(); setActionLoading(false); toast(`Assigned to ${getUserName(uid)}`)
   }
 
   const handleUpdateStatus = async (status: string) => {
@@ -262,15 +288,13 @@ export default function Inbox() {
     else toast('Thread re-opened')
   }
 
-  // Get all sendable addresses from IMAP accounts
   const getSendableAddresses = (): { accountId: string; email: string; label: string }[] => {
     const addrs: { accountId: string; email: string; label: string }[] = []
     for (const acc of imapAccounts) {
       addrs.push({ accountId: acc.id, email: acc.email, label: acc.label ? `${acc.label} <${acc.email}>` : acc.email })
       for (const alias of acc.addresses ?? []) {
-        if (alias.toLowerCase() !== acc.email.toLowerCase()) {
+        if (alias.toLowerCase() !== acc.email.toLowerCase())
           addrs.push({ accountId: acc.id, email: alias, label: `${acc.label ?? 'Alias'} <${alias}>` })
-        }
       }
     }
     return addrs
@@ -283,15 +307,14 @@ export default function Inbox() {
       const last = messages.filter(m => m.direction === 'inbound').pop() ?? messages[messages.length - 1]
       setReplyTo(mode === 'forward' ? '' : last.from_identifier)
       const ccVal = mode === 'reply_all' ? [last.to_identifier, last.cc].filter(Boolean).join(', ') : ''
-      setReplyCc(ccVal); setReplyBcc('')
-      setShowCcBcc(!!ccVal)
+      setReplyCc(ccVal); setReplyBcc(''); setShowCcBcc(!!ccVal)
       const prefix = mode === 'forward' ? 'Fwd: ' : 'Re: '
       const subj = selectedThread.subject ?? ''
       setReplySubject(subj.startsWith(prefix) ? subj : prefix + subj)
       if (mode === 'forward') {
         const { content } = cleanMessageBody(last)
         setReplyHtml(`<br/><br/>---------- Forwarded message ----------<br/>${content}`)
-      } else { setReplyHtml('') }
+      } else setReplyHtml('')
       setReplyAttachments([])
     }
     setReplyMode(mode)
@@ -304,8 +327,6 @@ export default function Inbox() {
     setSendingReply(true)
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) { toast('Please sign in again'); setSendingReply(false); return }
-
-    // Upload attachments first
     let attachmentRefs: { fileName: string; filePath: string; contentType: string }[] = []
     if (replyAttachments.length > 0 && currentOrg?.id) {
       for (const file of replyAttachments) {
@@ -314,7 +335,6 @@ export default function Inbox() {
         if (!error) attachmentRefs.push({ fileName: file.name, filePath: path, contentType: file.type })
       }
     }
-
     const payload: Record<string, unknown> = {
       body: replyHtml, subject: replySubject, to: replyTo.trim(),
       cc: replyCc.trim() || undefined, bcc: replyBcc.trim() || undefined,
@@ -323,7 +343,6 @@ export default function Inbox() {
     }
     if (selectedThreadId && replyMode !== 'compose' && replyMode !== 'forward') payload.threadId = selectedThreadId
     else payload.compose = true
-
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
@@ -333,48 +352,122 @@ export default function Inbox() {
     setSendingReply(false)
     if (data?.error) { toast(data.error); return }
     setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
-    toast('Sent')
-    fetchThreads()
+    toast('Sent'); fetchThreads()
     if (selectedThreadId) fetchMessages(selectedThreadId)
   }
 
-  // Comment
   const handleAddComment = async () => {
     if (!selectedThreadId || !commentText.trim() || !userId) return
     const mentionRegex = /@(\w+)/g
     const mentionNames = [...commentText.matchAll(mentionRegex)].map(m => m[1].toLowerCase())
-    const mentionIds = inboxUsers.filter(u => mentionNames.some(n => u.display_name?.toLowerCase().includes(n))).map(u => u.user_id)
+    const mentionIds = inboxUsers.filter(u => mentionNames.some(n => u.display_name?.toLowerCase().includes(n) || u.email?.toLowerCase().includes(n))).map(u => u.user_id)
     await supabase.from('inbox_comments').insert({
       thread_id: selectedThreadId, user_id: userId, content: commentText.trim(),
       mentions: mentionIds.length > 0 ? mentionIds : null,
     })
-    setCommentText('')
-    fetchComments(selectedThreadId)
+    setCommentText(''); fetchComments(selectedThreadId)
   }
 
-  const insertMention = (u: InboxUser) => {
-    setCommentText(prev => prev + `@${u.display_name ?? u.email ?? 'user'} `)
-    setShowMentionPicker(false)
-  }
+  const insertMention = (u: InboxUser) => { setCommentText(prev => prev + `@${u.display_name ?? u.email ?? 'user'} `); setShowMentionPicker(false) }
 
-  const handleCreateContact = async () => {
-    if (!selectedThread || !currentOrg?.id) return
-    const email = selectedThread.from_address || messages.find(m => m.direction === 'inbound')?.from_identifier
-    if (!email) { toast('No email found'); return }
+  const handleCreateContact = async (email: string) => {
+    if (!currentOrg?.id || !email) return
     const name = email.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
     const { data, error } = await supabase.from('contacts').insert({ org_id: currentOrg.id, name, email, type: 'primary' }).select('id').single()
     if (error) { toast(error.message); return }
-    if (data) {
-      await supabase.from('inbox_thread_contacts').insert({ thread_id: selectedThread.id, contact_id: (data as { id: string }).id })
-      fetchThreadContacts(selectedThread.id); toast(`Contact "${name}" created`)
+    if (data && selectedThreadId) {
+      await supabase.from('inbox_thread_contacts').insert({ thread_id: selectedThreadId, contact_id: (data as { id: string }).id })
+      fetchThreadContacts(selectedThreadId); toast(`Contact created`)
     }
   }
 
+  // File drop handling
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); if (e.dataTransfer.files.length > 0) setReplyAttachments(prev => [...prev, ...Array.from(e.dataTransfer.files)]) }
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true) }
+  const handleDragLeave = () => setIsDragging(false)
+
   const getDownloadUrl = (path: string) => supabase.storage.from('inbox-attachments').getPublicUrl(path).data.publicUrl
+
+  // Render email address with contact linking
+  const renderEmail = (email: string) => {
+    const { name, contactId } = resolveEmail(email, threadContacts)
+    if (name && contactId) {
+      return <Link to={`/contacts/${contactId}`} className="text-accent hover:underline" title={email}>{name} &lt;{email}&gt;</Link>
+    }
+    return (
+      <span className="group inline-flex items-center gap-1">
+        <span className="text-gray-300">{email}</span>
+        <button type="button" onClick={() => handleCreateContact(email)} className="opacity-0 group-hover:opacity-100 transition-opacity" title="Create contact">
+          <Plus className="w-3 h-3 text-gray-500 hover:text-accent" />
+        </button>
+      </span>
+    )
+  }
 
   if (!currentOrg) return <div className="p-4 md:p-6"><p className="text-gray-400">Select a workspace.</p></div>
 
   const sendableAddresses = getSendableAddresses()
+
+  // Compose reply form (shared between compose mode and inline reply)
+  const renderReplyForm = (isCompose: boolean) => (
+    <div className={`rounded-lg border ${isDragging ? 'border-accent bg-accent/5' : 'border-accent/30 bg-surface-elevated'} p-4 space-y-3`}
+      onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+      {isDragging && <div className="text-center py-4 text-accent text-sm font-medium">Drop files to attach</div>}
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-accent font-medium">{replyMode === 'reply' ? 'Reply' : replyMode === 'reply_all' ? 'Reply All' : replyMode === 'forward' ? 'Forward' : 'New message'}</span>
+      </div>
+      <div className="space-y-2">
+        {sendableAddresses.length > 1 && (
+          <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">From</label>
+            <select value={selectedAccountId} onChange={e => setSelectedAccountId(e.target.value)}
+              className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
+              {sendableAddresses.map((a, i) => <option key={i} value={a.accountId}>{a.label}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">To</label>
+          <input type="text" value={replyTo} onChange={e => setReplyTo(e.target.value)} placeholder="recipient@example.com"
+            className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+          {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
+        </div>
+        {showCcBcc && (
+          <>
+            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Cc</label>
+              <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)}
+                className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
+            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Bcc</label>
+              <input type="text" value={replyBcc} onChange={e => setReplyBcc(e.target.value)}
+                className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
+          </>
+        )}
+        {isCompose && (
+          <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Subject</label>
+            <input type="text" value={replySubject} onChange={e => setReplySubject(e.target.value)} placeholder="Subject"
+              className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
+        )}
+      </div>
+      <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your message…" autofocus />
+      {replyAttachments.length > 0 && (
+        <div className="flex flex-wrap gap-2">{replyAttachments.map((f, i) => (
+          <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300 inline-flex items-center gap-1">
+            <Paperclip className="w-3 h-3" /> {f.name}
+            <button type="button" onClick={() => setReplyAttachments(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 ml-1">&times;</button>
+          </span>
+        ))}</div>
+      )}
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+          <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
+        </button>
+        <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
+          <Paperclip className="w-4 h-4" />
+        </button>
+        <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
+        <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
+      </div>
+    </div>
+  )
 
   return (
     <div className="flex flex-col h-full min-h-0" data-testid="inbox-page">
@@ -405,26 +498,41 @@ export default function Inbox() {
       <div className="flex flex-1 min-h-0">
         {/* Thread list */}
         <div className={`${selectedThreadId || replyMode === 'compose' ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-col border-r border-border bg-surface-muted/20 shrink-0`}>
+          {/* Search */}
+          <div className="p-2 border-b border-border">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search threads…"
+                className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+            </div>
+          </div>
+
           {loading ? <div className="p-4 text-gray-400 text-sm">Loading…</div>
-          : threads.length === 0 ? (
+          : filteredThreads.length === 0 ? (
             <div className="p-4 text-gray-400 text-sm text-center mt-8"><InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" /><p>No threads</p></div>
           ) : (
             <ul className="overflow-y-auto divide-y divide-border flex-1">
-              {threads.map(t => {
+              {filteredThreads.map(t => {
                 const assignee = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments[0] : null
+                const unread = isUnread(t)
                 return (
                   <li key={t.id}>
                     <button type="button" onClick={() => { setSelectedThreadId(t.id); setReplyMode(null) }}
                       className={`w-full text-left px-4 py-3 transition-colors ${selectedThreadId === t.id ? 'bg-surface-muted' : 'hover:bg-surface-muted/50'}`}>
                       <div className="flex items-start gap-2">
+                        {/* Unread indicator */}
+                        <div className="mt-2 shrink-0">
+                          {unread ? <Circle className="w-2 h-2 fill-accent text-accent" /> : <div className="w-2 h-2" />}
+                        </div>
                         <span className="mt-1 shrink-0 text-gray-500">{t.channel === 'email' ? <Mail className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}</span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline justify-between gap-2">
-                            <p className="text-sm font-medium text-white truncate">{t.subject || '(No subject)'}</p>
+                            <p className={`text-sm truncate ${unread ? 'font-semibold text-white' : 'font-medium text-gray-300'}`}>{t.subject || '(No subject)'}</p>
                             <span className="text-[10px] text-gray-500 shrink-0">{new Date(t.last_message_at).toLocaleDateString()}</span>
                           </div>
                           <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
                           <div className="flex items-center gap-2 mt-1">
+                            {t.status === 'open' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">open</span>}
                             {t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
                             {t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
                             {assignee && <span className="text-[10px] text-gray-500">{getUserName(assignee.user_id)}</span>}
@@ -449,51 +557,7 @@ export default function Inbox() {
                 <button type="button" onClick={() => setReplyMode(null)} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                 <h2 className="text-white font-medium text-sm">New message</h2>
               </div>
-              <div className="flex-1 overflow-y-auto p-4">
-                <div className="space-y-2 mb-4 max-w-2xl">
-                  {sendableAddresses.length > 1 && (
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs text-gray-500 w-14 shrink-0">From</label>
-                      <select value={selectedAccountId} onChange={e => setSelectedAccountId(e.target.value)}
-                        className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
-                        {sendableAddresses.map((a, i) => <option key={i} value={a.accountId}>{a.label}</option>)}
-                      </select>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-500 w-14 shrink-0">To</label>
-                    <input type="text" value={replyTo} onChange={e => setReplyTo(e.target.value)} placeholder="recipient@example.com"
-                      className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
-                    {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
-                  </div>
-                  {showCcBcc && (
-                    <>
-                      <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-14 shrink-0">Cc</label>
-                        <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-                      <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-14 shrink-0">Bcc</label>
-                        <input type="text" value={replyBcc} onChange={e => setReplyBcc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-                    </>
-                  )}
-                  <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-14 shrink-0">Subject</label>
-                    <input type="text" value={replySubject} onChange={e => setReplySubject(e.target.value)} placeholder="Subject"
-                      className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-                </div>
-                <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your message…" autofocus />
-                {replyAttachments.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">{replyAttachments.map((f, i) => <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300">{f.name}</span>)}</div>
-                )}
-              </div>
-              <div className="border-t border-border px-4 py-3 shrink-0 flex items-center gap-2">
-                <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
-                  <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
-                </button>
-                <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
-                  <Paperclip className="w-4 h-4" />
-                </button>
-                <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
-                <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
-              </div>
+              <div className="flex-1 overflow-y-auto p-4">{renderReplyForm(true)}</div>
             </div>
           ) : selectedThread && (
             <>
@@ -502,6 +566,7 @@ export default function Inbox() {
                 <div className="flex items-center gap-2 mb-2">
                   <button type="button" onClick={() => { setSelectedThreadId(null); setReplyMode(null) }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                   <h2 className="text-white font-medium truncate flex-1 text-sm">{selectedThread.subject || '(No subject)'}</h2>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${selectedThread.status === 'open' ? 'bg-accent/20 text-accent' : selectedThread.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{selectedThread.status}</span>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <select value={currentAssigneeId} onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
@@ -520,17 +585,9 @@ export default function Inbox() {
               </div>
 
               {/* Timeline */}
-              <div className="flex-1 overflow-y-auto">
+              <div className="flex-1 overflow-y-auto" onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+                {isDragging && <div className="mx-4 mt-4 p-4 rounded-lg border-2 border-dashed border-accent bg-accent/5 text-center text-accent text-sm">Drop files to attach</div>}
                 <div className="p-4 space-y-4">
-                  <div className="flex items-center gap-2 flex-wrap text-xs">
-                    {threadContacts.length > 0 ? (
-                      <><span className="text-gray-500">Contacts:</span>
-                      {threadContacts.map(c => <Link key={c.contact_id} to={`/contacts/${c.contact_id}`} className="px-2 py-0.5 rounded bg-accent/10 text-accent hover:underline">{c.name}</Link>)}</>
-                    ) : (
-                      <button type="button" onClick={handleCreateContact} className="inline-flex items-center gap-1.5 text-gray-400 hover:text-accent"><UserPlus className="w-3.5 h-3.5" /> Create contact from this thread</button>
-                    )}
-                  </div>
-
                   {attachments.length > 0 && (
                     <div className="flex items-center gap-2 flex-wrap text-xs">
                       <span className="text-gray-500">Attachments:</span>
@@ -562,17 +619,17 @@ export default function Inbox() {
                       return (
                         <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden bg-surface-elevated/50">
                           <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-                            <span className={m.direction === 'outbound' ? 'text-accent' : 'text-gray-300'}>
-                              <span className="text-gray-500">From:</span> {m.from_identifier}
-                            </span>
-                            {m.to_identifier && <span><span className="text-gray-500">To:</span> {m.to_identifier}</span>}
+                            <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
+                            {m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
                             {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
                             <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                           </header>
                           <div className="p-4 text-gray-200">
                             {html ? (
                               <iframe title="Email" srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank"><style>body{margin:0;padding:0;font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;color:#e5e7eb;background:transparent;}a{color:#14b8a6;}img{max-width:100%;height:auto;}</style></head><body>${safe}</body></html>`}
-                                className="w-full min-h-[80px] border-0 rounded bg-transparent" sandbox="allow-same-origin" style={{ height: 'min(400px, 50vh)' }} />
+                                className="w-full border-0 rounded bg-transparent" sandbox="allow-same-origin"
+                                onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
+                                style={{ minHeight: '80px' }} />
                             ) : (
                               <div className="text-sm whitespace-pre-wrap break-words">{content}</div>
                             )}
@@ -582,52 +639,7 @@ export default function Inbox() {
                     })
                   )}
 
-                  {/* Inline reply */}
-                  {replyMode && replyMode !== 'compose' && (
-                    <div className="rounded-lg border border-accent/30 bg-surface-elevated p-4 space-y-3">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-accent font-medium">{replyMode === 'reply' ? 'Reply' : replyMode === 'reply_all' ? 'Reply All' : 'Forward'}</span>
-                      </div>
-                      <div className="space-y-2">
-                        {sendableAddresses.length > 1 && (
-                          <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">From</label>
-                            <select value={selectedAccountId} onChange={e => setSelectedAccountId(e.target.value)}
-                              className="flex-1 rounded border border-border bg-surface-muted px-2 py-1 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
-                              {sendableAddresses.map((a, i) => <option key={i} value={a.accountId}>{a.label}</option>)}
-                            </select>
-                          </div>
-                        )}
-                        <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">To</label>
-                          <input type="text" value={replyTo} onChange={e => setReplyTo(e.target.value)}
-                            className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" />
-                          {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
-                        </div>
-                        {showCcBcc && (
-                          <>
-                            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">Cc</label>
-                              <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-                            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">Bcc</label>
-                              <input type="text" value={replyBcc} onChange={e => setReplyBcc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-                          </>
-                        )}
-                      </div>
-                      <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your reply…" autofocus />
-                      {replyAttachments.length > 0 && (
-                        <div className="flex flex-wrap gap-2">{replyAttachments.map((f, i) => <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300">{f.name}</span>)}</div>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
-                          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
-                          <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
-                        </button>
-                        <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
-                          <Paperclip className="w-4 h-4" />
-                        </button>
-                        <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
-                        <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted">Cancel</button>
-                      </div>
-                    </div>
-                  )}
+                  {replyMode && replyMode !== 'compose' && renderReplyForm(replyMode === 'forward')}
                   <div ref={timelineEndRef} />
                 </div>
               </div>
@@ -637,9 +649,13 @@ export default function Inbox() {
                 <div className="flex items-center gap-2">
                   <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
                   <div className="flex-1 relative">
-                    <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+                    <input type="text" value={commentText} onChange={e => {
+                      setCommentText(e.target.value)
+                      if (e.target.value.endsWith('@')) setShowMentionPicker(true)
+                      else if (!e.target.value.includes('@')) setShowMentionPicker(false)
+                    }}
                       onKeyDown={e => { if (e.key === 'Enter' && commentText.trim()) handleAddComment() }}
-                      placeholder="Add an internal comment…"
+                      placeholder="Add an internal comment… (type @ to mention)"
                       className="w-full rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-amber-500/50" />
                     {showMentionPicker && (
                       <div className="absolute bottom-full left-0 mb-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-64 z-10">
