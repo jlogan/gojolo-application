@@ -106,31 +106,19 @@ export default function ProjectForm() {
             placeholder="Brief description…"
           />
         </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label htmlFor="project-status" className="block text-sm font-medium text-gray-300 mb-1">Status</label>
-            <select
-              id="project-status"
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-accent"
-            >
-              <option value="active">Active</option>
-              <option value="on_hold">On hold</option>
-              <option value="completed">Completed</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="project-due" className="block text-sm font-medium text-gray-300 mb-1">Due date</label>
-            <input
-              id="project-due"
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-accent"
-            />
-          </div>
+        <div>
+          <label htmlFor="project-status" className="block text-sm font-medium text-gray-300 mb-1">Status</label>
+          <select
+            id="project-status"
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-accent"
+          >
+            <option value="active">Active</option>
+            <option value="on_hold">On hold</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
         </div>
         <div className="flex gap-3 pt-2">
           <button

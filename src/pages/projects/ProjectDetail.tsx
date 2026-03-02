@@ -289,24 +289,36 @@ export default function ProjectDetail() {
             <form onSubmit={handleTaskSubmit} className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
               <input type="text" required value={taskTitle} onChange={e => setTaskTitle(e.target.value)} placeholder="Task title"
                 className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
-              <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={2} placeholder="Description (optional)"
+              <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={4} placeholder="Description (optional)"
                 className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent resize-y" />
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <select value={taskStatus} onChange={e => setTaskStatus(e.target.value)}
-                  className="rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option>
-                </select>
-                <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
-                  className="rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
-                </select>
-                <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)}
-                  className="rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
-                <select value={taskAssigned} onChange={e => setTaskAssigned(e.target.value)}
-                  className="rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="">Unassigned</option>
-                  {orgUsers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>)}
-                </select>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-0.5">Status</label>
+                  <select value={taskStatus} onChange={e => setTaskStatus(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    <option value="open">Open</option><option value="in_progress">In Progress</option><option value="needs_work">Needs Work</option><option value="testing">To Be Tested</option><option value="closed">Closed</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-0.5">Priority</label>
+                  <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-0.5">Due Date</label>
+                  <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-0.5">Assignee</label>
+                  <select value={taskAssigned} onChange={e => setTaskAssigned(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    <option value="">Unassigned</option>
+                    {orgUsers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>)}
+                  </select>
+                </div>
               </div>
               <div className="flex gap-2">
                 <button type="submit" disabled={taskSaving}

@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Trash2,
   Check,
+  Hash,
 } from 'lucide-react'
 
 type Role = { id: string; name: string }
@@ -72,7 +73,7 @@ type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'settings'
 const SECTIONS: { id: AdminSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'users', label: 'Users & Roles', icon: Users },
   { id: 'imap', label: 'Email accounts', icon: Inbox },
-  { id: 'slack', label: 'Slack', icon: Settings },
+  { id: 'slack', label: 'Slack', icon: Hash },
   { id: 'phone_numbers', label: 'Phone numbers', icon: Phone },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
