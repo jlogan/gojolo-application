@@ -42,7 +42,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
+    localStorage.removeItem('jolo_current_org_id')
+    localStorage.removeItem('jolo_app_mode')
     await supabase.auth.signOut()
+    window.location.href = '/login'
   }, [])
 
   const value: AuthState = {

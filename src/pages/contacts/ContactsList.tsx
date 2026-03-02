@@ -2,108 +2,97 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { Plus, User } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
 
 export type Contact = {
-  id: string
-  org_id: string
-  company_id: string | null
-  type: string
-  name: string
-  email: string | null
-  phone: string | null
-  meta: Record<string, unknown> | null
-  created_at: string
+  id: string; org_id: string; company_id: string | null; type: string
+  name: string; email: string | null; phone: string | null
+  meta: Record<string, unknown> | null; created_at: string
 }
+
+function getInitials(name: string): string {
+  return name.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase()
+}
+
+const COLORS = ['bg-accent/30', 'bg-purple-500/30', 'bg-blue-500/30', 'bg-orange-500/30', 'bg-pink-500/30', 'bg-green-500/30']
 
 export default function ContactsList() {
   const { currentOrg } = useOrg()
   const [contacts, setContacts] = useState<Contact[]>([])
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     if (!currentOrg?.id) return
     let cancelled = false
     setLoading(true)
-    supabase
-      .from('contacts')
+    supabase.from('contacts')
       .select('id, org_id, company_id, type, name, email, phone, meta, created_at')
-      .eq('org_id', currentOrg.id)
-      .order('name')
+      .eq('org_id', currentOrg.id).order('name')
       .then(({ data, error }) => {
         if (cancelled) return
-        if (error) {
-          console.error(error)
-          setContacts([])
-        } else {
-          setContacts((data as Contact[]) ?? [])
-        }
+        setContacts(error ? [] : (data as Contact[]) ?? [])
         setLoading(false)
       })
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [currentOrg?.id])
+
+  const filtered = search.trim()
+    ? contacts.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || c.email?.toLowerCase().includes(search.toLowerCase()))
+    : contacts
+
+  // Group by first letter
+  const grouped = new Map<string, Contact[]>()
+  for (const c of filtered) {
+    const letter = c.name[0]?.toUpperCase() || '#'
+    if (!grouped.has(letter)) grouped.set(letter, [])
+    grouped.get(letter)!.push(c)
+  }
 
   return (
     <div className="p-4 md:p-6" data-testid="contacts-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
         <h1 className="text-xl font-semibold text-white">Contacts</h1>
-        <Link
-          to="/contacts/new"
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground font-medium hover:opacity-90"
-          data-testid="contact-create"
-        >
-          <Plus className="w-4 h-4" />
-          Add contact
+        <Link to="/contacts/new"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white font-medium hover:opacity-90">
+          <Plus className="w-4 h-4" /> Add contact
         </Link>
       </div>
 
-      {loading ? (
-        <div className="text-surface-muted text-sm" data-testid="contacts-loading">
-          Loading…
-        </div>
-      ) : contacts.length === 0 ? (
-        <div
-          className="rounded-lg border border-border bg-surface-muted/50 p-8 text-center text-gray-400"
-          data-testid="contacts-empty"
-        >
-          <User className="w-10 h-10 mx-auto mb-3 opacity-60" />
-          <p className="font-medium text-gray-200">No contacts yet</p>
-          <p className="text-sm mt-1">Add a contact to get started.</p>
-          <Link
-            to="/contacts/new"
-            className="inline-block mt-4 text-accent hover:underline"
-            data-testid="contact-create-empty"
-          >
-            Add contact
-          </Link>
+      {/* Search */}
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search contacts…"
+          className="w-full rounded-lg border border-border bg-surface-muted pl-10 pr-4 py-2.5 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+      </div>
+
+      {loading ? <div className="text-gray-400 text-sm">Loading…</div>
+      : filtered.length === 0 ? (
+        <div className="rounded-lg border border-border bg-surface-muted/50 p-8 text-center text-gray-400">
+          <p className="font-medium text-gray-200">{search ? 'No matches' : 'No contacts yet'}</p>
+          {!search && <Link to="/contacts/new" className="inline-block mt-3 text-accent hover:underline text-sm">Add contact</Link>}
         </div>
       ) : (
-        <ul
-          className="rounded-lg border border-border divide-y divide-border overflow-hidden"
-          data-testid="contact-list"
-        >
-          {contacts.map((c) => (
-            <li key={c.id}>
-              <Link
-                to={`/contacts/${c.id}`}
-                className="flex items-center gap-4 p-4 hover:bg-surface-muted transition-colors"
-                data-testid={`contact-row-${c.id}`}
-              >
-                <div className="w-10 h-10 rounded-full bg-surface-muted flex items-center justify-center shrink-0">
-                  <User className="w-5 h-5 text-surface-muted" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium text-white truncate">{c.name}</p>
-                  {c.email && (
-                    <p className="text-sm text-surface-muted truncate">{c.email}</p>
-                  )}
-                </div>
-              </Link>
-            </li>
+        <div className="rounded-lg border border-border overflow-hidden" data-testid="contact-list">
+          {[...grouped.entries()].map(([letter, group]) => (
+            <div key={letter}>
+              <div className="px-4 py-1.5 text-xs font-medium text-gray-500 bg-surface-muted/50 border-b border-border">{letter}</div>
+              {group.map((c, i) => (
+                <Link key={c.id} to={`/contacts/${c.id}`}
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-surface-muted transition-colors border-b border-border last:border-b-0">
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-medium text-white shrink-0 ${COLORS[i % COLORS.length]}`}>
+                    {getInitials(c.name)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-white text-sm truncate">{c.name}</p>
+                    {c.email && <p className="text-xs text-gray-400 truncate">{c.email}</p>}
+                  </div>
+                  {c.phone && <span className="text-xs text-gray-500 hidden sm:block">{c.phone}</span>}
+                </Link>
+              ))}
+            </div>
           ))}
-        </ul>
+        </div>
       )}
     </div>
   )
