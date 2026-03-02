@@ -693,6 +693,23 @@ export default function Admin() {
               <p className="text-gray-400 text-sm mb-6">
                 For Gmail use an App Password (Account → Security → 2-Step Verification → App passwords).
               </p>
+              {!editingImapId && (
+                <div className="flex gap-2 mb-4">
+                  {[
+                    { label: 'Google / Gmail', imap: 'imap.gmail.com', imapPort: 993, enc: 'ssl' as const, smtp: 'smtp.gmail.com', smtpPort: 587, smtpEnc: 'tls' as const },
+                    { label: 'Outlook / 365', imap: 'outlook.office365.com', imapPort: 993, enc: 'ssl' as const, smtp: 'smtp.office365.com', smtpPort: 587, smtpEnc: 'tls' as const },
+                    { label: 'Yahoo', imap: 'imap.mail.yahoo.com', imapPort: 993, enc: 'ssl' as const, smtp: 'smtp.mail.yahoo.com', smtpPort: 465, smtpEnc: 'ssl' as const },
+                  ].map(preset => (
+                    <button key={preset.label} type="button" onClick={() => {
+                      setImapHost(preset.imap); setImapPort(preset.imapPort); setImapEncryption(preset.enc)
+                      setSmtpHost(preset.smtp); setSmtpPort(preset.smtpPort); setSmtpEncryption(preset.smtpEnc)
+                    }}
+                      className="px-3 py-2 rounded-lg border border-border text-xs font-medium text-gray-300 hover:bg-surface-muted hover:border-accent/50 transition-colors">
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <form onSubmit={handleAddImap} className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
                 <div>
                   <label htmlFor="admin-imap-label" className="block text-xs font-medium text-gray-500 mb-1">Label (optional)</label>

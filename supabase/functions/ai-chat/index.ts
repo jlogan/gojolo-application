@@ -184,6 +184,81 @@ const TOOLS = [
       parameters: { type: 'object', properties: {} },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'search_inbox',
+      description: 'Search inbox threads by subject or sender email. Returns recent threads.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search term for subject or from address' },
+          status: { type: 'string', enum: ['open', 'closed', 'archived'], description: 'Filter by thread status' },
+          limit: { type: 'number', description: 'Max results (default 10)' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_thread_messages',
+      description: 'Get all messages in an inbox thread by thread ID',
+      parameters: { type: 'object', properties: { thread_id: { type: 'string' } }, required: ['thread_id'] },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'summarize_thread',
+      description: 'Get thread subject, participants, message count, and status for a summary',
+      parameters: { type: 'object', properties: { thread_id: { type: 'string' } }, required: ['thread_id'] },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'send_email',
+      description: 'Send a new email or reply to a thread. For replies, provide thread_id. For new emails, omit thread_id.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          subject: { type: 'string', description: 'Email subject' },
+          body: { type: 'string', description: 'Email body (plain text or HTML)' },
+          thread_id: { type: 'string', description: 'Thread ID if replying to existing thread' },
+        },
+        required: ['to', 'subject', 'body'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'update_thread_status',
+      description: 'Close, re-open, or trash an inbox thread',
+      parameters: {
+        type: 'object',
+        properties: {
+          thread_id: { type: 'string' },
+          status: { type: 'string', enum: ['open', 'closed', 'archived'] },
+        },
+        required: ['thread_id', 'status'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'add_thread_note',
+      description: 'Add an internal note to an inbox thread (visible only to team members)',
+      parameters: {
+        type: 'object',
+        properties: { thread_id: { type: 'string' }, content: { type: 'string' } },
+        required: ['thread_id', 'content'],
+      },
+    },
+  },
 ]
 
 async function executeTool(name: string, args: Record<string, string>, orgId: string, userId: string) {
@@ -291,6 +366,62 @@ async function executeTool(name: string, args: Record<string, string>, orgId: st
         return { user_id: r.user_id, display_name: p?.display_name, email: p?.email }
       })
     }
+    case 'search_inbox': {
+      const limit = parseInt(args.limit) || 10
+      let q = admin.from('inbox_threads').select('id, subject, status, from_address, last_message_at, channel').eq('org_id', orgId).order('last_message_at', { ascending: false }).limit(limit)
+      if (args.status) q = q.eq('status', args.status)
+      if (args.query) q = q.or(`subject.ilike.%${args.query}%,from_address.ilike.%${args.query}%`)
+      const { data, error } = await q
+      return error ? { error: error.message } : data
+    }
+    case 'get_thread_messages': {
+      const { data, error } = await admin.from('inbox_messages')
+        .select('id, direction, from_identifier, to_identifier, cc, body, received_at')
+        .eq('thread_id', args.thread_id).order('received_at', { ascending: true })
+      if (error) return { error: error.message }
+      return (data ?? []).map((m: { body: string | null; [k: string]: unknown }) => ({
+        ...m, body: m.body ? m.body.substring(0, 500) + (m.body.length > 500 ? '...' : '') : null,
+      }))
+    }
+    case 'summarize_thread': {
+      const { data: thread } = await admin.from('inbox_threads').select('id, subject, status, from_address, channel, last_message_at, created_at').eq('id', args.thread_id).single()
+      if (!thread) return { error: 'Thread not found' }
+      const { count } = await admin.from('inbox_messages').select('id', { count: 'exact', head: true }).eq('thread_id', args.thread_id)
+      const { data: participants } = await admin.from('inbox_messages').select('from_identifier, to_identifier').eq('thread_id', args.thread_id)
+      const emails = new Set<string>()
+      ;(participants ?? []).forEach((m: { from_identifier: string; to_identifier: string | null }) => {
+        if (m.from_identifier) emails.add(m.from_identifier)
+        if (m.to_identifier) emails.add(m.to_identifier)
+      })
+      return { ...thread, message_count: count, participants: [...emails] }
+    }
+    case 'send_email': {
+      const { data: accounts } = await admin.from('imap_accounts').select('id').eq('org_id', orgId).eq('is_active', true).limit(1)
+      if (!accounts?.length) return { error: 'No active email account configured' }
+      const SUPABASE_URL_VAL = Deno.env.get('SUPABASE_URL') ?? ''
+      const svcKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      const payload: Record<string, unknown> = {
+        body: args.body, subject: args.subject, to: args.to,
+        accountId: accounts[0].id, isHtml: args.body.includes('<'),
+      }
+      if (args.thread_id) payload.threadId = args.thread_id
+      else payload.compose = true
+      const res = await fetch(`${SUPABASE_URL_VAL}/functions/v1/inbox-send-reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${svcKey}` },
+        body: JSON.stringify(payload),
+      })
+      const result = await res.json().catch(() => ({}))
+      return result?.error ? { error: result.error } : { success: true, message: `Email sent to ${args.to}` }
+    }
+    case 'update_thread_status': {
+      const { error } = await admin.from('inbox_threads').update({ status: args.status, updated_at: new Date().toISOString() }).eq('id', args.thread_id).eq('org_id', orgId)
+      return error ? { error: error.message } : { success: true, message: `Thread ${args.status === 'open' ? 're-opened' : args.status}` }
+    }
+    case 'add_thread_note': {
+      const { error } = await admin.from('inbox_notes').insert({ thread_id: args.thread_id, user_id: userId, content: args.content })
+      return error ? { error: error.message } : { success: true }
+    }
     default:
       return { error: `Unknown tool: ${name}` }
   }
@@ -314,7 +445,9 @@ Deno.serve(async (req: Request) => {
     if (!orgId) return new Response(JSON.stringify({ error: 'orgId required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     if (!OPENAI_API_KEY) return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not configured. Set it via: supabase secrets set OPENAI_API_KEY=sk-...' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
 
-    const systemPrompt = `You are jolo, an AI assistant for business project management. You help users manage projects, tasks, contacts, and companies within their workspace. Be concise and helpful. When creating or modifying things, confirm what you did. If the user asks to do something and you need more info, ask for it. Use the available tools to interact with the database. The current user's ID is ${user.id}.`
+    const systemPrompt = `You are jolo, an AI assistant for business software. You help users manage projects, tasks, contacts, companies, and their team inbox (email). Be concise and helpful. When creating or modifying things, confirm what you did. If the user asks to do something and you need more info, ask for it. Use the available tools to interact with the database.
+
+Capabilities: create/list/update projects and tasks, create/list contacts and companies, link them together, manage team members. For email: search inbox threads, read messages, summarize threads, send emails (new or reply), close/reopen/trash threads, add internal notes. When summarizing emails, include key details and action items. When drafting emails, write professional responses. The current user's ID is ${user.id}.`
 
     const messages: { role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }[] = [
       { role: 'system', content: systemPrompt },
