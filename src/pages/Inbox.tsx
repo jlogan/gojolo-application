@@ -265,39 +265,89 @@ export default function Inbox() {
     ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
     : threads
 
-  // Sync — all accounts in parallel
+  // Sync — all accounts in parallel with timeout
   const handleSync = async () => {
     if (!currentOrg?.id || syncing) return
+    console.log('[Inbox Sync] Starting sync for org:', currentOrg.id)
     setSyncing(true)
+
     const { data: { session } } = await supabase.auth.getSession()
-    if (!session?.access_token) { toast('Please sign in again'); setSyncing(false); return }
+    if (!session?.access_token) {
+      console.error('[Inbox Sync] No session/token')
+      toast('Please sign in again'); setSyncing(false); return
+    }
 
     try {
-      // Get all active IMAP accounts
-      const { data: accounts } = await supabase.from('imap_accounts').select('id').eq('org_id', currentOrg.id).eq('is_active', true)
-      const accountIds = (accounts ?? []).map((a: { id: string }) => a.id)
+      const { data: accounts, error: accErr } = await supabase.from('imap_accounts').select('id, email').eq('org_id', currentOrg.id).eq('is_active', true)
+      if (accErr) console.error('[Inbox Sync] Failed to fetch accounts:', accErr)
+      const accountList = (accounts ?? []) as { id: string; email: string }[]
+      console.log('[Inbox Sync] Found', accountList.length, 'active account(s):', accountList.map(a => a.email))
 
-      if (accountIds.length === 0) { toast('No email accounts configured'); setSyncing(false); return }
+      if (accountList.length === 0) { toast('No email accounts configured'); setSyncing(false); return }
 
       const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }
+      const syncUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`
 
-      // Sync all accounts in parallel
-      const results = await Promise.allSettled(
-        accountIds.map(accountId =>
-          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`, {
-            method: 'POST', headers,
-            body: JSON.stringify({ orgId: currentOrg.id, accountId }),
-          }).then(r => r.json()).catch(() => ({ messagesInserted: 0 }))
-        )
-      )
+      const syncAccount = async (acc: { id: string; email: string }) => {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 90_000)
+        console.log('[Inbox Sync] Syncing account:', acc.email, acc.id)
+        try {
+          const res = await fetch(syncUrl, {
+            method: 'POST', headers, signal: controller.signal,
+            body: JSON.stringify({ orgId: currentOrg.id, accountId: acc.id }),
+          })
+          clearTimeout(timeout)
+          const text = await res.text()
+          console.log('[Inbox Sync] Response for', acc.email, '- status:', res.status, '- body:', text.slice(0, 500))
+          try {
+            const json = JSON.parse(text)
+            if (json.error) console.warn('[Inbox Sync] Error from', acc.email, ':', json.error)
+            return json
+          } catch {
+            console.error('[Inbox Sync] Non-JSON response from', acc.email, ':', text.slice(0, 200))
+            return { messagesInserted: 0, error: 'Invalid response' }
+          }
+        } catch (err) {
+          clearTimeout(timeout)
+          const msg = (err as Error).name === 'AbortError' ? 'Timeout (90s)' : (err as Error).message
+          console.error('[Inbox Sync] Fetch failed for', acc.email, ':', msg)
+          return { messagesInserted: 0, error: msg }
+        }
+      }
 
-      const totalNew = results.reduce((sum, r) => {
-        if (r.status === 'fulfilled') return sum + (r.value?.messagesInserted ?? 0)
-        return sum
-      }, 0)
+      const results = await Promise.allSettled(accountList.map(acc => syncAccount(acc)))
+      console.log('[Inbox Sync] All results:', results.map((r, i) => ({
+        account: accountList[i].email,
+        status: r.status,
+        value: r.status === 'fulfilled' ? r.value : (r as PromiseRejectedResult).reason,
+      })))
 
-      toast(totalNew > 0 ? `Synced ${totalNew} new message(s) from ${accountIds.length} account(s)` : `No new messages (${accountIds.length} account(s) checked)`)
-    } catch (e) { toast((e as Error).message) }
+      let totalNew = 0
+      const errors: string[] = []
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i]
+        if (r.status === 'fulfilled') {
+          totalNew += r.value?.messagesInserted ?? 0
+          if (r.value?.error) errors.push(`${accountList[i].email}: ${r.value.error}`)
+        } else {
+          errors.push(`${accountList[i].email}: ${(r as PromiseRejectedResult).reason}`)
+        }
+      }
+
+      console.log('[Inbox Sync] Total new:', totalNew, 'Errors:', errors)
+
+      if (errors.length > 0 && totalNew === 0) {
+        toast(`Sync error: ${errors[0]}`)
+      } else if (totalNew > 0) {
+        toast(`Synced ${totalNew} new message(s) from ${accountList.length} account(s)`)
+      } else {
+        toast(`No new messages (${accountList.length} account(s) checked)`)
+      }
+    } catch (e) {
+      console.error('[Inbox Sync] Unexpected error:', e)
+      toast(`Sync failed: ${(e as Error).message}`)
+    }
 
     setSyncing(false)
     fetchThreads()
