@@ -43,7 +43,7 @@ export default function Profile() {
     setProfileMessage(null)
     const { error } = await supabase
       .from('profiles')
-      .update({ display_name: displayName.trim() || null })
+      .update({ display_name: displayName.trim() || null, updated_at: new Date().toISOString() })
       .eq('id', user.id)
     if (error) {
       setProfileMessage(error.message)

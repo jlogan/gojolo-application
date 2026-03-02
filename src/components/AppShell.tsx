@@ -13,7 +13,6 @@ import {
   X,
   User,
   Shield,
-  Settings,
   FolderKanban,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
@@ -140,23 +139,7 @@ export default function AppShell() {
                   </Link>
                 </li>
               ))}
-              {isOrgAdmin && (
-                <li>
-                  <Link
-                    to="/settings"
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                      location.pathname === '/settings'
-                        ? 'bg-surface-muted text-white'
-                        : 'text-gray-400 hover:bg-surface-muted hover:text-gray-200'
-                    }`}
-                    data-testid="nav-settings"
-                    onClick={() => setSidebarOpen(false)}
-                  >
-                    <Settings className="w-4 h-4 shrink-0" />
-                    Settings
-                  </Link>
-                </li>
-              )}
+              {/* Settings removed per feedback - consolidated under Admin */}
             </ul>
           </nav>
         )}
