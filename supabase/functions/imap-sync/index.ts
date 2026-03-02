@@ -73,15 +73,32 @@ function parseBodyFromSourceRaw(source: Uint8Array | Buffer): string {
 
 const MAX_BODY_LENGTH = 50000
 
-/** Parse MIME and return a single clean body (HTML preferred, else plain text). On failure, fall back to raw slice. */
-async function parseBodyFromSource(source: Uint8Array | Buffer): Promise<string> {
+type ParsedEmail = {
+  body: string
+  htmlBody: string | null
+  attachments: { cid: string | null; filename: string; contentType: string; content: Uint8Array }[]
+}
+
+async function parseBodyFromSource(source: Uint8Array | Buffer): Promise<ParsedEmail> {
   try {
     const parsed = await PostalMime.parse(source as Uint8Array)
-    const body = (parsed.html ?? parsed.text ?? '').trim()
-    if (body.length > MAX_BODY_LENGTH) return body.slice(0, MAX_BODY_LENGTH) + '…'
-    return body || parseBodyFromSourceRaw(source)
+    const textBody = (parsed.text ?? '').trim()
+    let htmlBody = (parsed.html ?? '').trim() || null
+    const atts: ParsedEmail['attachments'] = []
+    for (const att of parsed.attachments ?? []) {
+      atts.push({
+        cid: att.contentId?.replace(/^<|>$/g, '') ?? null,
+        filename: att.filename ?? `attachment-${Date.now()}`,
+        contentType: att.mimeType ?? 'application/octet-stream',
+        content: new Uint8Array(att.content),
+      })
+    }
+    const body = textBody || (htmlBody ? htmlBody.replace(/<[^>]+>/g, '').slice(0, MAX_BODY_LENGTH) : '')
+    if (htmlBody && htmlBody.length > MAX_BODY_LENGTH) htmlBody = htmlBody.slice(0, MAX_BODY_LENGTH)
+    if (body.length > MAX_BODY_LENGTH) return { body: body.slice(0, MAX_BODY_LENGTH), htmlBody, attachments: atts }
+    return { body: body || parseBodyFromSourceRaw(source), htmlBody, attachments: atts }
   } catch {
-    return parseBodyFromSourceRaw(source)
+    return { body: parseBodyFromSourceRaw(source), htmlBody: null, attachments: [] }
   }
 }
 
@@ -243,7 +260,8 @@ serve(async (req) => {
             const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
             const date = envelope?.date ? new Date(envelope.date) : new Date()
             const source = msg.source as Uint8Array | Buffer | undefined
-            const bodyText = source ? await parseBodyFromSource(source) : ''
+            const parsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
+            const bodyText = parsed.body
             const { error: updateErr } = await service
               .from('inbox_messages')
               .update({
@@ -297,8 +315,8 @@ serve(async (req) => {
         const inReplyToRaw = source ? getHeader(source, 'In-Reply-To') : null
         const referencesRaw = source ? getHeader(source, 'References') : null
         const inReplyTo = normalizeMessageId(inReplyToRaw)
-        const refsList = referencesRaw ? referencesRaw.split(/\s+/).map((r) => normalizeMessageId(r)).filter(Boolean) as string[]
-        const body = source ? await parseBodyFromSource(source) : ''
+        const refsList: string[] = referencesRaw ? (referencesRaw.split(/\s+/).map((r) => normalizeMessageId(r)).filter(Boolean) as string[]) : []
+        const parsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
 
         const externalId = messageId ?? `uid-${acc.id}-${uid}`
 
@@ -378,22 +396,49 @@ serve(async (req) => {
             .eq('id', threadId!)
         }
 
-        const { error: msgErr } = await service.from('inbox_messages').insert({
+        let finalHtml = parsed.htmlBody
+        const inlineAtts = parsed.attachments.filter(a => a.cid)
+        if (finalHtml && inlineAtts.length > 0) {
+          for (const att of inlineAtts) {
+            const storagePath = `${acc.org_id}/${threadId!}/${Date.now()}-${att.filename}`
+            const { error: upErr } = await service.storage.from('inbox-attachments').upload(storagePath, att.content, { contentType: att.contentType })
+            if (!upErr) {
+              const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(storagePath)
+              finalHtml = finalHtml!.replace(new RegExp(`cid:${att.cid!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'), urlData.publicUrl)
+            }
+          }
+        }
+
+        const { data: insertedMsg, error: msgErr } = await service.from('inbox_messages').insert({
           thread_id: threadId!,
           channel: 'email',
           direction: 'inbound',
           from_identifier: fromAddr,
           to_identifier: toAddr,
-          body,
+          body: parsed.body,
+          html_body: finalHtml,
           external_id: messageId ?? externalId,
           external_uid: uid,
           imap_account_id: acc.id,
           received_at: date.toISOString(),
-        })
+        }).select('id').single()
         if (msgErr) {
           errors.push(`${acc.imap_username}: insert message: ${msgErr.message}`)
           continue
         }
+
+        const fileAtts = parsed.attachments.filter(a => !a.cid)
+        for (const att of fileAtts) {
+          const storagePath = `${acc.org_id}/${threadId!}/${Date.now()}-${att.filename}`
+          const { error: upErr } = await service.storage.from('inbox-attachments').upload(storagePath, att.content, { contentType: att.contentType })
+          if (!upErr && insertedMsg) {
+            await service.from('inbox_attachments').insert({
+              message_id: insertedMsg.id, thread_id: threadId!, file_name: att.filename,
+              file_path: storagePath, file_size: att.content.length, content_type: att.contentType,
+            })
+          }
+        }
+
         messagesInserted++
       }
 
@@ -440,7 +485,7 @@ serve(async (req) => {
             const source = msg.source as Uint8Array | Buffer | undefined
             const rawMessageId = source ? getHeader(source, 'Message-ID') : null
             const messageId = normalizeMessageId(rawMessageId)
-            const body = source ? await parseBodyFromSource(source) : ''
+            const trashParsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
             const externalId = messageId ?? `trash-${acc.id}-${uid}`
 
             const { data: existingByMsgId } = messageId
@@ -484,7 +529,8 @@ serve(async (req) => {
               direction: 'inbound',
               from_identifier: fromAddr,
               to_identifier: toAddr,
-              body,
+              body: trashParsed.body,
+              html_body: trashParsed.htmlBody,
               external_id: messageId ?? externalId,
               external_uid: uid,
               imap_account_id: acc.id,
