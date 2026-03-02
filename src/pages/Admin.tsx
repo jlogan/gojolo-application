@@ -60,7 +60,13 @@ type ImapAccount = {
 }
 
 type RolePermission = { id: string; role_id: string; permission: string }
-type SlackConfig = { id: string; webhook_url: string | null; bot_token: string | null; default_channel: string | null; is_active: boolean }
+type SlackConfig = {
+  id: string; webhook_url: string | null; bot_token: string | null; default_channel: string | null; is_active: boolean
+  app_id: string | null; client_id: string | null; client_secret: string | null; signing_secret: string | null
+  bot_user_id: string | null; team_id: string | null; team_name: string | null; scopes: string | null
+  inbox_channel: string | null; notify_on_new_email: boolean; notify_on_assignment: boolean
+  notify_on_mention: boolean; notify_on_thread_close: boolean
+}
 type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'settings'
 
 const SECTIONS: { id: AdminSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -123,11 +129,16 @@ export default function Admin() {
 
   // Slack
   const [slackConfig, setSlackConfig] = useState<SlackConfig | null>(null)
-  const [slackWebhook, setSlackWebhook] = useState('')
-  const [slackChannel, setSlackChannel] = useState('')
-  const [slackActive, setSlackActive] = useState(false)
+  const [slackForm, setSlackForm] = useState({
+    webhook_url: '', bot_token: '', default_channel: '', inbox_channel: '',
+    app_id: '', client_id: '', client_secret: '', signing_secret: '',
+    bot_user_id: '', team_id: '', team_name: '', scopes: '',
+    is_active: false, notify_on_new_email: true, notify_on_assignment: true,
+    notify_on_mention: true, notify_on_thread_close: false,
+  })
   const [slackSaving, setSlackSaving] = useState(false)
   const [slackMessage, setSlackMessage] = useState<string | null>(null)
+  const [slackTab, setSlackTab] = useState<'connection' | 'notifications'>('connection')
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
   useEffect(() => {
@@ -174,7 +185,18 @@ export default function Admin() {
       const { data: slackData } = await supabase.from('slack_configs').select('*').eq('org_id', currentOrg.id).limit(1)
       if (slackData?.length) {
         const sc = slackData[0] as SlackConfig
-        setSlackConfig(sc); setSlackWebhook(sc.webhook_url ?? ''); setSlackChannel(sc.default_channel ?? ''); setSlackActive(sc.is_active)
+        setSlackConfig(sc)
+        setSlackForm({
+          webhook_url: sc.webhook_url ?? '', bot_token: sc.bot_token ?? '',
+          default_channel: sc.default_channel ?? '', inbox_channel: sc.inbox_channel ?? '',
+          app_id: sc.app_id ?? '', client_id: sc.client_id ?? '',
+          client_secret: sc.client_secret ?? '', signing_secret: sc.signing_secret ?? '',
+          bot_user_id: sc.bot_user_id ?? '', team_id: sc.team_id ?? '',
+          team_name: sc.team_name ?? '', scopes: sc.scopes ?? '',
+          is_active: sc.is_active, notify_on_new_email: sc.notify_on_new_email,
+          notify_on_assignment: sc.notify_on_assignment, notify_on_mention: sc.notify_on_mention,
+          notify_on_thread_close: sc.notify_on_thread_close,
+        })
       }
       const { data: rpData } = await supabase.from('role_permissions').select('id, role_id, permission').order('permission')
       setRolePermissions((rpData as RolePermission[]) ?? [])
@@ -1121,56 +1143,183 @@ export default function Admin() {
           {section === 'slack' && (
             <>
               <h2 className="text-xl font-semibold text-white mb-2">Slack Integration</h2>
-              <p className="text-gray-400 text-sm mb-6">
-                Connect Slack to get notifications when new emails arrive. Messages will be posted to your configured channel.
-              </p>
-              <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Webhook URL</label>
-                  <input type="url" value={slackWebhook} onChange={e => setSlackWebhook(e.target.value)}
-                    placeholder="https://hooks.slack.com/services/T.../B.../..."
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
-                  <p className="text-gray-500 text-xs mt-1">Create an incoming webhook in your Slack workspace settings.</p>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Default Channel</label>
-                  <input type="text" value={slackChannel} onChange={e => setSlackChannel(e.target.value)}
-                    placeholder="#general"
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
-                </div>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={slackActive} onChange={e => setSlackActive(e.target.checked)}
-                    className="rounded border-border bg-surface-muted text-accent focus:ring-accent" />
-                  <span className="text-sm text-gray-300">Enable Slack notifications</span>
-                </label>
-                {slackMessage && <p className={`text-sm ${slackMessage.includes('Saved') ? 'text-accent' : 'text-red-400'}`}>{slackMessage}</p>}
-                <button type="button" onClick={async () => {
-                  if (!currentOrg?.id) return
-                  setSlackSaving(true); setSlackMessage(null)
-                  const payload = { org_id: currentOrg.id, webhook_url: slackWebhook.trim() || null, default_channel: slackChannel.trim() || null, is_active: slackActive }
-                  if (slackConfig) {
-                    const { error } = await supabase.from('slack_configs').update(payload).eq('id', slackConfig.id)
-                    if (error) setSlackMessage(error.message); else setSlackMessage('Saved.')
-                  } else {
-                    const { data, error } = await supabase.from('slack_configs').insert(payload).select('*').single()
-                    if (error) setSlackMessage(error.message); else { setSlackConfig(data as SlackConfig); setSlackMessage('Saved.') }
-                  }
-                  setSlackSaving(false)
-                }} disabled={slackSaving}
-                  className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
-                  {slackSaving ? 'Saving…' : 'Save'}
-                </button>
+              <p className="text-gray-400 text-sm mb-4">Connect a custom Slack bot for real-time notifications and team collaboration.</p>
+
+              <div className="flex gap-1 mb-6 border-b border-border">
+                {([['connection', 'Bot Configuration'], ['notifications', 'Notification Settings']] as const).map(([id, label]) => (
+                  <button key={id} type="button" onClick={() => setSlackTab(id)}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${slackTab === id ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+                    {label}
+                  </button>
+                ))}
               </div>
 
-              <div className="mt-6">
-                <h3 className="text-sm font-medium text-white mb-3">How it works</h3>
-                <ul className="text-sm text-gray-400 space-y-2">
-                  <li>• New inbound emails trigger a Slack notification to your default channel</li>
-                  <li>• If a thread is linked to a project with a Slack channel mapping, the notification goes to that channel instead</li>
-                  <li>• Set up project-specific channels in each project's settings</li>
-                  <li>• Map contacts and companies to channels for targeted notifications</li>
-                </ul>
-              </div>
+              {slackTab === 'connection' && (
+                <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Bot Token <span className="text-accent">*</span></label>
+                      <input type="password" value={slackForm.bot_token} onChange={e => setSlackForm(f => ({ ...f, bot_token: e.target.value }))}
+                        placeholder="xoxb-..."
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                      <p className="text-gray-500 text-xs mt-1">Bot User OAuth Token from OAuth & Permissions page.</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Signing Secret</label>
+                      <input type="password" value={slackForm.signing_secret} onChange={e => setSlackForm(f => ({ ...f, signing_secret: e.target.value }))}
+                        placeholder="abc123..."
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                      <p className="text-gray-500 text-xs mt-1">From Basic Information → App Credentials. Verifies incoming Slack requests.</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">App ID</label>
+                      <input type="text" value={slackForm.app_id} onChange={e => setSlackForm(f => ({ ...f, app_id: e.target.value }))}
+                        placeholder="A0XXXXXXX"
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Bot User ID</label>
+                      <input type="text" value={slackForm.bot_user_id} onChange={e => setSlackForm(f => ({ ...f, bot_user_id: e.target.value }))}
+                        placeholder="U0XXXXXXX"
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                      <p className="text-gray-500 text-xs mt-1">Used to identify the bot's own messages.</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Client ID</label>
+                      <input type="text" value={slackForm.client_id} onChange={e => setSlackForm(f => ({ ...f, client_id: e.target.value }))}
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Client Secret</label>
+                      <input type="password" value={slackForm.client_secret} onChange={e => setSlackForm(f => ({ ...f, client_secret: e.target.value }))}
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Team ID</label>
+                      <input type="text" value={slackForm.team_id} onChange={e => setSlackForm(f => ({ ...f, team_id: e.target.value }))}
+                        placeholder="T0XXXXXXX"
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Team Name</label>
+                      <input type="text" value={slackForm.team_name} onChange={e => setSlackForm(f => ({ ...f, team_name: e.target.value }))}
+                        placeholder="My Workspace"
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Webhook URL (fallback)</label>
+                    <input type="url" value={slackForm.webhook_url} onChange={e => setSlackForm(f => ({ ...f, webhook_url: e.target.value }))}
+                      placeholder="https://hooks.slack.com/services/T.../B.../..."
+                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                    <p className="text-gray-500 text-xs mt-1">Used only if Bot Token is not set. Bot Token is preferred for full functionality.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">OAuth Scopes</label>
+                    <input type="text" value={slackForm.scopes} onChange={e => setSlackForm(f => ({ ...f, scopes: e.target.value }))}
+                      placeholder="chat:write,channels:read,channels:join,users:read,files:write,reactions:write"
+                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                    <p className="text-gray-500 text-xs mt-1">Comma-separated. Required: chat:write, channels:read. Recommended: channels:join, users:read, files:write, reactions:write.</p>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={slackForm.is_active} onChange={e => setSlackForm(f => ({ ...f, is_active: e.target.checked }))}
+                      className="rounded border-border bg-surface-muted text-accent focus:ring-accent" />
+                    <span className="text-sm text-gray-300">Enable Slack integration</span>
+                  </label>
+                </div>
+              )}
+
+              {slackTab === 'notifications' && (
+                <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Default Channel</label>
+                      <input type="text" value={slackForm.default_channel} onChange={e => setSlackForm(f => ({ ...f, default_channel: e.target.value }))}
+                        placeholder="#general"
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                      <p className="text-gray-500 text-xs mt-1">Fallback channel when no project/contact-specific channel is configured.</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Inbox Channel</label>
+                      <input type="text" value={slackForm.inbox_channel} onChange={e => setSlackForm(f => ({ ...f, inbox_channel: e.target.value }))}
+                        placeholder="#inbox"
+                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                      <p className="text-gray-500 text-xs mt-1">Dedicated channel for all inbox notifications. Overrides default channel for email events.</p>
+                    </div>
+                  </div>
+                  <h3 className="text-sm font-medium text-white pt-2">Notification Events</h3>
+                  <div className="space-y-2">
+                    {[
+                      { key: 'notify_on_new_email' as const, label: 'New inbound emails', desc: 'Post a message when a new email arrives in any inbox account' },
+                      { key: 'notify_on_assignment' as const, label: 'Thread assignments', desc: 'Post when a thread is assigned to a team member' },
+                      { key: 'notify_on_mention' as const, label: 'Internal comment mentions', desc: 'Post when someone is @mentioned in an internal comment' },
+                      { key: 'notify_on_thread_close' as const, label: 'Thread closed', desc: 'Post when a thread is closed or resolved' },
+                    ].map(ev => (
+                      <label key={ev.key} className="flex items-start gap-3 cursor-pointer p-2 rounded-lg hover:bg-surface-muted/50">
+                        <input type="checkbox" checked={slackForm[ev.key]} onChange={e => setSlackForm(f => ({ ...f, [ev.key]: e.target.checked }))}
+                          className="rounded border-border bg-surface-muted text-accent focus:ring-accent mt-0.5" />
+                        <div>
+                          <span className="text-sm text-gray-200 font-medium">{ev.label}</span>
+                          <p className="text-xs text-gray-500">{ev.desc}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mt-3 p-3 rounded-lg bg-surface-muted/50 border border-border">
+                    <h4 className="text-xs font-medium text-gray-400 mb-2">Channel Routing</h4>
+                    <ul className="text-xs text-gray-500 space-y-1">
+                      <li>1. Project-specific channel (set in Project → Slack channel)</li>
+                      <li>2. Contact/company-specific channel (via slack_contact_channels)</li>
+                      <li>3. Inbox channel (if set above)</li>
+                      <li>4. Default channel (fallback)</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {slackMessage && <p className={`text-sm mt-4 ${slackMessage.includes('Saved') ? 'text-accent' : 'text-red-400'}`}>{slackMessage}</p>}
+              <button type="button" onClick={async () => {
+                if (!currentOrg?.id) return
+                setSlackSaving(true); setSlackMessage(null)
+                const payload = {
+                  org_id: currentOrg.id,
+                  webhook_url: slackForm.webhook_url.trim() || null,
+                  bot_token: slackForm.bot_token.trim() || null,
+                  default_channel: slackForm.default_channel.trim() || null,
+                  inbox_channel: slackForm.inbox_channel.trim() || null,
+                  app_id: slackForm.app_id.trim() || null,
+                  client_id: slackForm.client_id.trim() || null,
+                  client_secret: slackForm.client_secret.trim() || null,
+                  signing_secret: slackForm.signing_secret.trim() || null,
+                  bot_user_id: slackForm.bot_user_id.trim() || null,
+                  team_id: slackForm.team_id.trim() || null,
+                  team_name: slackForm.team_name.trim() || null,
+                  scopes: slackForm.scopes.trim() || null,
+                  is_active: slackForm.is_active,
+                  notify_on_new_email: slackForm.notify_on_new_email,
+                  notify_on_assignment: slackForm.notify_on_assignment,
+                  notify_on_mention: slackForm.notify_on_mention,
+                  notify_on_thread_close: slackForm.notify_on_thread_close,
+                  updated_at: new Date().toISOString(),
+                }
+                if (slackConfig) {
+                  const { error } = await supabase.from('slack_configs').update(payload).eq('id', slackConfig.id)
+                  if (error) setSlackMessage(error.message); else setSlackMessage('Saved.')
+                } else {
+                  const { data, error } = await supabase.from('slack_configs').insert(payload).select('*').single()
+                  if (error) setSlackMessage(error.message); else { setSlackConfig(data as SlackConfig); setSlackMessage('Saved.') }
+                }
+                setSlackSaving(false)
+              }} disabled={slackSaving}
+                className="mt-4 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                {slackSaving ? 'Saving…' : 'Save Slack Configuration'}
+              </button>
             </>
           )}
 

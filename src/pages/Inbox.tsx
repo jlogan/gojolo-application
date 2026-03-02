@@ -10,6 +10,7 @@ import {
   Search, User, Circle, Link2,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
+import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
@@ -132,10 +133,12 @@ export default function Inbox() {
     ...comments.map(c => ({ kind: 'comment' as const, data: c, ts: c.created_at })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
 
-  // Data fetching
+  const initialLoadDone = useRef(false)
+
+  // Data fetching — on re-fetch, merge new threads on top instead of clearing + "Loading"
   const fetchThreads = useCallback(async () => {
     if (!currentOrg?.id || !userId) return
-    setLoading(true)
+    if (!initialLoadDone.current) setLoading(true)
     try {
       let query = supabase.from('inbox_threads')
         .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
@@ -146,12 +149,13 @@ export default function Inbox() {
       else if (filter === 'assigned') {
         const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
         const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
-        if (!tids.length) { setThreads([]); setLoading(false); return }
+        if (!tids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
         query = query.in('id', tids)
       }
       const { data } = await query
       setThreads((data as InboxThread[]) ?? [])
-    } catch { setThreads([]) }
+      initialLoadDone.current = true
+    } catch { if (!initialLoadDone.current) setThreads([]) }
     setLoading(false)
   }, [currentOrg?.id, filter, userId])
 
@@ -218,6 +222,12 @@ export default function Inbox() {
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
+  // Auto-refresh polling (30s fallback for real-time)
+  useEffect(() => {
+    const interval = setInterval(() => { fetchThreads() }, 30_000)
+    return () => clearInterval(interval)
+  }, [fetchThreads])
+
   // Realtime
   useEffect(() => {
     if (!currentOrg?.id) return
@@ -255,22 +265,42 @@ export default function Inbox() {
     ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
     : threads
 
-  // Sync
+  // Sync — all accounts in parallel
   const handleSync = async () => {
     if (!currentOrg?.id || syncing) return
     setSyncing(true)
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) { toast('Please sign in again'); setSyncing(false); return }
+
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-        body: JSON.stringify({ orgId: currentOrg.id }),
-      })
-      const data = await res.json().catch(() => ({}))
-      toast(data?.messagesInserted > 0 ? `Synced ${data.messagesInserted} new message(s)` : 'No new messages')
+      // Get all active IMAP accounts
+      const { data: accounts } = await supabase.from('imap_accounts').select('id').eq('org_id', currentOrg.id).eq('is_active', true)
+      const accountIds = (accounts ?? []).map((a: { id: string }) => a.id)
+
+      if (accountIds.length === 0) { toast('No email accounts configured'); setSyncing(false); return }
+
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }
+
+      // Sync all accounts in parallel
+      const results = await Promise.allSettled(
+        accountIds.map(accountId =>
+          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ orgId: currentOrg.id, accountId }),
+          }).then(r => r.json()).catch(() => ({ messagesInserted: 0 }))
+        )
+      )
+
+      const totalNew = results.reduce((sum, r) => {
+        if (r.status === 'fulfilled') return sum + (r.value?.messagesInserted ?? 0)
+        return sum
+      }, 0)
+
+      toast(totalNew > 0 ? `Synced ${totalNew} new message(s) from ${accountIds.length} account(s)` : `No new messages (${accountIds.length} account(s) checked)`)
     } catch (e) { toast((e as Error).message) }
-    setSyncing(false); fetchThreads()
+
+    setSyncing(false)
+    fetchThreads()
   }
 
   const handleAssignTo = async (uid: string) => {
@@ -521,7 +551,7 @@ export default function Inbox() {
       <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 overflow-x-auto">
           {FILTERS.map(f => (
-            <button key={f.id} type="button" onClick={() => { setFilter(f.id); setSelectedThreadId(null) }}
+            <button key={f.id} type="button" onClick={() => { setFilter(f.id); setSelectedThreadId(null); initialLoadDone.current = false }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
                 filter === f.id ? 'bg-accent text-white' : 'bg-surface-muted text-gray-300 hover:bg-surface-muted/80'}`}>
               <f.icon className="w-3.5 h-3.5" /> {f.label}
@@ -670,23 +700,23 @@ export default function Inbox() {
                       }
                       const m = item.data
                       const { html, content } = cleanMessageBody(m)
-                      const safe = content.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '').replace(/on\w+="[^"]*"/gi, '')
+                      const sanitized = html ? sanitizeEmailHtml(content) : content
                       return (
-                        <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden bg-surface-elevated/50">
-                          <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                        <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden">
+                          <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 bg-surface-elevated/50">
                             <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
                             {m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
                             {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
                             <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                           </header>
-                          <div className="p-4 text-gray-200">
+                          <div className="bg-white">
                             {html ? (
-                              <iframe title="Email" srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><base target="_blank"><style>body{margin:0;padding:0;font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;color:#e5e7eb;background:transparent;}a{color:#14b8a6;}img{max-width:100%;height:auto;}</style></head><body>${safe}</body></html>`}
-                                className="w-full border-0 rounded bg-transparent" sandbox="allow-same-origin"
+                              <iframe title="Email" srcDoc={buildEmailSrcDoc(sanitized)}
+                                className="w-full border-0 rounded-b" sandbox="allow-same-origin"
                                 onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
-                                style={{ minHeight: '80px' }} />
+                                style={{ minHeight: '80px', background: '#fff' }} />
                             ) : (
-                              <div className="text-sm whitespace-pre-wrap break-words">{content}</div>
+                              <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-800">{content}</div>
                             )}
                           </div>
                         </article>

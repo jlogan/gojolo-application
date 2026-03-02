@@ -44,3 +44,7 @@ verify_jwt = false
 # imap-flag-sync: sync IMAP flags when threads are closed/trashed/reopened.
 [functions.imap-flag-sync]
 verify_jwt = false
+
+# imap-idle: near-real-time IMAP IDLE sync. Called by cron every 1 minute.
+[functions.imap-idle]
+verify_jwt = false
