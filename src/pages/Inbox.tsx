@@ -262,26 +262,87 @@ export default function Inbox() {
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
-  // Auto-refresh polling (30s fallback for real-time)
-  useEffect(() => {
-    const interval = setInterval(() => { fetchThreads() }, 30_000)
-    return () => clearInterval(interval)
-  }, [fetchThreads])
+  // Realtime with auto-reconnect and connection monitoring
+  const [realtimeConnected, setRealtimeConnected] = useState(false)
 
-  // Realtime
   useEffect(() => {
     if (!currentOrg?.id) return
-    const ch = supabase.channel('inbox-rt')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inbox_threads', filter: `org_id=eq.${currentOrg.id}` }, () => fetchThreads())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'inbox_messages' }, (p) => {
-        if ((p.new as { thread_id: string }).thread_id === selectedThreadId) fetchMessages(selectedThreadId!)
-      })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'inbox_comments' }, (p) => {
-        if ((p.new as { thread_id: string }).thread_id === selectedThreadId) fetchComments(selectedThreadId!)
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(ch) }
+
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    const channelName = `inbox-rt-${currentOrg.id}`
+
+    const setupChannel = () => {
+      const ch = supabase.channel(channelName)
+        // Thread changes (filtered by org_id — reliable)
+        .on('postgres_changes', {
+          event: '*', schema: 'public', table: 'inbox_threads',
+          filter: `org_id=eq.${currentOrg.id}`,
+        }, (payload) => {
+          console.log('[Inbox RT] Thread change:', payload.eventType, payload.new && (payload.new as { id: string }).id)
+          fetchThreads()
+          // If the changed thread is currently open, refresh messages too
+          const changedId = (payload.new as { id?: string })?.id
+          if (changedId && changedId === selectedThreadId) {
+            fetchMessages(selectedThreadId)
+          }
+        })
+        // New messages (listen for inserts, thread update above handles thread list)
+        .on('postgres_changes', {
+          event: 'INSERT', schema: 'public', table: 'inbox_messages',
+        }, (payload) => {
+          const threadId = (payload.new as { thread_id: string }).thread_id
+          console.log('[Inbox RT] New message in thread:', threadId)
+          if (threadId === selectedThreadId) {
+            fetchMessages(selectedThreadId)
+          }
+          // Thread list already updated via inbox_threads change
+        })
+        // Comments
+        .on('postgres_changes', {
+          event: 'INSERT', schema: 'public', table: 'inbox_comments',
+        }, (payload) => {
+          const threadId = (payload.new as { thread_id: string }).thread_id
+          if (threadId === selectedThreadId) {
+            fetchComments(selectedThreadId)
+          }
+        })
+        .subscribe((status) => {
+          console.log('[Inbox RT] Status:', status)
+          if (status === 'SUBSCRIBED') {
+            setRealtimeConnected(true)
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+          } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+            setRealtimeConnected(false)
+            // Auto-reconnect after 5 seconds
+            if (!reconnectTimer) {
+              reconnectTimer = setTimeout(() => {
+                console.log('[Inbox RT] Reconnecting...')
+                supabase.removeChannel(ch)
+                setupChannel()
+              }, 5_000)
+            }
+          }
+        })
+
+      return ch
+    }
+
+    const channel = setupChannel()
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      supabase.removeChannel(channel)
+      setRealtimeConnected(false)
+    }
   }, [currentOrg?.id, selectedThreadId, fetchThreads, fetchMessages, fetchComments])
+
+  // Polling fallback — 15s when realtime disconnected, 60s when connected
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchThreads()
+    }, realtimeConnected ? 60_000 : 15_000)
+    return () => clearInterval(interval)
+  }, [fetchThreads, realtimeConnected])
 
   useEffect(() => {
     if (!selectedThreadId) { setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); return }
@@ -649,6 +710,7 @@ export default function Inbox() {
           ))}
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${realtimeConnected ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`} title={realtimeConnected ? 'Live updates active' : 'Reconnecting...'} />
           <button type="button" onClick={handleSync} disabled={syncing} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50" title="Sync emails">
             <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
           </button>
