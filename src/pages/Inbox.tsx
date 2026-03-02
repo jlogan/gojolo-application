@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
@@ -87,6 +87,7 @@ export default function Inbox() {
 
   // Reply
   const [replyMode, setReplyMode] = useState<'reply' | 'reply_all' | 'forward' | 'compose' | null>(null)
+  const [replyAnchorMsgId, setReplyAnchorMsgId] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState('')
   const [replyCc, setReplyCc] = useState('')
   const [replyBcc, setReplyBcc] = useState('')
@@ -496,6 +497,7 @@ export default function Inbox() {
   }
 
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
+    setReplyAnchorMsgId(null)
     if (mode === 'compose') {
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
     } else if (selectedThread && messages.length > 0) {
@@ -852,8 +854,8 @@ export default function Inbox() {
                       const m = item.data
                       const { html, content } = cleanMessageBody(m)
                       const sanitized = html ? sanitizeEmailHtml(content) : content
-                      return (
-                        <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden group/msg">
+                      return (<React.Fragment key={`msg-${m.id}`}>
+                        <article className="rounded-lg border border-border overflow-hidden group/msg">
                           <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 bg-surface-elevated/50">
                             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 flex-1 min-w-0">
                               <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
@@ -865,23 +867,20 @@ export default function Inbox() {
                               <button type="button" title="Reply" onClick={() => {
                                 setReplyTo(m.from_identifier); setReplyCc('')
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
-                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(false); setReplyAttachments([]); setReplyMode('reply')
-                                setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Reply All" onClick={() => {
                                 setReplyTo(m.from_identifier)
                                 setReplyCc([m.to_identifier, m.cc].filter(Boolean).join(', '))
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
-                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(true); setReplyAttachments([]); setReplyMode('reply_all')
-                                setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(true); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Forward" onClick={() => {
                                 setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
                                 const { content: fwdContent } = cleanMessageBody(m)
                                 setReplyHtml(`<br/><br/>---------- Forwarded message ----------<br/><b>From:</b> ${m.from_identifier}<br/><b>Date:</b> ${new Date(m.received_at).toLocaleString()}<br/><b>Subject:</b> ${selectedThread?.subject ?? ''}<br/><br/>${fwdContent}`)
-                                setReplyAttachments([]); setReplyMode('forward')
-                                setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+                                setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('forward')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Forward className="w-3.5 h-3.5" /></button>
                             </div>
                           </header>
@@ -899,11 +898,16 @@ export default function Inbox() {
                             <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
                           )}
                         </article>
-                      )
+                        {/* Render reply form directly below the anchored message */}
+                        {replyMode && replyMode !== 'compose' && replyAnchorMsgId === m.id && (
+                          <div className="mt-2">{renderReplyForm(replyMode === 'forward')}</div>
+                        )}
+                      </React.Fragment>)
                     })
                   )}
 
-                  {replyMode && replyMode !== 'compose' && renderReplyForm(replyMode === 'forward')}
+                  {/* Fallback: render at bottom if triggered from header buttons (no anchor) */}
+                  {replyMode && replyMode !== 'compose' && !replyAnchorMsgId && renderReplyForm(replyMode === 'forward')}
                   <div ref={timelineEndRef} />
                 </div>
               </div>
