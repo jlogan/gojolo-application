@@ -392,7 +392,7 @@ serve(async (req) => {
         } else {
           await service
             .from('inbox_threads')
-            .update({ last_message_at: date.toISOString(), updated_at: date.toISOString() })
+            .update({ last_message_at: date.toISOString(), updated_at: date.toISOString(), status: 'open' })
             .eq('id', threadId!)
         }
 
