@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase'
 import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive,
   List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
-  RotateCcw, Send, RefreshCw, Paperclip, Download, AtSign,
+  RotateCcw, Send, RefreshCw, Paperclip, Download,
   Search, User, Circle, Link2,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
@@ -158,15 +158,17 @@ export default function Inbox() {
       let query = supabase.from('inbox_threads')
         .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
         .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false })
-      if (filter === 'inbox') query = query.eq('status', 'open')
-      else if (filter === 'closed') query = query.eq('status', 'closed')
-      else if (filter === 'trash') query = query.eq('status', 'archived')
-      else if (filter === 'assigned') {
+      if (filter === 'inbox') {
+        // Inbox = open threads: assigned to me OR unassigned
+        query = query.eq('status', 'open')
+      } else if (filter === 'assigned') {
+        // Mine = all threads assigned to me (any status)
         const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
         const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
         if (!tids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
         query = query.in('id', tids)
-      }
+      } else if (filter === 'closed') query = query.eq('status', 'closed')
+      else if (filter === 'trash') query = query.eq('status', 'archived')
       const { data } = await query
       setThreads((data as InboxThread[]) ?? [])
       initialLoadDone.current = true
@@ -564,7 +566,16 @@ export default function Inbox() {
     setCommentText(''); fetchComments(selectedThreadId)
   }
 
-  const insertMention = (u: InboxUser) => { setCommentText(prev => prev + `@${u.display_name ?? u.email ?? 'user'} `); setShowMentionPicker(false) }
+  const insertMention = (u: InboxUser) => {
+    const name = u.display_name ?? u.email ?? 'user'
+    setCommentText(prev => {
+      // Replace the @partial with the full @name (e.g. "@mu" → "@Muaz Ali ")
+      const atIdx = prev.lastIndexOf('@')
+      if (atIdx >= 0) return prev.slice(0, atIdx) + `@${name} `
+      return prev + `@${name} `
+    })
+    setShowMentionPicker(false)
+  }
 
   const updateToSuggestions = (val: string) => {
     setReplyTo(val)
@@ -758,7 +769,6 @@ export default function Inbox() {
                           </div>
                           <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
                           <div className="flex items-center gap-2 mt-1">
-                            {t.status === 'open' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">open</span>}
                             {t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
                             {t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
                             {assignee && (
@@ -938,9 +948,6 @@ export default function Inbox() {
                       </div>
                     )}
                   </div>
-                  <button type="button" onClick={() => setShowMentionPicker(!showMentionPicker)} className="p-1.5 rounded text-amber-400 hover:bg-surface-muted" title="Mention someone">
-                    <AtSign className="w-4 h-4" />
-                  </button>
                   <button type="button" onClick={handleAddComment} disabled={!commentText.trim()}
                     className="px-3 py-1.5 rounded bg-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/30 disabled:opacity-50">Comment</button>
                 </div>

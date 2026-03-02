@@ -12,7 +12,7 @@ export default function ContactForm() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
-  const [type, setType] = useState('primary')
+  const [type, setType] = useState('client')
   const [companyId, setCompanyId] = useState<string>('')
   const [saving, setSaving] = useState(false)
   const [companies, setCompanies] = useState<{ id: string; name: string }[]>([])
@@ -138,9 +138,9 @@ export default function ContactForm() {
             className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-accent"
             data-testid="contact-type-select"
           >
-            <option value="primary">Primary</option>
-            <option value="billing">Billing</option>
-            <option value="technical">Technical</option>
+            <option value="lead">Lead</option>
+            <option value="client">Client</option>
+            <option value="vendor">Vendor</option>
             <option value="other">Other</option>
           </select>
         </div>
