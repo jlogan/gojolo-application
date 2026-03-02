@@ -480,15 +480,30 @@ export default function Inbox() {
     return addrs
   }
 
+  // Find which IMAP account received this message (match to_identifier against accounts + aliases)
+  const findFromAccount = (toAddr: string | null, ccAddr: string | null): string => {
+    if (!toAddr && !ccAddr) return selectedAccountId
+    const allRecipients = [toAddr, ...(ccAddr?.split(',') ?? [])].filter(Boolean).map(e => e!.trim().toLowerCase())
+    for (const acc of imapAccounts) {
+      const accEmails = [acc.email.toLowerCase(), ...(acc.addresses ?? []).map(a => a.toLowerCase())]
+      for (const recipient of allRecipients) {
+        if (accEmails.includes(recipient)) return acc.id
+      }
+    }
+    return selectedAccountId
+  }
+
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
     setReplyAnchorMsgId(null)
     if (mode === 'compose') {
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
     } else if (selectedThread && messages.length > 0) {
       const last = messages.filter(m => m.direction === 'inbound').pop() ?? messages[messages.length - 1]
+      setSelectedAccountId(findFromAccount(last.to_identifier, last.cc))
       setReplyTo(mode === 'forward' ? '' : last.from_identifier)
-      const ccVal = mode === 'reply_all' ? [last.to_identifier, last.cc].filter(Boolean).join(', ') : ''
-      setReplyCc(ccVal); setReplyBcc(''); setShowCcBcc(!!ccVal)
+      setReplyCc(mode === 'reply_all' ? (last.cc ?? '') : '')
+      setReplyBcc('')
+      setShowCcBcc(mode === 'reply_all' && !!(last.cc))
       const prefix = mode === 'forward' ? 'Fwd: ' : 'Re: '
       const subj = selectedThread.subject ?? ''
       setReplySubject(subj.startsWith(prefix) ? subj : prefix + subj)
@@ -849,17 +864,22 @@ export default function Inbox() {
                             </div>
                             <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
                               <button type="button" title="Reply" onClick={() => {
-                                setReplyTo(m.from_identifier); setReplyCc('')
+                                setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
+                                setReplyTo(m.from_identifier); setReplyCc(''); setReplyBcc('')
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
-                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
+                                setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Reply All" onClick={() => {
+                                setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
                                 setReplyTo(m.from_identifier)
-                                setReplyCc([m.to_identifier, m.cc].filter(Boolean).join(', '))
+                                setReplyCc(m.cc ?? '')
+                                setReplyBcc('')
+                                setShowCcBcc(!!(m.cc))
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
-                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(true); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
+                                setReplyHtml(''); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Forward" onClick={() => {
+                                setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
                                 setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
                                 const { content: fwdContent } = cleanMessageBody(m)
