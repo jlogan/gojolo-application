@@ -310,10 +310,16 @@ serve(async (req) => {
       const parsed = newMsgs.map(msg => {
         const uid = msg.uid as number
         const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
-        const hdrs = msg.headers as Map<string, string[]> | undefined
-        const messageId = normalizeMessageId(hdrs?.get('message-id')?.[0] ?? null)
-        const inReplyTo = normalizeMessageId(hdrs?.get('in-reply-to')?.[0] ?? null)
-        const refsRaw = hdrs?.get('references')?.[0] ?? null
+        // ImapFlow returns headers as a Buffer of raw header lines
+        const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
+        const getHdr = (name: string): string | null => {
+          const re = new RegExp(`^${name}:\\s*(.+)`, 'im')
+          const m = rawHdrs.match(re)
+          return m ? m[1].trim() : null
+        }
+        const messageId = normalizeMessageId(getHdr('message-id'))
+        const inReplyTo = normalizeMessageId(getHdr('in-reply-to'))
+        const refsRaw = getHdr('references')
         const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map(r => normalizeMessageId(r)).filter(Boolean) as string[]) : []
         return {
           uid, messageId, inReplyTo, refsList,
@@ -439,8 +445,8 @@ serve(async (req) => {
             const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
             const subject = (envelope?.subject as string) ?? ''
             const date = envelope?.date ? new Date(envelope.date) : new Date()
-            const hdrs = msg.headers as Map<string, string[]> | undefined
-            const rawMessageId = hdrs?.get('message-id')?.[0] ?? null
+            const rawHdrs2 = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
+            const rawMessageId = (() => { const m = rawHdrs2.match(/^message-id:\s*(.+)/im); return m ? m[1].trim() : null })()
             const messageId = normalizeMessageId(rawMessageId)
             const externalId = messageId ?? `trash-${acc.id}-${uid}`
 
