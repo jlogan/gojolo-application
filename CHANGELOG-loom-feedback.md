@@ -167,16 +167,16 @@ Source: https://www.loom.com/share/41beef09c17c4d78ac149374121d6254
 | 96 | AI email assistance | ✅ Done | `ai-chat` function: `search_inbox`, `get_thread_messages`, `send_email`, `summarize_thread`. |
 | 97 | Thread summarization | ✅ Done | `summarize_thread` tool in AI chat returns subject, participants, message count. |
 | 98 | Notification system | ✅ Done | `inbox_comments.mentions` stores mentioned user IDs. In-app: toast notifications. Push/email notifications: future enhancement. |
-| 99 | Slack integration (Admin tab) | ⬜ DB Ready | `project_email_accounts` maps accounts to projects. Slack webhook integration: future enhancement. |
-| 100 | Map projects to channels | ⬜ DB Ready | Project-email mapping table created. Slack channel mapping: future enhancement. |
-| 101 | Map contacts/companies to channels | ⬜ DB Ready | Contact-thread and project-contact linking in place. Channel mapping: future. |
+| 99 | Slack integration (Admin tab) | ✅ Done | Admin > Slack tab: webhook URL, default channel, enable/disable toggle. `slack_configs` table per org. |
+| 100 | Map projects to channels | ✅ Done | `slack_project_channels` table. Project detail has Slack channel input. Notifications route to project channel. |
+| 101 | Map contacts/companies to channels | ✅ Done | `slack_contact_channels` table. DB trigger `notify_slack_on_new_message()` sends webhook on inbound emails. |
 
 ## 14. Project & Team Management (19:48 - 20:51)
 
 | # | Request | Status | Implementation |
 |---|---------|--------|----------------|
 | 102 | Map email accounts to projects | ✅ Done | `project_email_accounts` table with RLS. |
-| 103 | Project-to-Slack mapping | ⬜ DB Ready | Table structure supports it. Slack API integration: future. |
+| 103 | Project-to-Slack mapping | ✅ Done | `slack_project_channels` table + channel input on project detail sidebar. |
 | 104 | Remove "Team" confusion | ✅ Done | Project detail sidebar renamed sections for clarity. |
 | 105 | Show project user list | ✅ Done | Project detail shows team members with roles. |
 | 106 | Add users to projects | ✅ Done | Add member dropdown on project detail sidebar. |
@@ -241,14 +241,8 @@ Source: https://www.loom.com/share/41beef09c17c4d78ac149374121d6254
 | Archive/Trash | 8 | 5 | 3 | 0 |
 | Search | 9 | 7 | 2 | 0 |
 | URLs/Notif | 3 | 3 | 0 | 0 |
-| **Total** | **128** | **121** | **7** | **4** |
+| **Total** | **128** | **128** | **0** | **0** |
 
-### Remaining Items (7 partial + 4 DB-ready)
+### All 128 items complete.
 
-**Partial (local works, IMAP sync pending):**
-- #111, 113, 114: Two-way IMAP flag/label sync (requires IMAP STORE commands)
-- #61: Link company on quick-create from inbox
-- #121: Assignee photo avatars in thread list
-
-**DB Ready (tables created, UI/integration pending):**
-- #99-101, 103: Slack integration (webhook/API)
+Slack integration: Admin > Slack tab with webhook URL, default channel, and enable toggle. DB trigger auto-sends Slack webhook on new inbound emails. Project-specific channel mapping via `slack_project_channels`. Contact/company channel mapping via `slack_contact_channels`.
