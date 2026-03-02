@@ -17,19 +17,14 @@ export type Project = {
   updated_at: string
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  active: 'bg-accent/20 text-accent',
-  completed: 'bg-green-500/20 text-green-400',
-  on_hold: 'bg-yellow-500/20 text-yellow-400',
-  cancelled: 'bg-red-500/20 text-red-400',
-}
 
 export default function ProjectsList() {
   const { currentOrg, isOrgAdmin } = useOrg()
   const { user } = useAuth()
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | 'mine'>('all')
+  const [filter, setFilter] = useState<'active' | 'archived'>('active')
+  const [search, setSearch] = useState('')
 
   useEffect(() => {
     if (!currentOrg?.id || !user?.id) return
@@ -37,36 +32,13 @@ export default function ProjectsList() {
     setLoading(true)
 
     const load = async () => {
-      if (filter === 'mine' && !isOrgAdmin) {
-        const { data: memberRows } = await supabase
-          .from('project_members')
-          .select('project_id')
-          .eq('user_id', user.id)
-        const ids = (memberRows ?? []).map((r: { project_id: string }) => r.project_id)
-        if (ids.length === 0) {
-          if (!cancelled) { setProjects([]); setLoading(false) }
-          return
-        }
-        const { data, error } = await supabase
-          .from('projects')
-          .select('*')
-          .eq('org_id', currentOrg.id)
-          .in('id', ids)
-          .order('updated_at', { ascending: false })
-        if (!cancelled) {
-          setProjects(error ? [] : (data as Project[]) ?? [])
-          setLoading(false)
-        }
-      } else {
-        const { data, error } = await supabase
-          .from('projects')
-          .select('*')
-          .eq('org_id', currentOrg.id)
-          .order('updated_at', { ascending: false })
-        if (!cancelled) {
-          setProjects(error ? [] : (data as Project[]) ?? [])
-          setLoading(false)
-        }
+      let query = supabase.from('projects').select('*').eq('org_id', currentOrg.id).order('updated_at', { ascending: false })
+      if (filter === 'active') query = query.in('status', ['active', 'on_hold'])
+      else query = query.in('status', ['completed', 'cancelled'])
+      const { data, error } = await query
+      if (!cancelled) {
+        setProjects(error ? [] : (data as Project[]) ?? [])
+        setLoading(false)
       }
     }
     load()
@@ -78,20 +50,14 @@ export default function ProjectsList() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
           <h1 className="text-xl font-semibold text-white">Projects</h1>
-          <div className="flex gap-2 mt-2">
-            <button
-              type="button"
-              onClick={() => setFilter('all')}
-              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${filter === 'all' ? 'bg-surface-muted text-white' : 'text-gray-400 hover:text-gray-200'}`}
-            >
-              All
+          <div className="flex gap-1 mt-2 border-b border-border">
+            <button type="button" onClick={() => setFilter('active')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${filter === 'active' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+              Active
             </button>
-            <button
-              type="button"
-              onClick={() => setFilter('mine')}
-              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${filter === 'mine' ? 'bg-surface-muted text-white' : 'text-gray-400 hover:text-gray-200'}`}
-            >
-              My projects
+            <button type="button" onClick={() => setFilter('archived')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${filter === 'archived' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+              Archive
             </button>
           </div>
         </div>
@@ -103,6 +69,12 @@ export default function ProjectsList() {
           <Plus className="w-4 h-4" />
           New project
         </Link>
+      </div>
+
+      {/* Search */}
+      <div className="relative mb-4">
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search projects…"
+          className="w-full rounded-lg border border-border bg-surface-muted pl-4 pr-4 py-2.5 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
       </div>
 
       {loading ? (
@@ -118,27 +90,13 @@ export default function ProjectsList() {
         </div>
       ) : (
         <ul className="rounded-lg border border-border divide-y divide-border overflow-hidden" data-testid="project-list">
-          {projects.map((p) => (
+          {projects.filter(p => !search.trim() || p.name.toLowerCase().includes(search.toLowerCase()) || p.description?.toLowerCase().includes(search.toLowerCase())).map((p) => (
             <li key={p.id}>
-              <Link
-                to={`/projects/${p.id}`}
-                className="flex items-center gap-4 p-4 hover:bg-surface-muted transition-colors"
-              >
-                <div className="w-10 h-10 rounded-lg bg-surface-muted flex items-center justify-center shrink-0">
-                  <FolderKanban className="w-5 h-5 text-accent" />
-                </div>
+              <Link to={`/projects/${p.id}`} className="flex items-center gap-3 p-4 hover:bg-surface-muted transition-colors">
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-white truncate">{p.name}</p>
-                  {p.description && (
-                    <p className="text-sm text-gray-400 truncate">{p.description}</p>
-                  )}
+                  {p.description && <p className="text-sm text-gray-400 truncate mt-0.5">{p.description}</p>}
                 </div>
-                <span className={`text-xs px-2 py-1 rounded font-medium shrink-0 ${STATUS_COLORS[p.status] ?? 'text-gray-400'}`}>
-                  {p.status.replace('_', ' ')}
-                </span>
-                {p.due_date && (
-                  <span className="text-xs text-gray-500 shrink-0 hidden sm:block">{p.due_date}</span>
-                )}
               </Link>
             </li>
           ))}

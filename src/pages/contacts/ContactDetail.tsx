@@ -176,7 +176,7 @@ export default function ContactDetail() {
                 <div className="grid grid-cols-2 gap-3">
                   <select value={editType} onChange={e => setEditType(e.target.value)}
                     className="rounded border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-accent">
-                    <option value="primary">Primary</option><option value="billing">Billing</option><option value="technical">Technical</option><option value="other">Other</option>
+                    <option value="lead">Lead</option><option value="client">Client</option><option value="vendor">Vendor</option><option value="other">Other</option>
                   </select>
                   <select value={editCompanyId} onChange={e => setEditCompanyId(e.target.value)}
                     className="rounded border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-accent">
@@ -184,8 +184,6 @@ export default function ContactDetail() {
                     {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
-                <textarea value={editNotes} onChange={e => setEditNotes(e.target.value)} placeholder="Notes about this contact…" rows={2}
-                  className="w-full rounded border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-accent resize-y" />
                 <div className="flex gap-2">
                   <button type="button" onClick={handleSave} disabled={saving}
                     className="px-3 py-1.5 rounded bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
@@ -203,7 +201,6 @@ export default function ContactDetail() {
                     </Link>
                   )}
                 </div>
-                {contact.notes && <p className="text-sm text-gray-400 mt-2">{contact.notes}</p>}
               </>
             )}
           </div>

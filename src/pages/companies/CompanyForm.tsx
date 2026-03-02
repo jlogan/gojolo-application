@@ -80,17 +80,17 @@ export default function CompanyForm() {
           />
         </div>
         <div>
-          <label htmlFor="company-industry" className="block text-sm font-medium text-gray-300 mb-1">
-            Industry
+          <label htmlFor="company-website" className="block text-sm font-medium text-gray-300 mb-1">
+            Website
           </label>
           <input
-            id="company-industry"
-            type="text"
+            id="company-website"
+            type="url"
             value={industry}
             onChange={(e) => setIndustry(e.target.value)}
             className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
-            placeholder="e.g. Technology, Healthcare"
-            data-testid="company-industry-input"
+            placeholder="https://example.com"
+            data-testid="company-website-input"
           />
         </div>
         <div className="flex gap-3 pt-2">
