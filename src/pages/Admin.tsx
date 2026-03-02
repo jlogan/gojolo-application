@@ -15,6 +15,7 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  Check,
 } from 'lucide-react'
 
 type Role = { id: string; name: string }
@@ -58,13 +59,21 @@ type ImapAccount = {
   is_active: boolean
 }
 
+type RolePermission = { id: string; role_id: string; permission: string }
 type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'settings'
 
 const SECTIONS: { id: AdminSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'users', label: 'Users', icon: Users },
+  { id: 'users', label: 'Users & Roles', icon: Users },
   { id: 'imap', label: 'IMAP accounts', icon: Inbox },
   { id: 'phone_numbers', label: 'Phone numbers', icon: Phone },
   { id: 'settings', label: 'Settings', icon: Settings },
+]
+
+const ALL_PERMISSIONS = [
+  { module: 'Projects', perms: ['projects.view', 'projects.create', 'projects.update', 'projects.delete'] },
+  { module: 'Contacts', perms: ['contacts.view', 'contacts.create', 'contacts.update', 'contacts.delete'] },
+  { module: 'Companies', perms: ['companies.view', 'companies.create', 'companies.update', 'companies.delete'] },
+  { module: 'Inbox', perms: ['inbox.view', 'inbox.message', 'inbox.delete'] },
 ]
 
 export default function Admin() {
@@ -76,6 +85,11 @@ export default function Admin() {
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([])
   const [imapAccounts, setImapAccounts] = useState<ImapAccount[]>([])
   const [loading, setLoading] = useState(true)
+
+  const [usersTab, setUsersTab] = useState<'members' | 'roles' | 'invitations'>('members')
+  const [rolePermissions, setRolePermissions] = useState<RolePermission[]>([])
+  const [newRoleName, setNewRoleName] = useState('')
+  const [roleMessage, setRoleMessage] = useState<string | null>(null)
 
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRoleId, setInviteRoleId] = useState('')
@@ -116,11 +130,11 @@ export default function Admin() {
       return
     }
     const load = async () => {
-      const [rolesRes, membersRes, invRes, phoneRes, imapRes] = await Promise.all([
+      const [rolesRes, ouRes, invRes, phoneRes, imapRes] = await Promise.all([
         supabase.from('roles').select('id, name').order('name'),
         supabase
           .from('organization_users')
-          .select('user_id, role_id, profiles(display_name, email), roles(name)')
+          .select('user_id, role_id, roles(name)')
           .eq('org_id', currentOrg.id),
         supabase
           .from('org_invitations')
@@ -132,10 +146,22 @@ export default function Admin() {
         supabase.from('imap_accounts').select('id, org_id, label, email, host, port, imap_encryption, imap_username, addresses, smtp_host, smtp_port, smtp_use_tls, smtp_username, is_active').eq('org_id', currentOrg.id),
       ])
       setRoles((rolesRes.data as Role[]) ?? [])
-      setMembers((membersRes.data as unknown as OrgMember[]) ?? [])
+      const ouRows = (ouRes.data ?? []) as { user_id: string; role_id: string; roles: { name: string } | { name: string }[] | null }[]
+      if (ouRows.length > 0) {
+        const uids = ouRows.map(r => r.user_id)
+        const { data: profiles } = await supabase.from('profiles').select('id, display_name, email').in('id', uids)
+        const profMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null; email: string | null }) => [p.id, p]))
+        setMembers(ouRows.map(r => ({
+          user_id: r.user_id, role_id: r.role_id,
+          profiles: profMap.get(r.user_id) ?? null,
+          roles: r.roles,
+        })))
+      } else { setMembers([]) }
       setInvitations((invRes.data as Invitation[]) ?? [])
       setPhoneNumbers((phoneRes.data as PhoneNumber[]) ?? [])
       setImapAccounts((imapRes.data as ImapAccount[]) ?? [])
+      const { data: rpData } = await supabase.from('role_permissions').select('id, role_id, permission').order('permission')
+      setRolePermissions((rpData as RolePermission[]) ?? [])
       setLoading(false)
     }
     load()
@@ -143,13 +169,77 @@ export default function Admin() {
 
   const refetchUsers = async () => {
     if (!currentOrg?.id) return
-    const [membersRes, invRes] = await Promise.all([
-      supabase.from('organization_users').select('user_id, role_id, profiles(display_name, email), roles(name)').eq('org_id', currentOrg.id),
+    const [ouRes, invRes] = await Promise.all([
+      supabase.from('organization_users').select('user_id, role_id, roles(name)').eq('org_id', currentOrg.id),
       supabase.from('org_invitations').select('id, org_id, email, role_id, created_at').eq('org_id', currentOrg.id).is('used_at', null).order('created_at', { ascending: false }),
     ])
-      setMembers((membersRes.data as unknown as OrgMember[]) ?? [])
+    const ouRows = (ouRes.data ?? []) as { user_id: string; role_id: string; roles: { name: string } | { name: string }[] | null }[]
+    if (ouRows.length > 0) {
+      const uids = ouRows.map(r => r.user_id)
+      const { data: profiles } = await supabase.from('profiles').select('id, display_name, email').in('id', uids)
+      const profMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null; email: string | null }) => [p.id, p]))
+      const membersData: OrgMember[] = ouRows.map(r => ({
+        user_id: r.user_id, role_id: r.role_id,
+        profiles: profMap.get(r.user_id) ?? null,
+        roles: r.roles,
+      }))
+      setMembers(membersData)
+    } else {
+      setMembers([])
+    }
     setInvitations((invRes.data as Invitation[]) ?? [])
   }
+
+  const refetchRoles = async () => {
+    const { data: rolesData } = await supabase.from('roles').select('id, name').order('name')
+    setRoles((rolesData as Role[]) ?? [])
+    const { data: rpData } = await supabase.from('role_permissions').select('id, role_id, permission').order('permission')
+    setRolePermissions((rpData as RolePermission[]) ?? [])
+  }
+
+  const handleChangeUserRole = async (userId: string, newRoleId: string) => {
+    if (!currentOrg?.id) return
+    await supabase.from('organization_users').update({ role_id: newRoleId }).eq('org_id', currentOrg.id).eq('user_id', userId)
+    refetchUsers()
+  }
+
+  const handleRemoveUser = async (userId: string) => {
+    if (!currentOrg?.id || !confirm('Remove this user from the workspace?')) return
+    await supabase.from('organization_users').delete().eq('org_id', currentOrg.id).eq('user_id', userId)
+    refetchUsers()
+  }
+
+  const handleCreateRole = async () => {
+    if (!newRoleName.trim()) return
+    const slug = newRoleName.trim().toLowerCase().replace(/\s+/g, '_')
+    const { error } = await supabase.from('roles').insert({ name: slug, permissions: {} })
+    if (error) { setRoleMessage(error.message); return }
+    setNewRoleName('')
+    setRoleMessage(`Role "${slug}" created`)
+    refetchRoles()
+  }
+
+  const handleTogglePermission = async (roleId: string, permission: string) => {
+    const existing = rolePermissions.find(rp => rp.role_id === roleId && rp.permission === permission)
+    if (existing) {
+      await supabase.from('role_permissions').delete().eq('id', existing.id)
+    } else {
+      await supabase.from('role_permissions').insert({ role_id: roleId, permission })
+    }
+    refetchRoles()
+  }
+
+  const handleDeleteRole = async (roleId: string) => {
+    const role = roles.find(r => r.id === roleId)
+    if (!role || ['admin', 'member'].includes(role.name)) { setRoleMessage('Cannot delete built-in roles'); return }
+    if (!confirm(`Delete role "${role.name}"? Users with this role will lose permissions.`)) return
+    await supabase.from('role_permissions').delete().eq('role_id', roleId)
+    await supabase.from('roles').delete().eq('id', roleId)
+    setRoleMessage(`Role "${role.name}" deleted`)
+    refetchRoles()
+  }
+
+  const getRolePerms = (roleId: string) => rolePermissions.filter(rp => rp.role_id === roleId).map(rp => rp.permission)
 
   const refetchPhones = async () => {
     if (!currentOrg?.id) return
@@ -513,106 +603,171 @@ export default function Admin() {
 
           {section === 'users' && (
             <>
-              <h2 className="text-xl font-semibold text-white mb-2">Users</h2>
-              <p className="text-gray-400 text-sm mb-6">
-                Members and pending invitations for this workspace. Add users by email; they can sign in with Google or set a password via magic link.
-              </p>
-              <form onSubmit={handleInvite} className="rounded-lg border border-border bg-surface-elevated p-4 mb-6 space-y-3">
-                <h3 className="text-sm font-medium text-white">Add user</h3>
-                <div>
-                  <label htmlFor="admin-invite-email" className="block text-xs font-medium text-gray-500 mb-1">
-                    Email
-                  </label>
-                  <input
-                    id="admin-invite-email"
-                    type="email"
-                    value={inviteEmail}
-                    onChange={(e) => setInviteEmail(e.target.value)}
-                    placeholder="colleague@example.com"
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent"
-                    data-testid="admin-invite-email"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="admin-invite-role" className="block text-xs font-medium text-gray-500 mb-1">
-                    Role
-                  </label>
-                  <div className="relative">
-                    <select
-                      id="admin-invite-role"
-                      value={inviteRoleId}
-                      onChange={(e) => setInviteRoleId(e.target.value)}
-                      className="w-full rounded-lg border border-border bg-surface-muted pl-3 pr-9 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent appearance-none cursor-pointer"
-                      data-testid="admin-invite-role"
-                    >
-                      <option value="">Select role</option>
-                      {roles.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" aria-hidden />
+              <h2 className="text-xl font-semibold text-white mb-2">Users &amp; Roles</h2>
+              <p className="text-gray-400 text-sm mb-4">Manage team members, roles, and granular permissions for this workspace.</p>
+
+              {/* Tabs */}
+              <div className="flex gap-1 mb-6 border-b border-border">
+                {([['members', 'Members'], ['roles', 'Roles & Permissions'], ['invitations', 'Invitations']] as const).map(([id, label]) => (
+                  <button key={id} type="button" onClick={() => setUsersTab(id)}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${usersTab === id ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Members tab */}
+              {usersTab === 'members' && (
+                <>
+                  <form onSubmit={handleInvite} className="rounded-lg border border-border bg-surface-elevated p-4 mb-6 space-y-3">
+                    <h3 className="text-sm font-medium text-white">Add user</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label htmlFor="admin-invite-email" className="block text-xs font-medium text-gray-500 mb-1">Email</label>
+                        <input id="admin-invite-email" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="colleague@example.com"
+                          className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                      </div>
+                      <div>
+                        <label htmlFor="admin-invite-role" className="block text-xs font-medium text-gray-500 mb-1">Role</label>
+                        <select id="admin-invite-role" value={inviteRoleId} onChange={(e) => setInviteRoleId(e.target.value)}
+                          className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50">
+                          <option value="">Select role</option>
+                          {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={inviteSendMagicLink} onChange={(e) => setInviteSendMagicLink(e.target.checked)}
+                        className="rounded border-border bg-surface-muted text-accent focus:ring-accent" />
+                      <span className="text-sm text-gray-400">Send magic link</span>
+                    </label>
+                    {inviteMessage && <p className={`text-sm ${inviteMessage.includes('Invitation') ? 'text-accent' : 'text-red-400'}`}>{inviteMessage}</p>}
+                    <button type="submit" disabled={inviteLoading || !inviteEmail.trim()}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                      <UserPlus className="w-4 h-4" /> {inviteLoading ? 'Sending…' : 'Add user'}
+                    </button>
+                  </form>
+
+                  <div className="rounded-lg border border-border bg-surface-elevated">
+                    <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+                      <h3 className="text-sm font-medium text-white">Members ({members.length})</h3>
+                    </div>
+                    {members.length === 0 ? <p className="p-4 text-gray-400 text-sm">No members yet.</p> : (
+                      <table className="w-full text-sm">
+                        <thead><tr className="border-b border-border text-gray-500 text-xs">
+                          <th className="text-left px-4 py-2 font-medium">User</th>
+                          <th className="text-left px-4 py-2 font-medium">Role</th>
+                          <th className="text-right px-4 py-2 font-medium">Actions</th>
+                        </tr></thead>
+                        <tbody className="divide-y divide-border">
+                          {members.map((m) => {
+                            const profile = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles
+                            return (
+                              <tr key={m.user_id} className="hover:bg-surface-muted/30">
+                                <td className="px-4 py-3">
+                                  <p className="text-gray-200 font-medium">{profile?.display_name ?? '—'}</p>
+                                  <p className="text-gray-500 text-xs">{profile?.email ?? '—'}</p>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <select value={m.role_id} onChange={(e) => handleChangeUserRole(m.user_id, e.target.value)}
+                                    className="rounded border border-border bg-surface-muted px-2 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
+                                    {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                                  </select>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <button type="button" onClick={() => handleRemoveUser(m.user_id)}
+                                    className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted" title="Remove user">
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
                   </div>
+                </>
+              )}
+
+              {/* Roles & Permissions tab */}
+              {usersTab === 'roles' && (
+                <>
+                  {roleMessage && <p className={`text-sm mb-4 ${roleMessage.includes('created') || roleMessage.includes('deleted') ? 'text-accent' : 'text-red-400'}`}>{roleMessage}</p>}
+
+                  {/* Create new role */}
+                  <div className="flex items-center gap-2 mb-6">
+                    <input type="text" value={newRoleName} onChange={e => setNewRoleName(e.target.value)} placeholder="New role name"
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleCreateRole() } }}
+                      className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 w-48" />
+                    <button type="button" onClick={handleCreateRole} disabled={!newRoleName.trim()}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                      <Plus className="w-4 h-4" /> Create role
+                    </button>
+                  </div>
+
+                  {/* Permissions matrix */}
+                  <div className="rounded-lg border border-border bg-surface-elevated overflow-x-auto">
+                    <table className="w-full text-sm min-w-[600px]">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 w-40">Module / Permission</th>
+                          {roles.map(r => (
+                            <th key={r.id} className="px-3 py-3 text-xs font-medium text-gray-300 text-center">
+                              <div>{r.name}</div>
+                              {!['admin', 'member'].includes(r.name) && (
+                                <button type="button" onClick={() => handleDeleteRole(r.id)} className="text-[10px] text-gray-500 hover:text-red-400 mt-0.5">delete</button>
+                              )}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ALL_PERMISSIONS.map(mod => (
+                          mod.perms.map((perm, pi) => (
+                            <tr key={perm} className={`border-b border-border ${pi === 0 ? 'border-t border-border/50' : ''}`}>
+                              <td className="px-4 py-2 text-gray-300">
+                                {pi === 0 && <span className="text-xs font-medium text-gray-400 uppercase block mb-0.5">{mod.module}</span>}
+                                <span className="text-xs">{perm.split('.')[1]}</span>
+                              </td>
+                              {roles.map(r => {
+                                const has = getRolePerms(r.id).includes(perm)
+                                return (
+                                  <td key={r.id} className="px-3 py-2 text-center">
+                                    <button type="button" onClick={() => handleTogglePermission(r.id, perm)}
+                                      className={`w-5 h-5 rounded border ${has ? 'bg-accent border-accent text-white' : 'border-border text-transparent hover:border-gray-500'} flex items-center justify-center mx-auto transition-colors`}>
+                                      {has && <Check className="w-3 h-3" />}
+                                    </button>
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          ))
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              {/* Invitations tab */}
+              {usersTab === 'invitations' && (
+                <div className="rounded-lg border border-border bg-surface-elevated">
+                  <h3 className="text-sm font-medium text-white px-4 py-3 border-b border-border">Pending invitations</h3>
+                  {invitations.length === 0 ? <p className="p-4 text-gray-400 text-sm">No pending invitations.</p> : (
+                    <ul className="divide-y divide-border">
+                      {invitations.map((inv) => (
+                        <li key={inv.id} className="flex items-center gap-3 px-4 py-3 text-sm">
+                          <Mail className="w-4 h-4 text-gray-500 shrink-0" />
+                          <span className="text-gray-200 flex-1">{inv.email}</span>
+                          <span className="text-gray-500 text-xs">{roles.find((r) => r.id === inv.role_id)?.name ?? '—'}</span>
+                          <span className="text-gray-500 text-xs">{new Date(inv.created_at).toLocaleDateString()}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={inviteSendMagicLink}
-                    onChange={(e) => setInviteSendMagicLink(e.target.checked)}
-                    className="rounded border-border bg-surface-muted text-accent focus:ring-accent"
-                  />
-                  <span className="text-sm text-gray-400">Send magic link so they can set a password (or they can sign in with Google only)</span>
-                </label>
-                {inviteMessage && (
-                  <p className={`text-sm ${inviteMessage.includes('Invitation') ? 'text-accent' : 'text-red-400'}`}>
-                    {inviteMessage}
-                  </p>
-                )}
-                <button
-                  type="submit"
-                  disabled={inviteLoading || !inviteEmail.trim()}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
-                  data-testid="admin-invite-submit"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  {inviteLoading ? 'Sending…' : 'Add user'}
-                </button>
-              </form>
-              <div className="rounded-lg border border-border bg-surface-elevated mb-4">
-                <h3 className="text-sm font-medium text-white px-4 py-3 border-b border-border">Members</h3>
-                {members.length === 0 ? (
-                  <p className="p-4 text-gray-400 text-sm">No members yet.</p>
-                ) : (
-                  <ul className="divide-y divide-border">
-                    {members.map((m) => (
-                      <li key={m.user_id} className="flex items-center justify-between px-4 py-3 text-sm">
-                        <div>
-                          <p className="text-gray-200 font-medium">{(Array.isArray(m.profiles) ? m.profiles[0] : m.profiles)?.display_name ?? '—'}</p>
-                          <p className="text-gray-500 text-xs">{(Array.isArray(m.profiles) ? m.profiles[0] : m.profiles)?.email ?? '—'}</p>
-                        </div>
-                        <span className="text-gray-500 text-xs">{(Array.isArray(m.roles) ? m.roles[0] : m.roles)?.name ?? '—'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="rounded-lg border border-border bg-surface-elevated">
-                <h3 className="text-sm font-medium text-white px-4 py-3 border-b border-border">Pending invitations</h3>
-                {invitations.length === 0 ? (
-                  <p className="p-4 text-gray-400 text-sm">No pending invitations.</p>
-                ) : (
-                  <ul className="divide-y divide-border">
-                    {invitations.map((inv) => (
-                      <li key={inv.id} className="flex items-center gap-3 px-4 py-3 text-sm">
-                        <Mail className="w-4 h-4 text-gray-500 shrink-0" />
-                        <span className="text-gray-200">{inv.email}</span>
-                        <span className="text-gray-500 text-xs">{roles.find((r) => r.id === inv.role_id)?.name ?? '—'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
+              )}
             </>
           )}
 
