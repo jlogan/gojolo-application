@@ -244,16 +244,15 @@ serve(async (req) => {
       // Resync: re-fetch recent messages and update bodies with proper MIME parsing (PostalMime).
       const doResync = body.resync === true && body.accountId === acc.id && lastUid >= 1
       if (doResync) {
-        const resyncStart = Math.max(1, lastUid - 499)
+        const resyncStart = Math.max(1, lastUid - 24)
         const resyncRange = `${resyncStart}:${lastUid}`
         let messagesUpdated = 0
         try {
-          const resyncMessages = await client.fetchAll(
-            resyncRange,
-            { envelope: true, source: true, uid: true },
-            { uid: true }
-          )
-          for (const msg of resyncMessages) {
+          const resyncEnvelopes = await client.fetchAll(resyncRange, { uid: true }, { uid: true })
+          for (const envMsg of resyncEnvelopes.slice(0, MAX_BATCH)) {
+            const fullMsgs = await client.fetchAll(String(envMsg.uid), { envelope: true, source: true, uid: true }, { uid: true })
+            const msg = fullMsgs[0]
+            if (!msg) continue
             const uid = msg.uid as number
             const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; date?: Date }
             const fromAddr = envelope?.from?.[0]?.address ?? ''
@@ -281,26 +280,39 @@ serve(async (req) => {
         }
       }
 
+      const MAX_BATCH = 25
+
       let range: string
       if (lastUid > 0) {
         range = `${lastUid + 1}:*`
       } else {
         const status = await client.status(mailboxPath, { uidNext: true })
         const uidNext = (status?.uidNext as number) ?? 1
-        const start = Math.max(1, uidNext - 99)
+        const start = Math.max(1, uidNext - MAX_BATCH + 1)
         range = `${start}:*`
       }
-      const messages = await client.fetchAll(
-        range,
-        { envelope: true, source: true, uid: true },
-        { uid: true }
-      )
+
+      // First fetch just envelopes + UIDs (lightweight) to get the list
+      const envelopes = await client.fetchAll(range, { envelope: true, uid: true }, { uid: true })
+
+      // Sort by UID and limit batch size
+      const sorted = envelopes
+        .filter((m) => (m.uid as number) > lastUid)
+        .sort((a, b) => (a.uid as number) - (b.uid as number))
+        .slice(0, MAX_BATCH)
 
       let highestUid = lastUid
       let threadsCreated = 0
       let messagesInserted = 0
 
-      for (const msg of messages) {
+      // Process one message at a time to control memory
+      for (const envMsg of sorted) {
+        // Fetch full source for this single message
+        const fullMsgs = await client.fetchAll(
+          String(envMsg.uid), { envelope: true, source: true, uid: true }, { uid: true }
+        )
+        const msg = fullMsgs[0]
+        if (!msg) continue
         const uid = msg.uid as number
         if (uid > highestUid) highestUid = uid
 
@@ -467,14 +479,14 @@ serve(async (req) => {
       if (trashLock) {
         try {
           const lastUidTrash = (acc as ImapAccountRow).last_fetched_uid_trash ?? 0
-          const trashRange = lastUidTrash > 0 ? `${lastUidTrash + 1}:*` : '1:*'
-          const trashMessages = await client.fetchAll(
-            trashRange,
-            { envelope: true, source: true, uid: true },
-            { uid: true }
-          )
+          const trashRange = lastUidTrash > 0 ? `${lastUidTrash + 1}:*` : `${Math.max(1, (client.mailbox?.uidNext ?? 1) - MAX_BATCH)}:*`
+          const trashEnvelopes = await client.fetchAll(trashRange, { envelope: true, uid: true }, { uid: true })
+          const trashBatch = trashEnvelopes.filter(m => (m.uid as number) > lastUidTrash).sort((a, b) => (a.uid as number) - (b.uid as number)).slice(0, MAX_BATCH)
           let highestTrashUid = lastUidTrash
-          for (const msg of trashMessages) {
+          for (const envMsg of trashBatch) {
+            const fullMsgs = await client.fetchAll(String(envMsg.uid), { envelope: true, source: true, uid: true }, { uid: true })
+            const msg = fullMsgs[0]
+            if (!msg) continue
             const uid = msg.uid as number
             if (uid > highestTrashUid) highestTrashUid = uid
             const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
