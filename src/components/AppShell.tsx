@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
@@ -14,6 +14,7 @@ import {
   User,
   Shield,
   FolderKanban,
+  Plus,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -26,6 +27,7 @@ import ContactForm from '@/pages/contacts/ContactForm'
 import CompaniesList from '@/pages/companies/CompaniesList'
 import CompanyDetail from '@/pages/companies/CompanyDetail'
 import CompanyForm from '@/pages/companies/CompanyForm'
+import { supabase } from '@/lib/supabase'
 import ChatView from '@/pages/ChatView'
 import InboxPage from '@/pages/Inbox'
 import ProjectsList from '@/pages/projects/ProjectsList'
@@ -52,6 +54,17 @@ export default function AppShell() {
     return m === 'chat' ? 'chat' : 'software'
   })
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [chatProjects, setChatProjects] = useState<{ id: string; name: string }[]>([])
+  const [chatSessions, setChatSessions] = useState<{ id: string; title: string | null; project_id: string | null; updated_at: string }[]>([])
+  const [showAllProjects, setShowAllProjects] = useState(false)
+
+  useEffect(() => {
+    if (!currentOrg?.id || mode !== 'chat') return
+    supabase.from('projects').select('id, name').eq('org_id', currentOrg.id).order('updated_at', { ascending: false }).limit(20)
+      .then(({ data }) => setChatProjects((data as { id: string; name: string }[]) ?? []))
+    supabase.from('chat_sessions').select('id, title, project_id, updated_at').eq('org_id', currentOrg.id).order('updated_at', { ascending: false }).limit(20)
+      .then(({ data }) => setChatSessions((data ?? []) as { id: string; title: string | null; project_id: string | null; updated_at: string }[]))
+  }, [currentOrg?.id, mode])
 
   const setModeAndStore = (m: AppMode) => {
     setMode(m)
@@ -146,21 +159,48 @@ export default function AppShell() {
 
         {mode === 'chat' && (
           <nav className="flex-1 overflow-y-auto py-2 px-2" aria-label="Chat sidebar">
-            <div className="mb-4">
-              <p className="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Projects
-              </p>
-              <p className="px-3 py-2 text-sm text-gray-400" data-testid="chat-projects-empty">
-                No projects yet. Chat to create one.
-              </p>
+            {/* New chat button */}
+            <button type="button" onClick={() => navigate('/chat')}
+              className="w-full flex items-center gap-2 px-3 py-2.5 mb-2 rounded-lg border border-dashed border-border text-sm text-gray-400 hover:text-accent hover:border-accent/50 transition-colors">
+              <Plus className="w-4 h-4" /> New chat
+            </button>
+
+            {/* Projects */}
+            <div className="mb-3">
+              <p className="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider">Projects</p>
+              {chatProjects.length === 0 ? (
+                <p className="px-3 py-2 text-sm text-gray-400">No projects yet.</p>
+              ) : (
+                <>
+                  {(showAllProjects ? chatProjects : chatProjects.slice(0, 5)).map(p => (
+                    <Link key={p.id} to={`/projects/${p.id}`} onClick={() => setSidebarOpen(false)}
+                      className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:bg-surface-muted hover:text-gray-200 transition-colors">
+                      <FolderKanban className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{p.name}</span>
+                    </Link>
+                  ))}
+                  {chatProjects.length > 5 && (
+                    <button type="button" onClick={() => setShowAllProjects(!showAllProjects)}
+                      className="px-3 py-1 text-xs text-gray-500 hover:text-accent">
+                      {showAllProjects ? 'Show less' : `Show ${chatProjects.length - 5} more…`}
+                    </button>
+                  )}
+                </>
+              )}
             </div>
+
+            {/* Previous chats */}
             <div>
-              <p className="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Previous chats
-              </p>
-              <p className="px-3 py-2 text-sm text-gray-400" data-testid="chat-history-empty">
-                No previous chats.
-              </p>
+              <p className="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider">Previous chats</p>
+              {chatSessions.length === 0 ? (
+                <p className="px-3 py-2 text-sm text-gray-400">No previous chats.</p>
+              ) : (
+                chatSessions.map(s => (
+                  <button key={s.id} type="button"
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-400 hover:bg-surface-muted hover:text-gray-200 transition-colors text-left">
+                    <MessageSquare className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{s.title ?? 'Untitled chat'}</span>
+                  </button>
+                ))
+              )}
             </div>
           </nav>
         )}
