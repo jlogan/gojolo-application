@@ -446,6 +446,20 @@ export default function ProjectDetail() {
                 className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50">Add</button>
             </div>
           </section>
+          {/* Slack channel */}
+          <section className="rounded-lg border border-border bg-surface-elevated p-4">
+            <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">Slack channel</h2>
+            <p className="text-xs text-gray-500 mb-2">Link a Slack channel to get notifications for this project.</p>
+            <input type="text" placeholder="#channel-name"
+              className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-accent placeholder-gray-500"
+              onBlur={async (e) => {
+                if (!id || !e.target.value.trim()) return
+                await supabase.from('slack_project_channels').upsert(
+                  { project_id: id, channel_id: e.target.value.trim().replace('#', ''), channel_name: e.target.value.trim() },
+                  { onConflict: 'project_id,channel_id' }
+                )
+              }} />
+          </section>
         </div>
       </div>
     </div>

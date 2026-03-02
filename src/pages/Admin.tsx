@@ -60,11 +60,13 @@ type ImapAccount = {
 }
 
 type RolePermission = { id: string; role_id: string; permission: string }
-type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'settings'
+type SlackConfig = { id: string; webhook_url: string | null; bot_token: string | null; default_channel: string | null; is_active: boolean }
+type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'settings'
 
 const SECTIONS: { id: AdminSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'users', label: 'Users & Roles', icon: Users },
-  { id: 'imap', label: 'IMAP accounts', icon: Inbox },
+  { id: 'imap', label: 'Email accounts', icon: Inbox },
+  { id: 'slack', label: 'Slack', icon: Settings },
   { id: 'phone_numbers', label: 'Phone numbers', icon: Phone },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
@@ -118,6 +120,14 @@ export default function Admin() {
   const [editingImapId, setEditingImapId] = useState<string | null>(null)
   const [imapView, setImapView] = useState<'list' | 'form'>('list')
   const [imapSyncAccountId, setImapSyncAccountId] = useState<string | null>(null)
+
+  // Slack
+  const [slackConfig, setSlackConfig] = useState<SlackConfig | null>(null)
+  const [slackWebhook, setSlackWebhook] = useState('')
+  const [slackChannel, setSlackChannel] = useState('')
+  const [slackActive, setSlackActive] = useState(false)
+  const [slackSaving, setSlackSaving] = useState(false)
+  const [slackMessage, setSlackMessage] = useState<string | null>(null)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
   useEffect(() => {
@@ -160,6 +170,12 @@ export default function Admin() {
       setInvitations((invRes.data as Invitation[]) ?? [])
       setPhoneNumbers((phoneRes.data as PhoneNumber[]) ?? [])
       setImapAccounts((imapRes.data as ImapAccount[]) ?? [])
+      // Load Slack config
+      const { data: slackData } = await supabase.from('slack_configs').select('*').eq('org_id', currentOrg.id).limit(1)
+      if (slackData?.length) {
+        const sc = slackData[0] as SlackConfig
+        setSlackConfig(sc); setSlackWebhook(sc.webhook_url ?? ''); setSlackChannel(sc.default_channel ?? ''); setSlackActive(sc.is_active)
+      }
       const { data: rpData } = await supabase.from('role_permissions').select('id, role_id, permission').order('permission')
       setRolePermissions((rpData as RolePermission[]) ?? [])
       setLoading(false)
@@ -1098,6 +1114,62 @@ export default function Admin() {
                     ))}
                   </ul>
                 )}
+              </div>
+            </>
+          )}
+
+          {section === 'slack' && (
+            <>
+              <h2 className="text-xl font-semibold text-white mb-2">Slack Integration</h2>
+              <p className="text-gray-400 text-sm mb-6">
+                Connect Slack to get notifications when new emails arrive. Messages will be posted to your configured channel.
+              </p>
+              <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Webhook URL</label>
+                  <input type="url" value={slackWebhook} onChange={e => setSlackWebhook(e.target.value)}
+                    placeholder="https://hooks.slack.com/services/T.../B.../..."
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                  <p className="text-gray-500 text-xs mt-1">Create an incoming webhook in your Slack workspace settings.</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Default Channel</label>
+                  <input type="text" value={slackChannel} onChange={e => setSlackChannel(e.target.value)}
+                    placeholder="#general"
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={slackActive} onChange={e => setSlackActive(e.target.checked)}
+                    className="rounded border-border bg-surface-muted text-accent focus:ring-accent" />
+                  <span className="text-sm text-gray-300">Enable Slack notifications</span>
+                </label>
+                {slackMessage && <p className={`text-sm ${slackMessage.includes('Saved') ? 'text-accent' : 'text-red-400'}`}>{slackMessage}</p>}
+                <button type="button" onClick={async () => {
+                  if (!currentOrg?.id) return
+                  setSlackSaving(true); setSlackMessage(null)
+                  const payload = { org_id: currentOrg.id, webhook_url: slackWebhook.trim() || null, default_channel: slackChannel.trim() || null, is_active: slackActive }
+                  if (slackConfig) {
+                    const { error } = await supabase.from('slack_configs').update(payload).eq('id', slackConfig.id)
+                    if (error) setSlackMessage(error.message); else setSlackMessage('Saved.')
+                  } else {
+                    const { data, error } = await supabase.from('slack_configs').insert(payload).select('*').single()
+                    if (error) setSlackMessage(error.message); else { setSlackConfig(data as SlackConfig); setSlackMessage('Saved.') }
+                  }
+                  setSlackSaving(false)
+                }} disabled={slackSaving}
+                  className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                  {slackSaving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+
+              <div className="mt-6">
+                <h3 className="text-sm font-medium text-white mb-3">How it works</h3>
+                <ul className="text-sm text-gray-400 space-y-2">
+                  <li>• New inbound emails trigger a Slack notification to your default channel</li>
+                  <li>• If a thread is linked to a project with a Slack channel mapping, the notification goes to that channel instead</li>
+                  <li>• Set up project-specific channels in each project's settings</li>
+                  <li>• Map contacts and companies to channels for targeted notifications</li>
+                </ul>
               </div>
             </>
           )}

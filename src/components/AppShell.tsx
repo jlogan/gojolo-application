@@ -29,6 +29,7 @@ import CompanyDetail from '@/pages/companies/CompanyDetail'
 import CompanyForm from '@/pages/companies/CompanyForm'
 import { supabase } from '@/lib/supabase'
 import ChatView from '@/pages/ChatView'
+import NotificationBell from '@/components/NotificationBell'
 import InboxPage from '@/pages/Inbox'
 import ProjectsList from '@/pages/projects/ProjectsList'
 import ProjectDetail from '@/pages/projects/ProjectDetail'
@@ -266,30 +267,28 @@ export default function AppShell() {
         />
       )}
 
-      {/* Right side: mobile header + main content */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        {/* Mobile header (both modes) */}
-        <header className="md:hidden flex items-center h-14 px-4 border-b border-border shrink-0">
-          <button
-            type="button"
-            className="p-2 rounded-lg hover:bg-surface-muted"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open menu"
-            data-testid="menu-toggle"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
-          <span className="ml-2 text-sm font-medium text-white truncate">
-            {mode === 'chat' ? 'Chat' : currentOrg?.name}
-          </span>
-        </header>
-
-        {/* Main content or Chat full view */}
-        {mode === 'chat' ? (
-          <main className="flex-1 flex flex-col min-w-0 min-h-0" data-testid="main-chat">
-            <ChatView />
-          </main>
-        ) : (
+      {/* Main content or Chat full view */}
+      {mode === 'chat' ? (
+        <main className="flex-1 flex flex-col min-w-0" data-testid="main-chat">
+          <ChatView />
+        </main>
+      ) : (
+        <>
+          <header className="md:hidden flex items-center h-14 px-4 border-b border-border shrink-0">
+            <button
+              type="button"
+              className="p-2 rounded-lg hover:bg-surface-muted"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+              data-testid="menu-toggle"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <span className="ml-2 text-sm font-medium text-white truncate flex-1">
+              {currentOrg?.name}
+            </span>
+            <NotificationBell />
+          </header>
           <main className="flex-1 overflow-y-auto min-w-0" data-testid="main-content">
             <Routes>
               <Route path="/" element={<Dashboard />} />
@@ -313,8 +312,8 @@ export default function AppShell() {
               <Route path="/admin" element={<Admin />} />
             </Routes>
           </main>
-        )}
-      </div>
+        </>
+      )}
     </div>
   )
 }

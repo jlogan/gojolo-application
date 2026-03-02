@@ -284,6 +284,18 @@ export default function Inbox() {
     if (!selectedThreadId) return
     setActionLoading(true)
     await supabase.from('inbox_threads').update({ status, updated_at: new Date().toISOString() }).eq('id', selectedThreadId)
+
+    // Sync flags back to IMAP server
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      const action = status === 'archived' ? 'trash' : status === 'closed' ? 'archive' : 'unarchive'
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ threadId: selectedThreadId, action }),
+      }).catch(() => {})
+    }
+
     await fetchThreads(); setActionLoading(false)
     if (status === 'archived') { setSelectedThreadId(null); toast('Moved to trash') }
     else if (status === 'closed') toast('Thread closed')
@@ -567,7 +579,14 @@ export default function Inbox() {
                             {t.status === 'open' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">open</span>}
                             {t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
                             {t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
-                            {assignee && <span className="text-[10px] text-gray-500">{getUserName(assignee.user_id)}</span>}
+                            {assignee && (
+                              <span className="inline-flex items-center gap-1 text-[10px] text-gray-500">
+                                <span className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent shrink-0">
+                                  {(getUserName(assignee.user_id) || '?')[0].toUpperCase()}
+                                </span>
+                                {getUserName(assignee.user_id)}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
