@@ -5,42 +5,37 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   Inbox as InboxIcon, User, Mail, MessageSquare, Check, Archive,
-  List, ChevronRight, Plus, Reply, ReplyAll, Forward, StickyNote,
-  RotateCcw, Send, RefreshCw, UserPlus, Paperclip, Download,
+  List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
+  RotateCcw, Send, RefreshCw, UserPlus, Paperclip, Download, AtSign,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
-
 type InboxThread = {
   id: string; org_id: string; channel: string; status: string
   subject: string | null; last_message_at: string; created_at: string
   from_address: string | null; imap_account_id: string | null
   inbox_thread_assignments?: ThreadAssignment[] | null
 }
-
 type InboxMessage = {
   id: string; thread_id: string; channel: string; direction: string
   from_identifier: string; to_identifier: string | null; cc: string | null
   body: string | null; html_body: string | null; received_at: string
 }
-
-type InboxNote = {
+type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
-  created_at: string; display_name?: string | null
+  mentions: string[] | null; created_at: string; display_name?: string | null
 }
-
 type Attachment = {
   id: string; message_id: string | null; thread_id: string
   file_name: string; file_path: string; file_size: number | null; created_at: string
 }
-
 type TimelineItem =
   | { kind: 'message'; data: InboxMessage; ts: string }
-  | { kind: 'note'; data: InboxNote; ts: string }
-
-type OrgMemberOption = { user_id: string; display_name: string | null }
+  | { kind: 'comment'; data: InboxComment; ts: string }
+type InboxUser = { user_id: string; display_name: string | null; email: string | null }
+type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
 type ContactMatch = { contact_id: string; name: string; email: string | null }
 
 const FILTERS: { id: InboxFilter; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -58,37 +53,40 @@ export default function Inbox() {
   const [threads, setThreads] = useState<InboxThread[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [messages, setMessages] = useState<InboxMessage[]>([])
-  const [notes, setNotes] = useState<InboxNote[]>([])
-  const [members, setMembers] = useState<OrgMemberOption[]>([])
+  const [comments, setComments] = useState<InboxComment[]>([])
+  const [inboxUsers, setInboxUsers] = useState<InboxUser[]>([])
+  const [imapAccounts, setImapAccounts] = useState<ImapAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
 
-  // Inline compose/reply state
+  // Reply
   const [replyMode, setReplyMode] = useState<'reply' | 'reply_all' | 'forward' | 'compose' | null>(null)
   const [replyTo, setReplyTo] = useState('')
   const [replyCc, setReplyCc] = useState('')
+  const [replyBcc, setReplyBcc] = useState('')
   const [replySubject, setReplySubject] = useState('')
   const [replyHtml, setReplyHtml] = useState('')
   const [sendingReply, setSendingReply] = useState(false)
+  const [showCcBcc, setShowCcBcc] = useState(false)
+  const [selectedAccountId, setSelectedAccountId] = useState('')
+  const [replyAttachments, setReplyAttachments] = useState<File[]>([])
 
-  // Note input
-  const [noteText, setNoteText] = useState('')
+  // Comment
+  const [commentText, setCommentText] = useState('')
+  const [showMentionPicker, setShowMentionPicker] = useState(false)
 
-  // Contacts
+  // Contacts & attachments
   const [threadContacts, setThreadContacts] = useState<ContactMatch[]>([])
-
-  // Attachments
   const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [uploading, setUploading] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
+  const replyFileRef = useRef<HTMLInputElement>(null)
 
-  const looksLikeHtml = (text: string | null) => text != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(text)
-
+  const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
 
   const cleanMessageBody = (msg: InboxMessage): { html: boolean; content: string } => {
@@ -115,13 +113,11 @@ export default function Inbox() {
     return { html: false, content: raw }
   }
 
-  // Build timeline: messages + notes sorted by timestamp
   const timeline: TimelineItem[] = [
     ...messages.map(m => ({ kind: 'message' as const, data: m, ts: m.received_at })),
-    ...notes.map(n => ({ kind: 'note' as const, data: n, ts: n.created_at })),
+    ...comments.map(c => ({ kind: 'comment' as const, data: c, ts: c.created_at })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
 
-  // Fetch threads
   const fetchThreads = useCallback(async () => {
     if (!currentOrg?.id || !userId) return
     setLoading(true)
@@ -135,7 +131,7 @@ export default function Inbox() {
       else if (filter === 'assigned') {
         const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
         const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
-        if (tids.length === 0) { setThreads([]); setLoading(false); return }
+        if (!tids.length) { setThreads([]); setLoading(false); return }
         query = query.in('id', tids)
       }
       const { data } = await query
@@ -144,87 +140,116 @@ export default function Inbox() {
     setLoading(false)
   }, [currentOrg?.id, filter, userId])
 
-  const fetchMessages = useCallback(async (threadId: string) => {
+  const fetchMessages = useCallback(async (tid: string) => {
     setMessagesLoading(true)
     const { data } = await supabase.from('inbox_messages')
       .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
-      .eq('thread_id', threadId).order('received_at', { ascending: true })
+      .eq('thread_id', tid).order('received_at', { ascending: true })
     setMessages((data as InboxMessage[]) ?? [])
     setMessagesLoading(false)
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
   }, [])
 
-  const fetchNotes = useCallback(async (threadId: string) => {
-    const { data } = await supabase.from('inbox_notes').select('id, thread_id, user_id, content, created_at')
-      .eq('thread_id', threadId).order('created_at', { ascending: true })
-    const rows = (data ?? []) as InboxNote[]
+  const fetchComments = useCallback(async (tid: string) => {
+    const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
+      .eq('thread_id', tid).order('created_at', { ascending: true })
+    const rows = (data ?? []) as InboxComment[]
     if (rows.length > 0) {
-      const uids = [...new Set(rows.map(n => n.user_id))]
+      const uids = [...new Set(rows.map(c => c.user_id))]
       const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', uids)
       const nm = new Map((profiles ?? []).map((p: { id: string; display_name: string | null }) => [p.id, p.display_name]))
-      rows.forEach(n => { n.display_name = nm.get(n.user_id) ?? null })
+      rows.forEach(c => { c.display_name = nm.get(c.user_id) ?? null })
     }
-    setNotes(rows)
+    setComments(rows)
   }, [])
 
-  const fetchThreadContacts = useCallback(async (threadId: string) => {
-    const { data } = await supabase.from('inbox_thread_contacts')
-      .select('contact_id, contacts(name, email)').eq('thread_id', threadId)
+  const fetchThreadContacts = useCallback(async (tid: string) => {
+    const { data } = await supabase.from('inbox_thread_contacts').select('contact_id, contacts(name, email)').eq('thread_id', tid)
     setThreadContacts((data ?? []).map((r: { contact_id: string; contacts: { name: string; email: string | null } | { name: string; email: string | null }[] | null }) => {
       const c = Array.isArray(r.contacts) ? r.contacts[0] : r.contacts
       return { contact_id: r.contact_id, name: c?.name ?? '', email: c?.email ?? null }
     }))
   }, [])
 
-  const fetchAttachments = useCallback(async (threadId: string) => {
-    const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', threadId).order('created_at')
+  const fetchAttachments = useCallback(async (tid: string) => {
+    const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
     setAttachments((data as Attachment[]) ?? [])
   }, [])
 
+  // Load inbox users (anyone with inbox.view permission)
   useEffect(() => {
     if (!currentOrg?.id) return
-    supabase.from('organization_users').select('user_id, profiles(display_name)').eq('org_id', currentOrg.id)
+    supabase.rpc('org_users_with_permission', { p_org_id: currentOrg.id, p_permission: 'inbox.view' })
       .then(({ data }) => {
-        setMembers((data ?? []).map((r: { user_id: string; profiles: { display_name: string | null } | { display_name: string | null }[] | null }) => {
-          const p = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles
-          return { user_id: r.user_id, display_name: p?.display_name ?? null }
-        }))
+        setInboxUsers((data ?? []) as InboxUser[])
+      })
+  }, [currentOrg?.id])
+
+  // Load IMAP accounts
+  useEffect(() => {
+    if (!currentOrg?.id) return
+    supabase.from('imap_accounts').select('id, email, label, addresses').eq('org_id', currentOrg.id).eq('is_active', true)
+      .then(({ data }) => {
+        const accs = (data as ImapAccount[]) ?? []
+        setImapAccounts(accs)
+        if (accs.length > 0 && !selectedAccountId) setSelectedAccountId(accs[0].id)
       })
   }, [currentOrg?.id])
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
+  // Realtime
   useEffect(() => {
     if (!currentOrg?.id) return
-    const channel = supabase.channel('inbox-rt')
+    const ch = supabase.channel('inbox-rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inbox_threads', filter: `org_id=eq.${currentOrg.id}` }, () => fetchThreads())
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'inbox_messages' }, (p) => {
         if ((p.new as { thread_id: string }).thread_id === selectedThreadId) fetchMessages(selectedThreadId!)
       })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'inbox_comments' }, (p) => {
+        if ((p.new as { thread_id: string }).thread_id === selectedThreadId) fetchComments(selectedThreadId!)
+      })
       .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [currentOrg?.id, selectedThreadId, fetchThreads, fetchMessages])
+    return () => { supabase.removeChannel(ch) }
+  }, [currentOrg?.id, selectedThreadId, fetchThreads, fetchMessages, fetchComments])
 
   useEffect(() => {
-    if (!selectedThreadId) { setMessages([]); setNotes([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); return }
-    fetchMessages(selectedThreadId)
-    fetchNotes(selectedThreadId)
-    fetchThreadContacts(selectedThreadId)
-    fetchAttachments(selectedThreadId)
+    if (!selectedThreadId) { setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); return }
+    fetchMessages(selectedThreadId); fetchComments(selectedThreadId); fetchThreadContacts(selectedThreadId); fetchAttachments(selectedThreadId)
     supabase.rpc('match_thread_contacts', { p_thread_id: selectedThreadId }).then(() => fetchThreadContacts(selectedThreadId))
-  }, [selectedThreadId, fetchMessages, fetchNotes, fetchThreadContacts, fetchAttachments])
+  }, [selectedThreadId, fetchMessages, fetchComments, fetchThreadContacts, fetchAttachments])
 
   const selectedThread = threads.find(t => t.id === selectedThreadId)
-  const getMemberName = (uid: string) => members.find(m => m.user_id === uid)?.display_name ?? uid.slice(0, 8)
+  const getUserName = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
   const currentAssigneeId = (selectedThread?.inbox_thread_assignments?.[0] as { user_id?: string } | undefined)?.user_id ?? ''
   const toast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), 3000) }
+
+  // Sync
+  const handleSync = async () => {
+    if (!currentOrg?.id || syncing) return
+    setSyncing(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) { toast('Please sign in again'); setSyncing(false); return }
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ orgId: currentOrg.id }),
+      })
+      const data = await res.json().catch(() => ({}))
+      const inserted = data?.messagesInserted ?? 0
+      toast(inserted > 0 ? `Synced ${inserted} new message(s)` : 'No new messages')
+    } catch (e) { toast((e as Error).message) }
+    setSyncing(false)
+    fetchThreads()
+  }
 
   const handleAssignTo = async (uid: string) => {
     if (!selectedThreadId) return
     setActionLoading(true)
     await supabase.from('inbox_thread_assignments').upsert({ thread_id: selectedThreadId, user_id: uid }, { onConflict: 'thread_id' })
     await fetchThreads(); setActionLoading(false)
-    toast(`Assigned to ${getMemberName(uid)}`)
+    toast(`Assigned to ${getUserName(uid)}`)
   }
 
   const handleUpdateStatus = async (status: string) => {
@@ -237,23 +262,37 @@ export default function Inbox() {
     else toast('Thread re-opened')
   }
 
-  // Open inline reply/compose
+  // Get all sendable addresses from IMAP accounts
+  const getSendableAddresses = (): { accountId: string; email: string; label: string }[] => {
+    const addrs: { accountId: string; email: string; label: string }[] = []
+    for (const acc of imapAccounts) {
+      addrs.push({ accountId: acc.id, email: acc.email, label: acc.label ? `${acc.label} <${acc.email}>` : acc.email })
+      for (const alias of acc.addresses ?? []) {
+        if (alias.toLowerCase() !== acc.email.toLowerCase()) {
+          addrs.push({ accountId: acc.id, email: alias, label: `${acc.label ?? 'Alias'} <${alias}>` })
+        }
+      }
+    }
+    return addrs
+  }
+
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
     if (mode === 'compose') {
-      setReplyTo(''); setReplyCc(''); setReplySubject(''); setReplyHtml('')
+      setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
     } else if (selectedThread && messages.length > 0) {
       const last = messages.filter(m => m.direction === 'inbound').pop() ?? messages[messages.length - 1]
       setReplyTo(mode === 'forward' ? '' : last.from_identifier)
-      setReplyCc(mode === 'reply_all' ? [last.to_identifier, last.cc].filter(Boolean).join(', ') : '')
+      const ccVal = mode === 'reply_all' ? [last.to_identifier, last.cc].filter(Boolean).join(', ') : ''
+      setReplyCc(ccVal); setReplyBcc('')
+      setShowCcBcc(!!ccVal)
       const prefix = mode === 'forward' ? 'Fwd: ' : 'Re: '
       const subj = selectedThread.subject ?? ''
       setReplySubject(subj.startsWith(prefix) ? subj : prefix + subj)
       if (mode === 'forward') {
         const { content } = cleanMessageBody(last)
         setReplyHtml(`<br/><br/>---------- Forwarded message ----------<br/>${content}`)
-      } else {
-        setReplyHtml('')
-      }
+      } else { setReplyHtml('') }
+      setReplyAttachments([])
     }
     setReplyMode(mode)
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
@@ -265,15 +304,26 @@ export default function Inbox() {
     setSendingReply(true)
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) { toast('Please sign in again'); setSendingReply(false); return }
+
+    // Upload attachments first
+    let attachmentRefs: { fileName: string; filePath: string; contentType: string }[] = []
+    if (replyAttachments.length > 0 && currentOrg?.id) {
+      for (const file of replyAttachments) {
+        const path = `${currentOrg.id}/${selectedThreadId ?? 'compose'}/${Date.now()}-${file.name}`
+        const { error } = await supabase.storage.from('inbox-attachments').upload(path, file)
+        if (!error) attachmentRefs.push({ fileName: file.name, filePath: path, contentType: file.type })
+      }
+    }
+
     const payload: Record<string, unknown> = {
       body: replyHtml, subject: replySubject, to: replyTo.trim(),
-      cc: replyCc.trim() || undefined, isHtml: true,
+      cc: replyCc.trim() || undefined, bcc: replyBcc.trim() || undefined,
+      isHtml: true, accountId: selectedAccountId || undefined,
+      attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
     }
-    if (selectedThreadId && replyMode !== 'compose' && replyMode !== 'forward') {
-      payload.threadId = selectedThreadId
-    } else {
-      payload.compose = true
-    }
+    if (selectedThreadId && replyMode !== 'compose' && replyMode !== 'forward') payload.threadId = selectedThreadId
+    else payload.compose = true
+
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
@@ -282,42 +332,31 @@ export default function Inbox() {
     const data = await res.json().catch(() => ({}))
     setSendingReply(false)
     if (data?.error) { toast(data.error); return }
-    setReplyMode(null); setReplyHtml('')
+    setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
     toast('Sent')
     fetchThreads()
     if (selectedThreadId) fetchMessages(selectedThreadId)
   }
 
-  // Add note
-  const handleAddNote = async () => {
-    if (!selectedThreadId || !noteText.trim() || !userId) return
-    await supabase.from('inbox_notes').insert({ thread_id: selectedThreadId, user_id: userId, content: noteText.trim() })
-    setNoteText('')
-    fetchNotes(selectedThreadId)
-  }
-
-  // Attachments
-  const handleFileUpload = async (file: File) => {
-    if (!selectedThreadId || !currentOrg?.id) return
-    setUploading(true)
-    const path = `${currentOrg.id}/${selectedThreadId}/${Date.now()}-${file.name}`
-    const { error } = await supabase.storage.from('inbox-attachments').upload(path, file)
-    if (error) { toast('Upload failed: ' + error.message); setUploading(false); return }
-    await supabase.from('inbox_attachments').insert({
-      thread_id: selectedThreadId, file_name: file.name, file_path: path,
-      file_size: file.size, content_type: file.type, uploaded_by: userId,
+  // Comment
+  const handleAddComment = async () => {
+    if (!selectedThreadId || !commentText.trim() || !userId) return
+    const mentionRegex = /@(\w+)/g
+    const mentionNames = [...commentText.matchAll(mentionRegex)].map(m => m[1].toLowerCase())
+    const mentionIds = inboxUsers.filter(u => mentionNames.some(n => u.display_name?.toLowerCase().includes(n))).map(u => u.user_id)
+    await supabase.from('inbox_comments').insert({
+      thread_id: selectedThreadId, user_id: userId, content: commentText.trim(),
+      mentions: mentionIds.length > 0 ? mentionIds : null,
     })
-    setUploading(false)
-    fetchAttachments(selectedThreadId)
-    toast('File attached')
+    setCommentText('')
+    fetchComments(selectedThreadId)
   }
 
-  const getDownloadUrl = (path: string) => {
-    const { data } = supabase.storage.from('inbox-attachments').getPublicUrl(path)
-    return data.publicUrl
+  const insertMention = (u: InboxUser) => {
+    setCommentText(prev => prev + `@${u.display_name ?? u.email ?? 'user'} `)
+    setShowMentionPicker(false)
   }
 
-  // Create contact
   const handleCreateContact = async () => {
     if (!selectedThread || !currentOrg?.id) return
     const email = selectedThread.from_address || messages.find(m => m.direction === 'inbound')?.from_identifier
@@ -327,12 +366,15 @@ export default function Inbox() {
     if (error) { toast(error.message); return }
     if (data) {
       await supabase.from('inbox_thread_contacts').insert({ thread_id: selectedThread.id, contact_id: (data as { id: string }).id })
-      fetchThreadContacts(selectedThread.id)
-      toast(`Contact "${name}" created`)
+      fetchThreadContacts(selectedThread.id); toast(`Contact "${name}" created`)
     }
   }
 
+  const getDownloadUrl = (path: string) => supabase.storage.from('inbox-attachments').getPublicUrl(path).data.publicUrl
+
   if (!currentOrg) return <div className="p-4 md:p-6"><p className="text-gray-400">Select a workspace.</p></div>
+
+  const sendableAddresses = getSendableAddresses()
 
   return (
     <div className="flex flex-col h-full min-h-0" data-testid="inbox-page">
@@ -350,8 +392,8 @@ export default function Inbox() {
           ))}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button type="button" onClick={fetchThreads} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Refresh">
-            <RefreshCw className="w-4 h-4" />
+          <button type="button" onClick={handleSync} disabled={syncing} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50" title="Sync emails">
+            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
           </button>
           <button type="button" onClick={() => { setSelectedThreadId(null); openReply('compose') }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:opacity-90">
@@ -365,14 +407,11 @@ export default function Inbox() {
         <div className={`${selectedThreadId || replyMode === 'compose' ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-col border-r border-border bg-surface-muted/20 shrink-0`}>
           {loading ? <div className="p-4 text-gray-400 text-sm">Loading…</div>
           : threads.length === 0 ? (
-            <div className="p-4 text-gray-400 text-sm text-center mt-8">
-              <InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" /><p>No threads</p>
-            </div>
+            <div className="p-4 text-gray-400 text-sm text-center mt-8"><InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" /><p>No threads</p></div>
           ) : (
             <ul className="overflow-y-auto divide-y divide-border flex-1">
               {threads.map(t => {
                 const assignee = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments[0] : null
-                const firstFrom = t.from_address ?? ''
                 return (
                   <li key={t.id}>
                     <button type="button" onClick={() => { setSelectedThreadId(t.id); setReplyMode(null) }}
@@ -384,11 +423,11 @@ export default function Inbox() {
                             <p className="text-sm font-medium text-white truncate">{t.subject || '(No subject)'}</p>
                             <span className="text-[10px] text-gray-500 shrink-0">{new Date(t.last_message_at).toLocaleDateString()}</span>
                           </div>
-                          <p className="text-xs text-gray-400 truncate mt-0.5">{firstFrom}</p>
+                          <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
                           <div className="flex items-center gap-2 mt-1">
                             {t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
                             {t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
-                            {assignee && <span className="text-[10px] text-gray-500">{getMemberName(assignee.user_id)}</span>}
+                            {assignee && <span className="text-[10px] text-gray-500">{getUserName(assignee.user_id)}</span>}
                           </div>
                         </div>
                       </div>
@@ -400,146 +439,119 @@ export default function Inbox() {
           )}
         </div>
 
-        {/* Thread detail / compose */}
+        {/* Detail */}
         <div className={`${selectedThreadId || replyMode === 'compose' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 min-h-0`}>
           {!selectedThread && replyMode !== 'compose' ? (
             <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Select a thread</div>
           ) : replyMode === 'compose' && !selectedThread ? (
-            /* Standalone compose (new email) */
             <div className="flex-1 flex flex-col min-h-0">
               <div className="border-b border-border px-4 py-2.5 shrink-0 flex items-center gap-2">
-                <button type="button" onClick={() => { setReplyMode(null) }} className="md:hidden p-1 rounded text-gray-400 hover:text-white">
-                  <ChevronRight className="w-4 h-4 rotate-180" />
-                </button>
+                <button type="button" onClick={() => setReplyMode(null)} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                 <h2 className="text-white font-medium text-sm">New message</h2>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
                 <div className="space-y-2 mb-4 max-w-2xl">
+                  {sendableAddresses.length > 1 && (
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-500 w-14 shrink-0">From</label>
+                      <select value={selectedAccountId} onChange={e => setSelectedAccountId(e.target.value)}
+                        className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
+                        {sendableAddresses.map((a, i) => <option key={i} value={a.accountId}>{a.label}</option>)}
+                      </select>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <label className="text-xs text-gray-500 w-14 shrink-0">To</label>
                     <input type="text" value={replyTo} onChange={e => setReplyTo(e.target.value)} placeholder="recipient@example.com"
                       className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+                    {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-500 w-14 shrink-0">Subject</label>
+                  {showCcBcc && (
+                    <>
+                      <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-14 shrink-0">Cc</label>
+                        <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
+                      <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-14 shrink-0">Bcc</label>
+                        <input type="text" value={replyBcc} onChange={e => setReplyBcc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
+                    </>
+                  )}
+                  <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-14 shrink-0">Subject</label>
                     <input type="text" value={replySubject} onChange={e => setReplySubject(e.target.value)} placeholder="Subject"
-                      className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
-                  </div>
+                      className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
                 </div>
                 <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your message…" autofocus />
+                {replyAttachments.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">{replyAttachments.map((f, i) => <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300">{f.name}</span>)}</div>
+                )}
               </div>
               <div className="border-t border-border px-4 py-3 shrink-0 flex items-center gap-2">
                 <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
                   <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
                 </button>
-                <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted">Cancel</button>
+                <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
+                  <Paperclip className="w-4 h-4" />
+                </button>
+                <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
+                <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
               </div>
             </div>
           ) : selectedThread && (
-            /* Thread detail view */
             <>
               {/* Thread header */}
               <div className="border-b border-border px-4 py-2.5 shrink-0">
                 <div className="flex items-center gap-2 mb-2">
-                  <button type="button" onClick={() => { setSelectedThreadId(null); setReplyMode(null) }} className="md:hidden p-1 rounded text-gray-400 hover:text-white">
-                    <ChevronRight className="w-4 h-4 rotate-180" />
-                  </button>
+                  <button type="button" onClick={() => { setSelectedThreadId(null); setReplyMode(null) }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                   <h2 className="text-white font-medium truncate flex-1 text-sm">{selectedThread.subject || '(No subject)'}</h2>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <select value={currentAssigneeId} onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
                     className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
                     <option value="">Assign…</option>
-                    {members.map(m => <option key={m.user_id} value={m.user_id}>{m.display_name || m.user_id.slice(0, 8)}{m.user_id === userId ? ' (Me)' : ''}</option>)}
+                    {inboxUsers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>)}
                   </select>
-                  {selectedThread.status === 'open' && (
-                    <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50">
-                      <Check className="w-3 h-3" /> Close
-                    </button>
-                  )}
-                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && (
-                    <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50">
-                      <RotateCcw className="w-3 h-3" /> Re-open
-                    </button>
-                  )}
-                  {selectedThread.status !== 'archived' && (
-                    <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50">
-                      <Archive className="w-3 h-3" /> Trash
-                    </button>
-                  )}
+                  {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
+                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
+                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
                   <div className="w-px h-4 bg-border mx-0.5" />
-                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">
-                    <Reply className="w-3 h-3" /> Reply
-                  </button>
-                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">
-                    <ReplyAll className="w-3 h-3" /> All
-                  </button>
-                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">
-                    <Forward className="w-3 h-3" /> Fwd
-                  </button>
-                  <div className="w-px h-4 bg-border mx-0.5" />
-                  <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50">
-                    <Paperclip className="w-3 h-3" /> {uploading ? 'Uploading…' : 'Attach'}
-                  </button>
-                  <input ref={fileInputRef} type="file" className="hidden" onChange={e => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); e.target.value = '' }} />
+                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Reply className="w-3 h-3" /> Reply</button>
+                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><ReplyAll className="w-3 h-3" /> All</button>
+                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Forward className="w-3 h-3" /> Fwd</button>
                 </div>
               </div>
 
-              {/* Timeline: messages + notes interleaved */}
+              {/* Timeline */}
               <div className="flex-1 overflow-y-auto">
                 <div className="p-4 space-y-4">
-                  {/* Contact matches */}
                   <div className="flex items-center gap-2 flex-wrap text-xs">
                     {threadContacts.length > 0 ? (
-                      <>
-                        <span className="text-gray-500">Contacts:</span>
-                        {threadContacts.map(c => (
-                          <Link key={c.contact_id} to={`/contacts/${c.contact_id}`}
-                            className="px-2 py-0.5 rounded bg-accent/10 text-accent hover:underline">{c.name}</Link>
-                        ))}
-                      </>
+                      <><span className="text-gray-500">Contacts:</span>
+                      {threadContacts.map(c => <Link key={c.contact_id} to={`/contacts/${c.contact_id}`} className="px-2 py-0.5 rounded bg-accent/10 text-accent hover:underline">{c.name}</Link>)}</>
                     ) : (
-                      <button type="button" onClick={handleCreateContact}
-                        className="inline-flex items-center gap-1.5 text-gray-400 hover:text-accent">
-                        <UserPlus className="w-3.5 h-3.5" /> Create contact from this thread
-                      </button>
+                      <button type="button" onClick={handleCreateContact} className="inline-flex items-center gap-1.5 text-gray-400 hover:text-accent"><UserPlus className="w-3.5 h-3.5" /> Create contact from this thread</button>
                     )}
                   </div>
 
-                  {/* Attachments */}
                   {attachments.length > 0 && (
                     <div className="flex items-center gap-2 flex-wrap text-xs">
                       <span className="text-gray-500">Attachments:</span>
-                      {attachments.map(a => (
-                        <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer"
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent">
-                          <Download className="w-3 h-3" /> {a.file_name}
-                        </a>
-                      ))}
+                      {attachments.map(a => <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent"><Download className="w-3 h-3" /> {a.file_name}</a>)}
                     </div>
                   )}
 
                   {messagesLoading ? <div className="text-gray-400 text-sm">Loading…</div> : (
                     timeline.map((item) => {
-                      if (item.kind === 'note') {
-                        const n = item.data
+                      if (item.kind === 'comment') {
+                        const c = item.data
                         return (
-                          <div key={`note-${n.id}`} className="flex gap-3">
-                            <div className="w-8 h-8 rounded-full bg-yellow-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                              <StickyNote className="w-4 h-4 text-yellow-400" />
-                            </div>
-                            <div className="flex-1 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-2.5">
+                          <div key={`cmt-${c.id}`} className="flex gap-3">
+                            <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5"><MessageSquare className="w-4 h-4 text-amber-400" /></div>
+                            <div className="flex-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
                               <div className="flex items-baseline gap-2 text-[11px] mb-1">
-                                <span className="text-yellow-400 font-medium">{n.display_name ?? n.user_id.slice(0, 8)}</span>
-                                <span className="text-gray-500">{new Date(n.created_at).toLocaleString()}</span>
-                                <span className="text-yellow-500/50 ml-auto text-[10px]">internal note</span>
+                                <span className="text-amber-400 font-medium">{c.display_name ?? getUserName(c.user_id)}</span>
+                                <span className="text-gray-500">{new Date(c.created_at).toLocaleString()}</span>
+                                <span className="text-amber-500/50 ml-auto text-[10px]">internal comment</span>
                               </div>
-                              <p className="text-sm text-gray-200">{n.content}</p>
+                              <p className="text-sm text-gray-200">{c.content}</p>
                             </div>
                           </div>
                         )
@@ -551,7 +563,7 @@ export default function Inbox() {
                         <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden bg-surface-elevated/50">
                           <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
                             <span className={m.direction === 'outbound' ? 'text-accent' : 'text-gray-300'}>
-                              <span className="text-gray-500">{m.direction === 'outbound' ? 'Sent' : 'From'}:</span> {m.from_identifier}
+                              <span className="text-gray-500">From:</span> {m.from_identifier}
                             </span>
                             {m.to_identifier && <span><span className="text-gray-500">To:</span> {m.to_identifier}</span>}
                             {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
@@ -570,54 +582,80 @@ export default function Inbox() {
                     })
                   )}
 
-                  {/* Inline reply/forward */}
+                  {/* Inline reply */}
                   {replyMode && replyMode !== 'compose' && (
                     <div className="rounded-lg border border-accent/30 bg-surface-elevated p-4 space-y-3">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="text-accent font-medium">
-                          {replyMode === 'reply' ? 'Reply' : replyMode === 'reply_all' ? 'Reply All' : 'Forward'}
-                        </span>
+                        <span className="text-accent font-medium">{replyMode === 'reply' ? 'Reply' : replyMode === 'reply_all' ? 'Reply All' : 'Forward'}</span>
                       </div>
                       <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <label className="text-xs text-gray-500 w-10 shrink-0">To</label>
-                          <input type="text" value={replyTo} onChange={e => setReplyTo(e.target.value)}
-                            className="flex-1 rounded border border-border bg-surface-muted px-2 py-1 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
-                        </div>
-                        {replyMode === 'reply_all' && (
-                          <div className="flex items-center gap-2">
-                            <label className="text-xs text-gray-500 w-10 shrink-0">Cc</label>
-                            <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)}
-                              className="flex-1 rounded border border-border bg-surface-muted px-2 py-1 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+                        {sendableAddresses.length > 1 && (
+                          <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">From</label>
+                            <select value={selectedAccountId} onChange={e => setSelectedAccountId(e.target.value)}
+                              className="flex-1 rounded border border-border bg-surface-muted px-2 py-1 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
+                              {sendableAddresses.map((a, i) => <option key={i} value={a.accountId}>{a.label}</option>)}
+                            </select>
                           </div>
+                        )}
+                        <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">To</label>
+                          <input type="text" value={replyTo} onChange={e => setReplyTo(e.target.value)}
+                            className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" />
+                          {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
+                        </div>
+                        {showCcBcc && (
+                          <>
+                            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">Cc</label>
+                              <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" /></div>
+                            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-10 shrink-0">Bcc</label>
+                              <input type="text" value={replyBcc} onChange={e => setReplyBcc(e.target.value)} className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" /></div>
+                          </>
                         )}
                       </div>
                       <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your reply…" autofocus />
+                      {replyAttachments.length > 0 && (
+                        <div className="flex flex-wrap gap-2">{replyAttachments.map((f, i) => <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300">{f.name}</span>)}</div>
+                      )}
                       <div className="flex items-center gap-2">
                         <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
                           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
                           <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
                         </button>
+                        <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
+                          <Paperclip className="w-4 h-4" />
+                        </button>
+                        <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
                         <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted">Cancel</button>
                       </div>
                     </div>
                   )}
-
                   <div ref={timelineEndRef} />
                 </div>
               </div>
 
-              {/* Note input at bottom */}
-              <div className="border-t border-border px-4 py-2.5 shrink-0 flex items-center gap-2">
-                <StickyNote className="w-4 h-4 text-yellow-400 shrink-0" />
-                <input type="text" value={noteText} onChange={e => setNoteText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && noteText.trim()) handleAddNote() }}
-                  placeholder="Add an internal note…"
-                  className="flex-1 rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-yellow-500/50" />
-                <button type="button" onClick={handleAddNote} disabled={!noteText.trim()}
-                  className="px-3 py-1.5 rounded bg-yellow-500/20 text-yellow-400 text-sm font-medium hover:bg-yellow-500/30 disabled:opacity-50">
-                  Note
-                </button>
+              {/* Comment input */}
+              <div className="border-t border-border px-4 py-2.5 shrink-0">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
+                  <div className="flex-1 relative">
+                    <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && commentText.trim()) handleAddComment() }}
+                      placeholder="Add an internal comment…"
+                      className="w-full rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-amber-500/50" />
+                    {showMentionPicker && (
+                      <div className="absolute bottom-full left-0 mb-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-64 z-10">
+                        {inboxUsers.map(u => (
+                          <button key={u.user_id} type="button" onClick={() => insertMention(u)}
+                            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted">{u.display_name ?? u.email}</button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button type="button" onClick={() => setShowMentionPicker(!showMentionPicker)} className="p-1.5 rounded text-amber-400 hover:bg-surface-muted" title="Mention someone">
+                    <AtSign className="w-4 h-4" />
+                  </button>
+                  <button type="button" onClick={handleAddComment} disabled={!commentText.trim()}
+                    className="px-3 py-1.5 rounded bg-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/30 disabled:opacity-50">Comment</button>
+                </div>
               </div>
             </>
           )}
