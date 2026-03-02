@@ -263,79 +263,63 @@ export default function Inbox() {
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
-  // Realtime with auto-reconnect and connection monitoring
+  // Refs for stable realtime callbacks (avoids channel teardown on every state change)
+  const selectedThreadIdRef = useRef(selectedThreadId)
+  const fetchThreadsRef = useRef(fetchThreads)
+  const fetchMessagesRef = useRef(fetchMessages)
+  const fetchCommentsRef = useRef(fetchComments)
+  useEffect(() => { selectedThreadIdRef.current = selectedThreadId }, [selectedThreadId])
+  useEffect(() => { fetchThreadsRef.current = fetchThreads }, [fetchThreads])
+  useEffect(() => { fetchMessagesRef.current = fetchMessages }, [fetchMessages])
+  useEffect(() => { fetchCommentsRef.current = fetchComments }, [fetchComments])
+
+  // Realtime — only depends on org_id so channel stays stable
   const [realtimeConnected, setRealtimeConnected] = useState(false)
 
   useEffect(() => {
     if (!currentOrg?.id) return
 
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    const channelName = `inbox-rt-${currentOrg.id}`
+    const channelName = `inbox-rt-${currentOrg.id}-${Date.now()}`
 
-    const setupChannel = () => {
-      const ch = supabase.channel(channelName)
-        // Thread changes (filtered by org_id — reliable)
-        .on('postgres_changes', {
-          event: '*', schema: 'public', table: 'inbox_threads',
-          filter: `org_id=eq.${currentOrg.id}`,
-        }, (payload) => {
-          console.log('[Inbox RT] Thread change:', payload.eventType, payload.new && (payload.new as { id: string }).id)
-          fetchThreads()
-          // If the changed thread is currently open, refresh messages too
-          const changedId = (payload.new as { id?: string })?.id
-          if (changedId && changedId === selectedThreadId) {
-            fetchMessages(selectedThreadId)
-          }
-        })
-        // New messages (listen for inserts, thread update above handles thread list)
-        .on('postgres_changes', {
-          event: 'INSERT', schema: 'public', table: 'inbox_messages',
-        }, (payload) => {
-          const threadId = (payload.new as { thread_id: string }).thread_id
-          console.log('[Inbox RT] New message in thread:', threadId)
-          if (threadId === selectedThreadId) {
-            fetchMessages(selectedThreadId)
-          }
-          // Thread list already updated via inbox_threads change
-        })
-        // Comments
-        .on('postgres_changes', {
-          event: 'INSERT', schema: 'public', table: 'inbox_comments',
-        }, (payload) => {
-          const threadId = (payload.new as { thread_id: string }).thread_id
-          if (threadId === selectedThreadId) {
-            fetchComments(selectedThreadId)
-          }
-        })
-        .subscribe((status) => {
-          console.log('[Inbox RT] Status:', status)
-          if (status === 'SUBSCRIBED') {
-            setRealtimeConnected(true)
-            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-          } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
-            setRealtimeConnected(false)
-            // Auto-reconnect after 5 seconds
-            if (!reconnectTimer) {
-              reconnectTimer = setTimeout(() => {
-                console.log('[Inbox RT] Reconnecting...')
-                supabase.removeChannel(ch)
-                setupChannel()
-              }, 5_000)
-            }
-          }
-        })
-
-      return ch
-    }
-
-    const channel = setupChannel()
+    const ch = supabase.channel(channelName)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'inbox_threads',
+        filter: `org_id=eq.${currentOrg.id}`,
+      }, (payload) => {
+        console.log('[Inbox RT] Thread change:', payload.eventType)
+        fetchThreadsRef.current()
+        const changedId = (payload.new as { id?: string })?.id
+        if (changedId && changedId === selectedThreadIdRef.current) {
+          fetchMessagesRef.current(selectedThreadIdRef.current)
+        }
+      })
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'inbox_messages',
+      }, (payload) => {
+        const tid = (payload.new as { thread_id: string }).thread_id
+        console.log('[Inbox RT] New message in thread:', tid)
+        if (tid === selectedThreadIdRef.current) {
+          fetchMessagesRef.current(selectedThreadIdRef.current)
+        }
+      })
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'inbox_comments',
+      }, (payload) => {
+        const tid = (payload.new as { thread_id: string }).thread_id
+        if (tid === selectedThreadIdRef.current) {
+          fetchCommentsRef.current(selectedThreadIdRef.current)
+        }
+      })
+      .subscribe((status) => {
+        console.log('[Inbox RT] Status:', status)
+        setRealtimeConnected(status === 'SUBSCRIBED')
+      })
 
     return () => {
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      supabase.removeChannel(channel)
+      supabase.removeChannel(ch)
       setRealtimeConnected(false)
     }
-  }, [currentOrg?.id, selectedThreadId, fetchThreads, fetchMessages, fetchComments])
+  }, [currentOrg?.id])
 
   // Polling fallback — 15s when realtime disconnected, 60s when connected
   useEffect(() => {
