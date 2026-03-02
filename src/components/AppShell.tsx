@@ -29,6 +29,7 @@ import CompanyDetail from '@/pages/companies/CompanyDetail'
 import CompanyForm from '@/pages/companies/CompanyForm'
 import { supabase } from '@/lib/supabase'
 import ChatView from '@/pages/ChatView'
+import NotificationBell from '@/components/NotificationBell'
 import InboxPage from '@/pages/Inbox'
 import ProjectsList from '@/pages/projects/ProjectsList'
 import ProjectDetail from '@/pages/projects/ProjectDetail'
@@ -283,9 +284,10 @@ export default function AppShell() {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <span className="ml-2 text-sm font-medium text-white truncate">
+            <span className="ml-2 text-sm font-medium text-white truncate flex-1">
               {currentOrg?.name}
             </span>
+            <NotificationBell />
           </header>
           <main className="flex-1 overflow-y-auto min-w-0" data-testid="main-content">
             <Routes>

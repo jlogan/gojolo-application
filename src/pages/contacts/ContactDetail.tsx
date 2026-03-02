@@ -4,7 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
 import {
   Mail, Phone, Building2, Pencil, ArrowLeft, Trash2, Plus,
-  FolderKanban, MessageSquare, Send, X,
+  FolderKanban, MessageSquare, Send, X, GitMerge,
 } from 'lucide-react'
 import type { Contact } from './ContactsList'
 
@@ -104,6 +104,27 @@ export default function ContactDetail() {
     navigate('/contacts')
   }
 
+  const [showMerge, setShowMerge] = useState(false)
+  const [mergeTargetId, setMergeTargetId] = useState('')
+  const [mergeContacts, setMergeContacts] = useState<{ id: string; name: string; email: string | null }[]>([])
+
+  useEffect(() => {
+    if (!showMerge || !currentOrg?.id || !id) return
+    supabase.from('contacts').select('id, name, email').eq('org_id', currentOrg.id).neq('id', id).order('name')
+      .then(({ data }) => setMergeContacts((data as { id: string; name: string; email: string | null }[]) ?? []))
+  }, [showMerge, currentOrg?.id, id])
+
+  const handleMerge = async () => {
+    if (!id || !mergeTargetId || !confirm('Merge this contact into the selected contact? This contact will be hidden.')) return
+    await supabase.from('contacts').update({ merged_into: mergeTargetId }).eq('id', id)
+    // Move emails, phones, thread links to target
+    await supabase.from('contact_emails').update({ contact_id: mergeTargetId }).eq('contact_id', id)
+    await supabase.from('contact_phones').update({ contact_id: mergeTargetId }).eq('contact_id', id)
+    await supabase.from('inbox_thread_contacts').update({ contact_id: mergeTargetId }).eq('contact_id', id)
+    await supabase.from('project_contacts').update({ contact_id: mergeTargetId }).eq('contact_id', id)
+    navigate(`/contacts/${mergeTargetId}`)
+  }
+
   const handleAddEmail = async () => {
     if (!id || !newEmail.trim()) return
     await supabase.from('contact_emails').insert({ contact_id: id, email: newEmail.trim(), is_primary: emails.length === 0 })
@@ -189,6 +210,7 @@ export default function ContactDetail() {
           {!editing && (
             <div className="flex items-center gap-1 shrink-0">
               <button type="button" onClick={() => setEditing(true)} className="p-2 rounded text-gray-400 hover:text-white hover:bg-surface-muted" title="Edit"><Pencil className="w-4 h-4" /></button>
+              <button type="button" onClick={() => setShowMerge(!showMerge)} className="p-2 rounded text-gray-400 hover:text-accent hover:bg-surface-muted" title="Merge"><GitMerge className="w-4 h-4" /></button>
               <button type="button" onClick={handleDelete} className="p-2 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted" title="Delete"><Trash2 className="w-4 h-4" /></button>
             </div>
           )}
@@ -210,6 +232,25 @@ export default function ContactDetail() {
           </div>
         )}
       </div>
+
+      {/* Merge panel */}
+      {showMerge && (
+        <div className="rounded-lg border border-accent/30 bg-surface-elevated p-4 mb-6 space-y-3">
+          <h3 className="text-sm font-medium text-white flex items-center gap-2"><GitMerge className="w-4 h-4 text-accent" /> Merge into another contact</h3>
+          <p className="text-xs text-gray-400">This will move all emails, phones, thread links, and project links to the target contact and hide this one.</p>
+          <div className="flex gap-2">
+            <select value={mergeTargetId} onChange={e => setMergeTargetId(e.target.value)}
+              className="flex-1 rounded border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
+              <option value="">Select contact to merge into…</option>
+              {mergeContacts.map(c => <option key={c.id} value={c.id}>{c.name}{c.email ? ` (${c.email})` : ''}</option>)}
+            </select>
+            <button type="button" onClick={handleMerge} disabled={!mergeTargetId}
+              className="px-4 py-2 rounded bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">Merge</button>
+            <button type="button" onClick={() => setShowMerge(false)}
+              className="px-3 py-2 rounded border border-border text-sm text-gray-300 hover:bg-surface-muted">Cancel</button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Emails */}

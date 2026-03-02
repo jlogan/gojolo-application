@@ -40,3 +40,7 @@ verify_jwt = false
 # ai-chat: JWT verified inside the function via getUser().
 [functions.ai-chat]
 verify_jwt = false
+
+# imap-flag-sync: sync IMAP flags when threads are closed/trashed/reopened.
+[functions.imap-flag-sync]
+verify_jwt = false
