@@ -133,10 +133,12 @@ export default function Inbox() {
     ...comments.map(c => ({ kind: 'comment' as const, data: c, ts: c.created_at })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
 
-  // Data fetching
+  const initialLoadDone = useRef(false)
+
+  // Data fetching — on re-fetch, merge new threads on top instead of clearing + "Loading"
   const fetchThreads = useCallback(async () => {
     if (!currentOrg?.id || !userId) return
-    setLoading(true)
+    if (!initialLoadDone.current) setLoading(true)
     try {
       let query = supabase.from('inbox_threads')
         .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
@@ -147,12 +149,13 @@ export default function Inbox() {
       else if (filter === 'assigned') {
         const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
         const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
-        if (!tids.length) { setThreads([]); setLoading(false); return }
+        if (!tids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
         query = query.in('id', tids)
       }
       const { data } = await query
       setThreads((data as InboxThread[]) ?? [])
-    } catch { setThreads([]) }
+      initialLoadDone.current = true
+    } catch { if (!initialLoadDone.current) setThreads([]) }
     setLoading(false)
   }, [currentOrg?.id, filter, userId])
 
@@ -262,22 +265,42 @@ export default function Inbox() {
     ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
     : threads
 
-  // Sync
+  // Sync — all accounts in parallel
   const handleSync = async () => {
     if (!currentOrg?.id || syncing) return
     setSyncing(true)
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) { toast('Please sign in again'); setSyncing(false); return }
+
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-        body: JSON.stringify({ orgId: currentOrg.id }),
-      })
-      const data = await res.json().catch(() => ({}))
-      toast(data?.messagesInserted > 0 ? `Synced ${data.messagesInserted} new message(s)` : 'No new messages')
+      // Get all active IMAP accounts
+      const { data: accounts } = await supabase.from('imap_accounts').select('id').eq('org_id', currentOrg.id).eq('is_active', true)
+      const accountIds = (accounts ?? []).map((a: { id: string }) => a.id)
+
+      if (accountIds.length === 0) { toast('No email accounts configured'); setSyncing(false); return }
+
+      const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }
+
+      // Sync all accounts in parallel
+      const results = await Promise.allSettled(
+        accountIds.map(accountId =>
+          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`, {
+            method: 'POST', headers,
+            body: JSON.stringify({ orgId: currentOrg.id, accountId }),
+          }).then(r => r.json()).catch(() => ({ messagesInserted: 0 }))
+        )
+      )
+
+      const totalNew = results.reduce((sum, r) => {
+        if (r.status === 'fulfilled') return sum + (r.value?.messagesInserted ?? 0)
+        return sum
+      }, 0)
+
+      toast(totalNew > 0 ? `Synced ${totalNew} new message(s) from ${accountIds.length} account(s)` : `No new messages (${accountIds.length} account(s) checked)`)
     } catch (e) { toast((e as Error).message) }
-    setSyncing(false); fetchThreads()
+
+    setSyncing(false)
+    fetchThreads()
   }
 
   const handleAssignTo = async (uid: string) => {
@@ -528,7 +551,7 @@ export default function Inbox() {
       <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 overflow-x-auto">
           {FILTERS.map(f => (
-            <button key={f.id} type="button" onClick={() => { setFilter(f.id); setSelectedThreadId(null) }}
+            <button key={f.id} type="button" onClick={() => { setFilter(f.id); setSelectedThreadId(null); initialLoadDone.current = false }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
                 filter === f.id ? 'bg-accent text-white' : 'bg-surface-muted text-gray-300 hover:bg-surface-muted/80'}`}>
               <f.icon className="w-3.5 h-3.5" /> {f.label}
