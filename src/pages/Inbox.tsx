@@ -853,12 +853,37 @@ export default function Inbox() {
                       const { html, content } = cleanMessageBody(m)
                       const sanitized = html ? sanitizeEmailHtml(content) : content
                       return (
-                        <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden">
-                          <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 bg-surface-elevated/50">
-                            <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
-                            {m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
-                            {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
-                            <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
+                        <article key={`msg-${m.id}`} className="rounded-lg border border-border overflow-hidden group/msg">
+                          <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 bg-surface-elevated/50">
+                            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 flex-1 min-w-0">
+                              <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
+                              {m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
+                              {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
+                              <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
+                            </div>
+                            <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
+                              <button type="button" title="Reply" onClick={() => {
+                                setReplyTo(m.from_identifier); setReplyCc('')
+                                setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
+                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(false); setReplyAttachments([]); setReplyMode('reply')
+                                setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+                              }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
+                              <button type="button" title="Reply All" onClick={() => {
+                                setReplyTo(m.from_identifier)
+                                setReplyCc([m.to_identifier, m.cc].filter(Boolean).join(', '))
+                                setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
+                                setReplyHtml(''); setReplyBcc(''); setShowCcBcc(true); setReplyAttachments([]); setReplyMode('reply_all')
+                                setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+                              }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>
+                              <button type="button" title="Forward" onClick={() => {
+                                setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
+                                setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
+                                const { content: fwdContent } = cleanMessageBody(m)
+                                setReplyHtml(`<br/><br/>---------- Forwarded message ----------<br/><b>From:</b> ${m.from_identifier}<br/><b>Date:</b> ${new Date(m.received_at).toLocaleString()}<br/><b>Subject:</b> ${selectedThread?.subject ?? ''}<br/><br/>${fwdContent}`)
+                                setReplyAttachments([]); setReplyMode('forward')
+                                setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+                              }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Forward className="w-3.5 h-3.5" /></button>
+                            </div>
                           </header>
                           {html ? (() => {
                             const { srcDoc, isDark } = buildEmailSrcDoc(sanitized)
