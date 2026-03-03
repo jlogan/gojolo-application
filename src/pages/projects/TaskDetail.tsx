@@ -1,11 +1,17 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
+<<<<<<< Updated upstream
   ArrowLeft, Send, Plus, User,
   Paperclip, Key, Mail, ChevronRight,
+=======
+  ArrowLeft, Send, Plus, User, Link as LinkIcon,
+  Paperclip, ExternalLink, Key, Mail, MessageSquare, ChevronRight, Download,
+  FileText, Pencil, Trash2,
+>>>>>>> Stashed changes
 } from 'lucide-react'
 
 type Task = {
@@ -40,6 +46,90 @@ function getLoomEmbedUrl(url: string): string {
   return match ? `https://www.loom.com/embed/${match[1]}` : url
 }
 
+const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g
+const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|svg)(\?|$)/i
+const TASK_ARTIFACTS_PATH_RE = /\/storage\/v1\/object\/public\/task-artifacts\/(.+?)(?:\?|$)/
+const PAPERCLIP_EMOJI = /\u{1F4CE}\s*/gu
+function isImageUrl(url: string): boolean { return IMAGE_EXT_RE.test(url) }
+function getTaskArtifactsPath(url: string): string | null {
+  const m = url.match(TASK_ARTIFACTS_PATH_RE)
+  return m ? m[1] : null
+}
+
+type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[] }
+function parseCommentContent(content: string): ParsedComment {
+  const attachments: { href: string; label: string; isImage: boolean }[] = []
+  let text = content.replace(PAPERCLIP_EMOJI, '')
+  text = text.replace(MARKDOWN_LINK_RE, (_, label: string, url: string) => {
+    const href = url.trim()
+    const displayLabel = (label || href.split('/').pop() || 'attachment').trim()
+    attachments.push({ href, label: displayLabel, isImage: isImageUrl(href) })
+    return ''
+  })
+  text = text.trim()
+  return { text, attachments }
+}
+
+const THUMB_SIZE = 72
+
+function CommentAttachmentCard({ href, label, isImage }: { href: string; label: string; isImage: boolean }) {
+  const path = getTaskArtifactsPath(href)
+  const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    if (!path) {
+      setSignedUrl(href)
+      return
+    }
+    supabase.storage.from('task-artifacts').createSignedUrl(path, 3600).then(({ data, error }) => {
+      if (error) setFailed(true)
+      else if (data?.signedUrl) setSignedUrl(data.signedUrl)
+    })
+  }, [path, href])
+  const downloadUrl = signedUrl ?? href
+  const imgSrc = path ? signedUrl : (isImage ? href : null)
+  const canPreview = isImage && imgSrc && !failed
+  return (
+    <div className="flex flex-col items-center gap-1 shrink-0">
+      <a
+        href={downloadUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        download={label}
+        className="flex items-center justify-center rounded-lg border border-border bg-surface-elevated overflow-hidden hover:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent shrink-0"
+        style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+      >
+        {canPreview ? (
+          <img src={imgSrc} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setFailed(true)} />
+        ) : (
+          <div className="flex items-center justify-center w-full h-full text-gray-500">
+            <FileText className="w-8 h-8" />
+          </div>
+        )}
+      </a>
+      <a href={downloadUrl} target="_blank" rel="noopener noreferrer" download={label} className="text-xs text-gray-500 hover:text-accent truncate max-w-[72px]">
+        Download
+      </a>
+    </div>
+  )
+}
+
+function CommentContent({ content }: { content: string }) {
+  const { text, attachments } = parseCommentContent(content)
+  return (
+    <span>
+      {text && <span className="whitespace-pre-wrap">{text}</span>}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-3 mt-2">
+          {attachments.map((a, i) => (
+            <CommentAttachmentCard key={i} href={a.href} label={a.label} isImage={a.isImage} />
+          ))}
+        </div>
+      )}
+    </span>
+  )
+}
+
 export default function TaskDetail() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>()
   const { currentOrg } = useOrg()
@@ -67,10 +157,15 @@ export default function TaskDetail() {
 
   // Comment form
   const [commentText, setCommentText] = useState('')
+<<<<<<< Updated upstream
   const [commentFile, setCommentFile] = useState<File | null>(null)
 
   // Loom modal
   const [loomModalUrl, setLoomModalUrl] = useState<string | null>(null)
+=======
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+>>>>>>> Stashed changes
 
   // Time log form
   const [showTimeForm, setShowTimeForm] = useState(false)
@@ -185,6 +280,7 @@ export default function TaskDetail() {
   }
 
   const handleAddComment = async () => {
+<<<<<<< Updated upstream
     if (!taskId || (!commentText.trim() && !commentFile) || !user?.id) return
     let fileUrl: string | null = null
     let fileName: string | null = null
@@ -201,6 +297,43 @@ export default function TaskDetail() {
       await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content })
     }
     setCommentText(''); setCommentFile(null); fetchAll()
+=======
+    if (!taskId || !commentText.trim() || !user?.id) return
+    const { data: newComment } = await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content: commentText.trim() }).select('id').single()
+    setCommentText('')
+    await fetchAll()
+    if (newComment && projectId) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session?.access_token) {
+          await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/notify-task-comment`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+            body: JSON.stringify({ taskId, projectId, commentId: (newComment as { id: string }).id, contentPreview: commentText.trim().slice(0, 200), authorName: orgUsers.find(u => u.user_id === user?.id)?.display_name ?? user?.email ?? 'Someone' }),
+          })
+        }
+      } catch (_) { /* ignore */ }
+    }
+  }
+
+  const handleEditComment = (c: TaskComment) => {
+    setEditingCommentId(c.id)
+    setEditDraft(c.content)
+  }
+
+  const handleSaveComment = async () => {
+    if (!editingCommentId || !editDraft.trim()) return
+    await supabase.from('task_comments').update({ content: editDraft.trim() }).eq('id', editingCommentId).eq('user_id', user!.id)
+    setEditingCommentId(null)
+    setEditDraft('')
+    fetchAll()
+  }
+
+  const handleDeleteComment = async (c: TaskComment) => {
+    if (!window.confirm('Delete this comment?')) return
+    await supabase.from('task_comments').delete().eq('id', c.id).eq('user_id', user!.id)
+    fetchAll()
+>>>>>>> Stashed changes
   }
 
   const handleLogTime = async () => {
@@ -257,6 +390,13 @@ export default function TaskDetail() {
   const billableMinutes = timeLogs.filter(t => t.billed !== false).reduce((sum, t) => sum + (t.hours * 60) + t.minutes, 0)
   const currentStatusInfo = STATUS_FLOW.find(s => s.value === task?.status) ?? STATUS_FLOW[0]
   const currentStep = currentStatusInfo.step
+
+  type ActivityItem = { type: 'status'; id: string; created_at: string; display_name?: string | null; from_status: string | null; to_status: string } | { type: 'comment'; id: string; created_at: string; display_name?: string | null; content: string }
+  const activityItems: ActivityItem[] = useMemo(() => {
+    const statusItems: ActivityItem[] = statusHistory.map(s => ({ type: 'status' as const, id: s.id, created_at: s.created_at, display_name: s.display_name, from_status: s.from_status, to_status: s.to_status }))
+    const commentItems: ActivityItem[] = comments.map(c => ({ type: 'comment' as const, id: c.id, created_at: c.created_at, display_name: c.display_name, content: c.content }))
+    return [...statusItems, ...commentItems].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  }, [statusHistory, comments])
 
   if (loading) return <div className="p-4 md:p-6 text-gray-400">Loading…</div>
   if (!task) return <div className="p-4 md:p-6"><p className="text-gray-400">Task not found.</p><Link to={`/projects/${projectId}`} className="text-accent hover:underline">Back to project</Link></div>
@@ -462,7 +602,7 @@ export default function TaskDetail() {
         {([
           ['comments', `Comments (${comments.length})`],
           ['time', `Time (${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m)`],
-          ['activity', `Activity (${statusHistory.length})`],
+          ['activity', `Activity (${activityItems.length})`],
           ['emails', `Emails (${linkedThreads.length})`],
         ] as const).map(([id, label]) => (
           <button key={id} type="button" onClick={() => setActiveTab(id)}
@@ -481,12 +621,30 @@ export default function TaskDetail() {
                 {c.avatar_url ? <img src={c.avatar_url} alt="" className="w-8 h-8 rounded-full shrink-0 mt-0.5" /> : (
                   <div className="w-8 h-8 rounded-full bg-surface-muted flex items-center justify-center shrink-0 mt-0.5"><User className="w-4 h-4 text-gray-500" /></div>
                 )}
-                <div className="flex-1 rounded-lg border border-border bg-surface-muted/50 px-4 py-2.5">
-                  <div className="flex items-baseline gap-2 text-[11px] mb-1">
+                <div className="flex-1 rounded-lg border border-border bg-surface-muted/50 px-4 py-2.5 min-w-0">
+                  <div className="flex items-baseline gap-2 text-[11px] mb-1 flex-wrap">
                     <span className="text-white font-medium">{c.display_name ?? 'User'}</span>
                     <span className="text-gray-500">{new Date(c.created_at).toLocaleString()}</span>
+                    {user?.id === c.user_id && editingCommentId !== c.id && (
+                      <span className="ml-auto flex items-center gap-1">
+                        <button type="button" onClick={() => handleEditComment(c)} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted" title="Edit"><Pencil className="w-3 h-3" /></button>
+                        <button type="button" onClick={() => handleDeleteComment(c)} className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-surface-muted" title="Delete"><Trash2 className="w-3 h-3" /></button>
+                      </span>
+                    )}
                   </div>
-                  <p className="text-sm text-gray-200 whitespace-pre-wrap">{c.content}</p>
+                  {editingCommentId === c.id ? (
+                    <div className="space-y-2">
+                      <textarea value={editDraft} onChange={e => setEditDraft(e.target.value)} rows={3} className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent resize-y" />
+                      <div className="flex gap-2">
+                        <button type="button" onClick={handleSaveComment} className="px-2 py-1 rounded bg-accent text-white text-xs font-medium">Save</button>
+                        <button type="button" onClick={() => { setEditingCommentId(null); setEditDraft('') }} className="px-2 py-1 rounded border border-border text-xs text-gray-300">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-200">
+                      <CommentContent content={c.content} />
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -590,16 +748,26 @@ export default function TaskDetail() {
 
       {activeTab === 'activity' && (
         <div className="space-y-3">
-          {statusHistory.length === 0 ? <p className="text-gray-500 text-sm">No activity yet.</p> : statusHistory.map(s => (
-            <div key={s.id} className="flex items-center gap-3 text-sm">
+          {activityItems.length === 0 ? <p className="text-gray-500 text-sm">No activity yet.</p> : activityItems.map(item => (
+            <div key={`${item.type}-${item.id}`} className="flex items-center gap-3 text-sm">
               <ChevronRight className="w-4 h-4 text-gray-500 shrink-0" />
               <div>
-                <span className="text-gray-400">{s.display_name ?? 'System'}</span>
-                <span className="text-gray-500"> changed status from </span>
-                <span className="text-gray-300">{STATUS_FLOW.find(f => f.value === s.from_status)?.label ?? s.from_status ?? 'none'}</span>
-                <span className="text-gray-500"> to </span>
-                <span className="text-white font-medium">{STATUS_FLOW.find(f => f.value === s.to_status)?.label ?? s.to_status}</span>
-                <span className="text-gray-600 text-xs ml-2">{new Date(s.created_at).toLocaleString()}</span>
+                {item.type === 'status' ? (
+                  <>
+                    <span className="text-gray-400">{item.display_name ?? 'System'}</span>
+                    <span className="text-gray-500"> changed status from </span>
+                    <span className="text-gray-300">{STATUS_FLOW.find(f => f.value === item.from_status)?.label ?? item.from_status ?? 'none'}</span>
+                    <span className="text-gray-500"> to </span>
+                    <span className="text-white font-medium">{STATUS_FLOW.find(f => f.value === item.to_status)?.label ?? item.to_status}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-gray-400">{item.display_name ?? 'User'}</span>
+                    <span className="text-gray-500"> added a comment: </span>
+                    <span className="text-gray-300">{(item.content || '').replace(/\[[^\]]*\]\([^)]+\)/g, '').trim().slice(0, 80)}{(item.content || '').length > 80 ? '…' : ''}</span>
+                  </>
+                )}
+                <span className="text-gray-600 text-xs ml-2">{new Date(item.created_at).toLocaleString()}</span>
               </div>
             </div>
           ))}
