@@ -488,56 +488,109 @@ export default function ProjectDetail() {
   )
 }
 
+const SLACK_ARCHIVES_URL_RE = /^https?:\/\/([a-z0-9-]+)\.slack\.com\/archives\/([A-Z0-9]+)/i
+
 function SlackChannelPicker({ projectId }: { projectId: string; orgId: string }) {
-  const [channelName, setChannelName] = useState('')
+  const [channel, setChannel] = useState<{ channel_id: string; channel_name: string; workspace_domain: string | null } | null>(null)
+  const [inputValue, setInputValue] = useState('')
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
+  const loadChannel = useCallback(() => {
     if (!projectId) return
-    supabase.from('slack_project_channels').select('channel_id, channel_name').eq('project_id', projectId).limit(1)
+    supabase.from('slack_project_channels').select('channel_id, channel_name, workspace_domain').eq('project_id', projectId).limit(1)
       .then(({ data }) => {
-        const row = data?.[0] as { channel_id: string; channel_name: string | null } | undefined
-        setChannelName(row?.channel_name ?? row?.channel_id ?? '')
+        const row = data?.[0] as { channel_id: string; channel_name: string | null; workspace_domain: string | null } | undefined
+        if (row?.channel_id) {
+          setChannel({
+            channel_id: row.channel_id,
+            channel_name: row.channel_name ?? row.channel_id,
+            workspace_domain: row.workspace_domain ?? null,
+          })
+        } else {
+          setChannel(null)
+        }
       })
   }, [projectId])
 
-  const handleSave = async () => {
-    const trimmed = channelName.trim().replace(/^#+/, '') || ''
+  useEffect(() => { loadChannel() }, [loadChannel])
+
+  const normalizeChannelName = (raw: string) => raw.trim().toLowerCase().replace(/\s+/g, '').replace(/^#+/, '')
+
+  const handleAdd = async () => {
+    const trimmed = inputValue.trim()
+    if (!trimmed) return
     setSaving(true)
     await supabase.from('slack_project_channels').delete().eq('project_id', projectId)
-    if (trimmed) {
-      const value = trimmed.startsWith('#') ? trimmed : '#' + trimmed
+    const urlMatch = trimmed.match(SLACK_ARCHIVES_URL_RE)
+    if (urlMatch) {
+      const [, workspaceDomain, channelId] = urlMatch
       await supabase.from('slack_project_channels').insert({
         project_id: projectId,
-        channel_id: value,
-        channel_name: value,
+        channel_id: channelId,
+        channel_name: '#' + channelId,
+        workspace_domain: workspaceDomain?.toLowerCase() ?? null,
+      })
+    } else {
+      const normalized = normalizeChannelName(trimmed)
+      const channelName = '#' + normalized
+      await supabase.from('slack_project_channels').insert({
+        project_id: projectId,
+        channel_id: channelName,
+        channel_name: channelName,
+        workspace_domain: null,
       })
     }
+    setInputValue('')
     setSaving(false)
+    loadChannel()
   }
+
+  const handleRemove = async () => {
+    setSaving(true)
+    await supabase.from('slack_project_channels').delete().eq('project_id', projectId)
+    setSaving(false)
+    setChannel(null)
+  }
+
+  const slackUrl = channel?.workspace_domain && channel?.channel_id
+    ? `https://${channel.workspace_domain}.slack.com/archives/${channel.channel_id}`
+    : null
 
   return (
     <section className="rounded-lg border border-border bg-surface-elevated p-4">
       <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">Slack channel</h2>
       <p className="text-xs text-gray-500 mb-2">New emails from linked contacts will be posted here.</p>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={channelName}
-          onChange={e => setChannelName(e.target.value)}
-          onBlur={handleSave}
-          placeholder="#general or general"
-          className="flex-1 rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
-        />
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50 shrink-0"
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
-      </div>
+      {channel ? (
+        <div className="flex items-center justify-between py-1.5 text-sm">
+          {slackUrl ? (
+            <a href={slackUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline truncate">
+              {channel.channel_name}
+            </a>
+          ) : (
+            <span className="text-white truncate">{channel.channel_name}</span>
+          )}
+          <button type="button" onClick={handleRemove} disabled={saving} className="p-1 text-gray-500 hover:text-red-400" title="Remove channel"><X className="w-3 h-3" /></button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={inputValue}
+            onChange={e => setInputValue(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleAdd()}
+            placeholder="#general or paste Slack channel URL"
+            className="flex-1 rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+          />
+          <button
+            type="button"
+            onClick={handleAdd}
+            disabled={saving || !inputValue.trim()}
+            className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50 shrink-0"
+          >
+            {saving ? 'Saving…' : 'Add'}
+          </button>
+        </div>
+      )}
     </section>
   )
 }
