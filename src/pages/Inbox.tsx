@@ -445,6 +445,17 @@ export default function Inbox() {
     if (!selectedThreadId) return
     setActionLoading(true)
     await supabase.from('inbox_thread_assignments').upsert({ thread_id: selectedThreadId, user_id: uid }, { onConflict: 'thread_id' })
+
+    // Remove Inbox label on Gmail (archive)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ threadId: selectedThreadId, action: 'archive' }),
+      }).catch(() => {})
+    }
+
     await fetchThreads(); setActionLoading(false); toast(`Assigned to ${getUserName(uid)}`)
   }
 
