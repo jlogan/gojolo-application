@@ -34,6 +34,7 @@ import InboxPage from '@/pages/Inbox'
 import ProjectsList from '@/pages/projects/ProjectsList'
 import ProjectDetail from '@/pages/projects/ProjectDetail'
 import ProjectForm from '@/pages/projects/ProjectForm'
+import TaskDetail from '@/pages/projects/TaskDetail'
 
 type AppMode = 'software' | 'chat'
 
@@ -300,6 +301,7 @@ export default function AppShell() {
               <Route path="/projects/new" element={<ProjectForm />} />
               <Route path="/projects/:id" element={<ProjectDetail />} />
               <Route path="/projects/:id/edit" element={<ProjectForm />} />
+              <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetail />} />
               <Route path="/companies" element={<CompaniesList />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />

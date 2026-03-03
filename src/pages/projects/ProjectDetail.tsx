@@ -13,10 +13,10 @@ type Task = {
   id: string; title: string; status: string; priority: string;
   due_date: string | null; assigned_to: string | null; description: string | null
 }
-type Member = { user_id: string; role: string; display_name: string | null }
+type Member = { user_id: string; role: string; display_name: string | null; avatar_url: string | null }
 type CompanyRow = { company_id: string; name: string }
 type ContactRow = { contact_id: string; name: string; email: string | null }
-type OrgUser = { user_id: string; display_name: string | null }
+type OrgUser = { user_id: string; display_name: string | null; avatar_url: string | null }
 type Attachment = { id: string; task_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string }
 
 const STATUS_ICON: Record<string, typeof Circle> = { todo: Circle, in_progress: Clock, done: CheckCircle2 }
@@ -81,9 +81,9 @@ export default function ProjectDetail() {
     const rows = (data ?? []) as { user_id: string; role: string }[]
     if (rows.length === 0) { setMembers([]); return }
     const uids = rows.map(r => r.user_id)
-    const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', uids)
-    const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null }) => [p.id, p.display_name]))
-    setMembers(rows.map(r => ({ ...r, display_name: profileMap.get(r.user_id) ?? null })))
+    const { data: profiles } = await supabase.from('profiles').select('id, display_name, avatar_url').in('id', uids)
+    const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => [p.id, p]))
+    setMembers(rows.map(r => { const p = profileMap.get(r.user_id); return { ...r, display_name: p?.display_name ?? null, avatar_url: p?.avatar_url ?? null } }))
   }, [id])
 
   const fetchLinked = useCallback(async () => {
@@ -102,11 +102,13 @@ export default function ProjectDetail() {
 
   const fetchOrgUsers = useCallback(async () => {
     if (!currentOrg?.id) return
-    const { data } = await supabase.from('organization_users').select('user_id, profiles(display_name)').eq('org_id', currentOrg.id)
-    setOrgUsers((data ?? []).map((r: { user_id: string; profiles: { display_name: string | null } | { display_name: string | null }[] | null }) => {
-      const p = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles
-      return { user_id: r.user_id, display_name: p?.display_name ?? null }
-    }))
+    const { data: ouData } = await supabase.from('organization_users').select('user_id').eq('org_id', currentOrg.id)
+    const uids = (ouData ?? []).map((r: { user_id: string }) => r.user_id)
+    if (uids.length === 0) { setOrgUsers([]); return }
+    const { data: profiles } = await supabase.from('profiles').select('id, display_name, avatar_url').in('id', uids)
+    setOrgUsers((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => ({
+      user_id: p.id, display_name: p.display_name, avatar_url: p.avatar_url,
+    })))
   }, [currentOrg?.id])
 
   const fetchAllCompaniesContacts = useCallback(async () => {
@@ -186,7 +188,18 @@ export default function ProjectDetail() {
 
   const handleAddCompany = async () => {
     if (!id || !addCompanyId) return
+    // One company per project: remove existing first
+    if (companies.length > 0) {
+      for (const c of companies) await supabase.from('project_companies').delete().eq('project_id', id).eq('company_id', c.company_id)
+    }
     await supabase.from('project_companies').insert({ project_id: id, company_id: addCompanyId })
+    // Auto-link all contacts from this company
+    if (currentOrg?.id) {
+      const { data: companyContacts } = await supabase.from('contacts').select('id').eq('company_id', addCompanyId).eq('org_id', currentOrg.id)
+      for (const c of companyContacts ?? []) {
+        await supabase.from('project_contacts').upsert({ project_id: id, contact_id: (c as { id: string }).id }, { onConflict: 'project_id,contact_id' })
+      }
+    }
     setAddCompanyId('')
     fetchLinked()
   }
@@ -348,17 +361,7 @@ export default function ProjectDetail() {
                         <Icon className={`w-5 h-5 ${t.status === 'done' ? 'text-green-400' : t.status === 'in_progress' ? 'text-accent' : 'text-gray-500'}`} />
                       </button>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <p className={`font-medium text-sm ${t.status === 'done' ? 'line-through text-gray-500' : 'text-white'}`}>{t.title}</p>
-                          <div className="flex items-center gap-0.5 shrink-0">
-                            <button type="button" title="Upload file" onClick={() => setSelectedTaskForUpload(selectedTaskForUpload === t.id ? null : t.id)}
-                              className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Upload className="w-3.5 h-3.5" /></button>
-                            <button type="button" title="Edit task" onClick={() => startEditTask(t)}
-                              className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Pencil className="w-3.5 h-3.5" /></button>
-                            <button type="button" title="Delete task" onClick={() => handleDeleteTask(t.id)}
-                              className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted"><Trash2 className="w-3.5 h-3.5" /></button>
-                          </div>
-                        </div>
+                        <Link to={`/projects/${id}/tasks/${t.id}`} className={`font-medium text-sm hover:text-accent ${t.status === 'closed' ? 'line-through text-gray-500' : 'text-white'}`}>{t.title}</Link>
                         {t.description && <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{t.description}</p>}
                         <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs">
                           <span className={PRIORITY_COLORS[t.priority] ?? 'text-gray-400'}>{t.priority}</span>
@@ -366,6 +369,7 @@ export default function ProjectDetail() {
                           {t.assigned_to && <span className="text-gray-400">{getUserName(t.assigned_to)}</span>}
                           {taskAtts.length > 0 && <span className="text-gray-500 flex items-center gap-0.5"><Paperclip className="w-3 h-3" />{taskAtts.length}</span>}
                         </div>
+                        {/* Attachments for this task */}
                         {taskAtts.length > 0 && (
                           <div className="mt-2 space-y-1">
                             {taskAtts.map(a => (
@@ -384,6 +388,14 @@ export default function ProjectDetail() {
                           </div>
                         )}
                       </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button type="button" title="Upload file" onClick={() => setSelectedTaskForUpload(selectedTaskForUpload === t.id ? null : t.id)}
+                          className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Upload className="w-3.5 h-3.5" /></button>
+                        <button type="button" title="Edit task" onClick={() => startEditTask(t)}
+                          className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"><Pencil className="w-3.5 h-3.5" /></button>
+                        <button type="button" title="Delete task" onClick={() => handleDeleteTask(t.id)}
+                          className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
                     </div>
                   </li>
                 )
@@ -399,8 +411,17 @@ export default function ProjectDetail() {
             <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3"><Users className="w-4 h-4" /> Team ({members.length})</h2>
             {members.map(m => (
               <div key={m.user_id} className="flex items-center justify-between py-1.5 text-sm">
-                <span className="text-white truncate">{m.display_name ?? m.user_id.slice(0, 8)}</span>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-2 min-w-0">
+                  {m.avatar_url ? (
+                    <img src={m.avatar_url} alt="" className="w-6 h-6 rounded-full shrink-0" />
+                  ) : (
+                    <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center shrink-0 text-[10px] font-medium text-accent">
+                      {(m.display_name ?? '?')[0].toUpperCase()}
+                    </div>
+                  )}
+                  <span className="text-white truncate">{m.display_name ?? m.user_id.slice(0, 8)}</span>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
                   <span className="text-xs text-gray-500">{m.role}</span>
                   <button type="button" onClick={() => handleRemoveMember(m.user_id)} className="p-1 text-gray-500 hover:text-red-400"><X className="w-3 h-3" /></button>
                 </div>
