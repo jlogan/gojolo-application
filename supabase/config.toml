@@ -61,6 +61,10 @@ verify_jwt = false
 [functions.slack-events]
 verify_jwt = false
 
+# notify-task-comment: post new task comment to project's Slack channel (called from client with JWT).
+[functions.notify-task-comment]
+verify_jwt = true
+
 # sync-profile-avatar: sync OAuth avatar image into Supabase Storage.
 [functions.sync-profile-avatar]
 verify_jwt = false
