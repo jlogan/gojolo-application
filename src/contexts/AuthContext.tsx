@@ -42,11 +42,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
+    const uid = session?.user?.id
+    if (uid) localStorage.removeItem(`jolo_current_org_id_${uid}`)
     localStorage.removeItem('jolo_current_org_id')
     localStorage.removeItem('jolo_app_mode')
     await supabase.auth.signOut()
     window.location.href = '/login'
-  }, [])
+  }, [session?.user?.id])
 
   const value: AuthState = {
     session,

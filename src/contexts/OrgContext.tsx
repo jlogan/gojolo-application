@@ -29,6 +29,11 @@ type OrgState = {
 }
 
 const OrgContext = createContext<OrgState | null>(null)
+const STORAGE_KEY_PREFIX = 'jolo_current_org_id'
+
+function getStorageKey(userId: string | undefined) {
+  return userId ? `${STORAGE_KEY_PREFIX}_${userId}` : STORAGE_KEY_PREFIX
+}
 
 export function OrgProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
@@ -42,7 +47,7 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
     if (!user) {
       setMemberships([])
       setCurrentOrgState(null)
-      setLoading(false)
+      // Keep loading true so RequireOrg doesn't redirect to workspace before auth is ready
       return
     }
     const { data: orgUsers, error } = await supabase
@@ -86,12 +91,13 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
 
     setMemberships(list)
 
-    const storedId = localStorage.getItem('jolo_current_org_id')
+    const key = getStorageKey(user?.id)
+    const storedId = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
     const next = storedId
       ? list.find((m) => m.org.id === storedId)?.org ?? list[0]?.org ?? null
       : list[0]?.org ?? null
     setCurrentOrgState(next)
-    if (next) localStorage.setItem('jolo_current_org_id', next.id)
+    if (next && typeof localStorage !== 'undefined') localStorage.setItem(key, next.id)
     setLoading(false)
   }, [user?.id])
 
@@ -119,7 +125,8 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
   }, [isPlatformAdmin, user?.id, refetchAllOrgs])
 
   useEffect(() => {
-    const storedId = localStorage.getItem('jolo_current_org_id')
+    const key = getStorageKey(user?.id)
+    const storedId = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
     if (!storedId || !isPlatformAdmin || memberships.some((m) => m.org.id === storedId)) return
     supabase
       .from('organizations')
@@ -129,12 +136,12 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
       .then(({ data }) => {
         if (data) setCurrentOrgState(data as Organization)
       })
-  }, [isPlatformAdmin, memberships])
+  }, [isPlatformAdmin, memberships, user?.id])
 
   useEffect(() => {
     if (!user) return
     const run = async () => {
-      const { data: profile } = await supabase.from('profiles').select('email').eq('id', user.id).single()
+      const { data: profile } = await supabase.from('profiles').select('email').eq('id', user.id).maybeSingle()
       if (user.email && profile && (profile as { email: string | null }).email !== user.email) {
         await supabase.from('profiles').update({ email: user.email }).eq('id', user.id)
       }
@@ -146,9 +153,12 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
 
   const setCurrentOrg = useCallback((org: Organization | null) => {
     setCurrentOrgState(org)
-    if (org) localStorage.setItem('jolo_current_org_id', org.id)
-    else localStorage.removeItem('jolo_current_org_id')
-  }, [])
+    const key = getStorageKey(user?.id)
+    if (typeof localStorage !== 'undefined') {
+      if (org) localStorage.setItem(key, org.id)
+      else localStorage.removeItem(key)
+    }
+  }, [user?.id])
 
   const currentMembership = currentOrg ? memberships.find((m) => m.org.id === currentOrg.id) : null
   const isOrgAdmin = currentMembership?.role_name === 'admin' || isPlatformAdmin === true

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useOrg, type Organization } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
 import { LayoutGrid, Plus } from 'lucide-react'
@@ -7,6 +7,10 @@ import { LayoutGrid, Plus } from 'lucide-react'
 export default function WorkspacePicker() {
   const { memberships, currentOrg, setCurrentOrg, isPlatformAdmin, allOrganizations, refetch } = useOrg()
   const navigate = useNavigate()
+  const location = useLocation()
+  const from = (location.state as { from?: { pathname: string; search?: string; hash?: string } })?.from
+  const returnTo = from?.pathname ? `${from.pathname}${from.search ?? ''}${from.hash ?? ''}` : '/'
+
   const [showCreate, setShowCreate] = useState(false)
   const [wsName, setWsName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -17,11 +21,13 @@ export default function WorkspacePicker() {
   useEffect(() => {
     if (memberships.length === 1 && !isPlatformAdmin) {
       setCurrentOrg(memberships[0].org)
-      navigate('/', { replace: true })
+      navigate(returnTo, { replace: true })
     }
-  }, [memberships, isPlatformAdmin, setCurrentOrg, navigate])
+  }, [memberships, isPlatformAdmin, setCurrentOrg, navigate, returnTo])
 
-  const handleSelect = (org: Organization) => { setCurrentOrg(org); navigate('/', { replace: true }) }
+  const handleSelect = (org: Organization) => {
+    setCurrentOrg(org); navigate(returnTo, { replace: true })
+  }
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -34,7 +40,7 @@ export default function WorkspacePicker() {
       await refetch()
       const org = data as Organization
       setCurrentOrg(org)
-      navigate('/', { replace: true })
+      navigate(returnTo, { replace: true })
     }
   }
 
