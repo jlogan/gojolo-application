@@ -7,7 +7,7 @@ import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive,
   List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
   RotateCcw, Send, RefreshCw, Paperclip, Download,
-  Search, User, Circle, Link2,
+  Search, User, Link2,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
@@ -82,6 +82,9 @@ export default function Inbox() {
 
   // Multi-select
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  // Accordion: which messages are expanded (last one auto-expanded)
+  const [expandedMsgs, setExpandedMsgs] = useState<Set<string>>(new Set())
 
   // Pagination
   const [pageSize] = useState(50)
@@ -354,7 +357,8 @@ export default function Inbox() {
   }, [fetchThreads, realtimeConnected])
 
   useEffect(() => {
-    if (!selectedThreadId) { setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); return }
+    if (!selectedThreadId) { setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); setExpandedMsgs(new Set()); return }
+    setExpandedMsgs(new Set()) // Reset accordion on thread change
     fetchMessages(selectedThreadId); fetchComments(selectedThreadId); fetchThreadContacts(selectedThreadId); fetchAttachments(selectedThreadId)
     supabase.rpc('match_thread_contacts', { p_thread_id: selectedThreadId }).then(() => fetchThreadContacts(selectedThreadId))
   }, [selectedThreadId, fetchMessages, fetchComments, fetchThreadContacts, fetchAttachments])
@@ -839,12 +843,8 @@ export default function Inbox() {
                         })
                       }
                     }}
-                      className={`w-full text-left px-4 py-3 transition-colors ${selectedThreadId === t.id ? 'bg-surface-muted' : 'hover:bg-surface-muted/50'}`}>
+                      className={`w-full text-left pl-5 pr-4 py-3 transition-colors border-l-2 ${unread ? 'border-accent bg-accent/5' : 'border-transparent'} ${selectedThreadId === t.id ? 'bg-surface-muted' : 'hover:bg-surface-muted/50'}`}>
                       <div className="flex items-start gap-2">
-                        {/* Unread indicator */}
-                        <div className="mt-2 shrink-0">
-                          {unread ? <Circle className="w-2 h-2 fill-accent text-accent" /> : <div className="w-2 h-2" />}
-                        </div>
                         <span className="mt-1 shrink-0 text-gray-500">{t.channel === 'email' ? <Mail className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}</span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline justify-between gap-2">
@@ -968,8 +968,11 @@ export default function Inbox() {
                     </div>
                   )}
 
-                  {messagesLoading ? <div className="text-gray-400 text-sm">Loading…</div> : (
-                    timeline.map((item) => {
+                  {messagesLoading ? <div className="text-gray-400 text-sm">Loading…</div> : (() => {
+                    // Find the last message (for auto-expand)
+                    const msgItems = timeline.filter(i => i.kind === 'message')
+                    const lastMsgId = msgItems.length > 0 ? (msgItems[msgItems.length - 1].data as InboxMessage).id : null
+                    return timeline.map((item) => {
                       if (item.kind === 'comment') {
                         const c = item.data
                         return (
@@ -993,25 +996,29 @@ export default function Inbox() {
                         )
                       }
                       const m = item.data
-                      const { html, content } = cleanMessageBody(m)
+                      const isExpanded = m.id === lastMsgId || expandedMsgs.has(m.id)
+                      const { html, content } = isExpanded ? cleanMessageBody(m) : { html: false, content: '' }
                       const sanitized = html ? sanitizeEmailHtml(content) : content
+                      const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       return (<React.Fragment key={`msg-${m.id}`}>
                         <article className="rounded-lg border border-border overflow-hidden group/msg">
-                          <header className="px-4 py-2 border-b border-border text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 bg-surface-elevated/50">
+                          <header onClick={() => setExpandedMsgs(prev => { const n = new Set(prev); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n })}
+                            className={`px-4 py-2 text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 bg-surface-elevated/50 ${!isExpanded ? 'cursor-pointer hover:bg-surface-muted/50' : 'border-b border-border'}`}>
                             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 flex-1 min-w-0">
                               <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
-                              {m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
-                              {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
+                              {isExpanded && m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
+                              {isExpanded && m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
+                              {!isExpanded && preview && <span className="text-gray-500 truncate ml-2">{preview}</span>}
                               <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                             </div>
-                            <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
-                              <button type="button" title="Reply" onClick={() => {
+                            {isExpanded && <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
+                              <button type="button" title="Reply" onClick={(e) => { e.stopPropagation()
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
                                 setReplyTo(m.from_identifier); setReplyCc(''); setReplyBcc('')
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
                                 setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
-                              <button type="button" title="Reply All" onClick={() => {
+                              <button type="button" title="Reply All" onClick={(e) => { e.stopPropagation()
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
                                 setReplyTo(m.from_identifier)
                                 setReplyCc(m.cc ?? '')
@@ -1020,7 +1027,7 @@ export default function Inbox() {
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
                                 setReplyHtml(''); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>
-                              <button type="button" title="Forward" onClick={() => {
+                              <button type="button" title="Forward" onClick={(e) => { e.stopPropagation()
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
                                 setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
@@ -1028,9 +1035,9 @@ export default function Inbox() {
                                 setReplyHtml(`<br/><br/>---------- Forwarded message ----------<br/><b>From:</b> ${m.from_identifier}<br/><b>Date:</b> ${new Date(m.received_at).toLocaleString()}<br/><b>Subject:</b> ${selectedThread?.subject ?? ''}<br/><br/>${fwdContent}`)
                                 setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('forward')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Forward className="w-3.5 h-3.5" /></button>
-                            </div>
+                            </div>}
                           </header>
-                          {html ? (() => {
+                          {isExpanded && (html ? (() => {
                             const { srcDoc, isDark } = buildEmailSrcDoc(sanitized)
                             return (
                               <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
@@ -1042,7 +1049,7 @@ export default function Inbox() {
                             )
                           })() : (
                             <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
-                          )}
+                          ))}
                         </article>
                         {/* Render reply form directly below the anchored message */}
                         {replyMode && replyMode !== 'compose' && replyAnchorMsgId === m.id && (
@@ -1050,7 +1057,7 @@ export default function Inbox() {
                         )}
                       </React.Fragment>)
                     })
-                  )}
+                  })()}
 
                   {/* Fallback: render at bottom if triggered from header buttons (no anchor) */}
                   {replyMode && replyMode !== 'compose' && !replyAnchorMsgId && renderReplyForm(replyMode === 'forward')}
