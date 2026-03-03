@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   FolderKanban, Pencil, ArrowLeft, Plus, Trash2, Users, Building2, User,
-  CheckCircle2, Circle, Clock, Upload, Paperclip, X,
+  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash,
 } from 'lucide-react'
 import type { Project } from './ProjectsList'
 
@@ -488,61 +488,114 @@ export default function ProjectDetail() {
   )
 }
 
-const SLACK_ARCHIVES_URL_RE = /^https?:\/\/([a-z0-9-]+)\.slack\.com\/archives\/([A-Z0-9]+)/i
-
-function SlackChannelPicker({ projectId }: { projectId: string; orgId: string }) {
-  const [channel, setChannel] = useState<{ channel_id: string; channel_name: string; workspace_domain: string | null } | null>(null)
-  const [inputValue, setInputValue] = useState('')
+function SlackChannelPicker({ projectId, orgId }: { projectId: string; orgId: string }) {
+  const [channel, setChannel] = useState<{
+    channel_id: string
+    channel_name: string
+    workspace_domain: string | null
+    is_private: boolean
+  } | null>(null)
+  const [channels, setChannels] = useState<{ id: string; name: string; is_private: boolean; is_member: boolean }[]>([])
+  const [workspaceDomain, setWorkspaceDomain] = useState<string | null>(null)
+  const [channelQuery, setChannelQuery] = useState('')
+  const [showPicker, setShowPicker] = useState(false)
+  const [loadingChannels, setLoadingChannels] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
 
-  const loadChannel = useCallback(() => {
+  const loadChannel = useCallback(async () => {
     if (!projectId) return
-    supabase.from('slack_project_channels').select('channel_id, channel_name, workspace_domain').eq('project_id', projectId).limit(1)
-      .then(({ data }) => {
-        const row = data?.[0] as { channel_id: string; channel_name: string | null; workspace_domain: string | null } | undefined
-        if (row?.channel_id) {
-          setChannel({
-            channel_id: row.channel_id,
-            channel_name: row.channel_name ?? row.channel_id,
-            workspace_domain: row.workspace_domain ?? null,
-          })
-        } else {
-          setChannel(null)
-        }
+    const { data } = await supabase
+      .from('slack_project_channels')
+      .select('channel_id, channel_name, workspace_domain, is_private')
+      .eq('project_id', projectId)
+      .limit(1)
+    const row = data?.[0] as {
+      channel_id: string
+      channel_name: string | null
+      workspace_domain: string | null
+      is_private: boolean | null
+    } | undefined
+    if (row?.channel_id) {
+      setChannel({
+        channel_id: row.channel_id,
+        channel_name: row.channel_name ?? row.channel_id,
+        workspace_domain: row.workspace_domain ?? null,
+        is_private: row.is_private ?? false,
       })
+      setChannelQuery((row.channel_name ?? '').replace(/^#/, ''))
+    } else {
+      setChannel(null)
+      setChannelQuery('')
+    }
   }, [projectId])
 
-  useEffect(() => { loadChannel() }, [loadChannel])
+  const loadSlackChannels = useCallback(async () => {
+    if (!orgId) return
+    setLoadingChannels(true)
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-channels`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ orgId }),
+    })
+    const data = await res.json().catch(() => ({})) as {
+      error?: string
+      workspaceDomain?: string | null
+      channels?: { id: string; name: string; is_private: boolean; is_member: boolean }[]
+    }
+    if (!res.ok || data.error) {
+      setMessage({ type: 'error', text: data.error || 'Unable to load Slack channels.' })
+      setChannels([])
+      setWorkspaceDomain(null)
+      setLoadingChannels(false)
+      return
+    }
+    setChannels(data.channels ?? [])
+    setWorkspaceDomain(data.workspaceDomain ?? null)
+    setLoadingChannels(false)
+  }, [orgId])
 
-  const normalizeChannelName = (raw: string) => raw.trim().toLowerCase().replace(/\s+/g, '').replace(/^#+/, '')
+  useEffect(() => { loadChannel(); loadSlackChannels() }, [loadChannel, loadSlackChannels])
 
   const handleAdd = async () => {
-    const trimmed = inputValue.trim()
-    if (!trimmed) return
-    setSaving(true)
-    await supabase.from('slack_project_channels').delete().eq('project_id', projectId)
-    const urlMatch = trimmed.match(SLACK_ARCHIVES_URL_RE)
-    if (urlMatch) {
-      const [, workspaceDomain, channelId] = urlMatch
-      await supabase.from('slack_project_channels').insert({
-        project_id: projectId,
-        channel_id: channelId,
-        channel_name: '#' + channelId,
-        workspace_domain: workspaceDomain?.toLowerCase() ?? null,
-      })
-    } else {
-      const normalized = normalizeChannelName(trimmed)
-      const channelName = '#' + normalized
-      await supabase.from('slack_project_channels').insert({
-        project_id: projectId,
-        channel_id: channelName,
-        channel_name: channelName,
-        workspace_domain: null,
-      })
+    setMessage(null)
+    const normalizedQuery = channelQuery.trim().toLowerCase().replace(/^#/, '')
+    if (!normalizedQuery) return
+    const selected = channels.find((c) => c.name.toLowerCase() === normalizedQuery)
+    if (!selected) {
+      setMessage({ type: 'error', text: 'Please choose a Slack channel.' })
+      return
     }
-    setInputValue('')
-    setSaving(false)
-    loadChannel()
+    if (!selected.is_member) {
+      setMessage({ type: 'error', text: 'jolo does not have access to this channel.' })
+      return
+    }
+    setSaving(true)
+    try {
+      const channelLabel = `#${selected.name.toLowerCase().replace(/\s+/g, '')}`
+      await supabase.from('slack_project_channels').delete().eq('project_id', projectId)
+      const { error } = await supabase.from('slack_project_channels').insert({
+        project_id: projectId,
+        channel_id: selected.id,
+        channel_name: channelLabel,
+        workspace_domain: workspaceDomain ? workspaceDomain.toLowerCase() : null,
+        is_private: selected.is_private,
+      })
+      if (error) {
+        setMessage({ type: 'error', text: error.message || 'Failed to save Slack channel.' })
+        return
+      }
+
+      setShowPicker(false)
+      setChannelQuery(selected.name)
+      setMessage({ type: 'success', text: 'Slack channel linked successfully.' })
+      loadChannel()
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleRemove = async () => {
@@ -550,8 +603,13 @@ function SlackChannelPicker({ projectId }: { projectId: string; orgId: string })
     await supabase.from('slack_project_channels').delete().eq('project_id', projectId)
     setSaving(false)
     setChannel(null)
+    setChannelQuery('')
+    setShowPicker(true)
+    setMessage(null)
   }
 
+  const channelListId = `project-slack-channels-${projectId}`
+  const channelDisplayName = (channel?.channel_name ?? '').replace(/^#/, '')
   const slackUrl = channel?.workspace_domain && channel?.channel_id
     ? `https://${channel.workspace_domain}.slack.com/archives/${channel.channel_id}`
     : null
@@ -560,34 +618,54 @@ function SlackChannelPicker({ projectId }: { projectId: string; orgId: string })
     <section className="rounded-lg border border-border bg-surface-elevated p-4">
       <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">Slack channel</h2>
       <p className="text-xs text-gray-500 mb-2">New emails from linked contacts will be posted here.</p>
+      {message && (
+        <p className={`text-xs mb-2 ${message.type === 'error' ? 'text-red-400' : 'text-accent'}`}>{message.text}</p>
+      )}
       {channel ? (
         <div className="flex items-center justify-between py-1.5 text-sm">
-          {slackUrl ? (
-            <a href={slackUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline truncate">
-              {channel.channel_name}
-            </a>
-          ) : (
-            <span className="text-white truncate">{channel.channel_name}</span>
-          )}
-          <button type="button" onClick={handleRemove} disabled={saving} className="p-1 text-gray-500 hover:text-red-400" title="Remove channel"><X className="w-3 h-3" /></button>
+            {slackUrl ? (
+              <a href={slackUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline truncate inline-flex items-center gap-1.5">
+                {channel.is_private ? <Lock className="w-3.5 h-3.5 shrink-0" /> : <Hash className="w-3.5 h-3.5 shrink-0" />}
+                <span>{channelDisplayName}</span>
+              </a>
+            ) : (
+              <span className="text-white truncate inline-flex items-center gap-1.5">
+                {channel.is_private ? <Lock className="w-3.5 h-3.5 shrink-0" /> : <Hash className="w-3.5 h-3.5 shrink-0" />}
+                <span>{channelDisplayName}</span>
+              </span>
+            )}
+            <button type="button" onClick={handleRemove} disabled={saving} className="p-1 text-gray-500 hover:text-red-400" title="Remove channel"><X className="w-3 h-3" /></button>
         </div>
       ) : (
-        <div className="flex gap-2">
+        null
+      )}
+      {(!channel || showPicker) && (
+        <div className="space-y-2">
           <input
             type="text"
-            value={inputValue}
-            onChange={e => setInputValue(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleAdd()}
-            placeholder="#general or paste Slack channel URL"
-            className="flex-1 rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+            list={channelListId}
+            value={channelQuery}
+            onChange={(e) => setChannelQuery(e.target.value.toLowerCase().replace(/\s+/g, ''))}
+            placeholder="Select or type channel name…"
+            className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
           />
+          <datalist id={channelListId}>
+            {channels.map((c) => (
+              <option
+                key={c.id}
+                value={c.name}
+                label={`${c.is_private ? 'private (lock)' : 'public (#)'}${c.is_member ? '' : ' - no access'}`}
+              />
+            ))}
+          </datalist>
+          {loadingChannels && <p className="text-xs text-gray-500">Loading channels…</p>}
           <button
             type="button"
             onClick={handleAdd}
-            disabled={saving || !inputValue.trim()}
+            disabled={saving || !channelQuery.trim() || loadingChannels}
             className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50 shrink-0"
           >
-            {saving ? 'Saving…' : 'Add'}
+            {saving ? 'Saving…' : channel ? 'Update' : 'Add'}
           </button>
         </div>
       )}

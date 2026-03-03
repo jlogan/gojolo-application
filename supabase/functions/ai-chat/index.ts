@@ -4,6 +4,7 @@ import { corsHeaders } from '../_shared/cors.ts'
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+const INTERNAL_AI_CHAT_KEY = Deno.env.get('INTERNAL_AI_CHAT_KEY') ?? ''
 
 const TOOLS = [
   {
@@ -431,23 +432,49 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
 
   try {
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-
-    const supabaseUser = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-    const token = authHeader.replace('Bearer ', '')
-    const { data: { user }, error: authErr } = await supabaseUser.auth.getUser(token)
-    if (authErr || !user) return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-
     const body = await req.json()
-    const { message, orgId, history } = body as { message: string; orgId: string; history?: { role: string; content: string }[] }
+    const { message, orgId, history, userId } = body as {
+      message: string
+      orgId: string
+      history?: { role: string; content: string }[]
+      userId?: string
+    }
 
     if (!orgId) return new Response(JSON.stringify({ error: 'orgId required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     if (!OPENAI_API_KEY) return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not configured. Set it via: supabase secrets set OPENAI_API_KEY=sk-...' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
 
+    const supabaseUser = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    const internalKeyHeader = req.headers.get('x-internal-ai-key')
+    const isInternal = Boolean(INTERNAL_AI_CHAT_KEY && internalKeyHeader && internalKeyHeader === INTERNAL_AI_CHAT_KEY)
+
+    let effectiveUserId = ''
+    if (isInternal) {
+      if (userId) {
+        effectiveUserId = userId
+      } else {
+        const { data: orgUsers } = await supabaseUser
+          .from('organization_users')
+          .select('user_id')
+          .eq('org_id', orgId)
+          .limit(1)
+        const firstUserId = (orgUsers?.[0] as { user_id: string } | undefined)?.user_id
+        if (!firstUserId) {
+          return new Response(JSON.stringify({ error: 'No users found for org.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+        }
+        effectiveUserId = firstUserId
+      }
+    } else {
+      const authHeader = req.headers.get('Authorization')
+      if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      const token = authHeader.replace('Bearer ', '')
+      const { data: { user }, error: authErr } = await supabaseUser.auth.getUser(token)
+      if (authErr || !user) return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      effectiveUserId = user.id
+    }
+
     const systemPrompt = `You are jolo, an AI assistant for business software. You help users manage projects, tasks, contacts, companies, and their team inbox (email). Be concise and helpful. When creating or modifying things, confirm what you did. If the user asks to do something and you need more info, ask for it. Use the available tools to interact with the database.
 
-Capabilities: create/list/update projects and tasks, create/list contacts and companies, link them together, manage team members. For email: search inbox threads, read messages, summarize threads, send emails (new or reply), close/reopen/trash threads, add internal notes. When summarizing emails, include key details and action items. When drafting emails, write professional responses. The current user's ID is ${user.id}.`
+Capabilities: create/list/update projects and tasks, create/list contacts and companies, link them together, manage team members. For email: search inbox threads, read messages, summarize threads, send emails (new or reply), close/reopen/trash threads, add internal notes. When summarizing emails, include key details and action items. When drafting emails, write professional responses. The current user's ID is ${effectiveUserId}.`
 
     const messages: { role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }[] = [
       { role: 'system', content: systemPrompt },
@@ -487,7 +514,7 @@ Capabilities: create/list/update projects and tasks, create/list contacts and co
         for (const tc of msg.tool_calls) {
           const fnName = tc.function.name
           const fnArgs = JSON.parse(tc.function.arguments || '{}')
-          const result = await executeTool(fnName, fnArgs, orgId, user.id)
+          const result = await executeTool(fnName, fnArgs, orgId, effectiveUserId)
           messages.push({ role: 'tool', content: JSON.stringify(result), tool_call_id: tc.id })
         }
         continue

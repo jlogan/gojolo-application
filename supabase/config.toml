@@ -52,3 +52,7 @@ verify_jwt = false
 # imap-fetch-body: lazy-load email body on demand when user opens a thread.
 [functions.imap-fetch-body]
 verify_jwt = false
+
+# slack-events: Slack Events API endpoint (signature verified in function).
+[functions.slack-events]
+verify_jwt = false
