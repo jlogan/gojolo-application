@@ -28,7 +28,7 @@ const COLORS = ['bg-accent/30', 'bg-purple-500/30', 'bg-blue-500/30', 'bg-orange
 export default function ContactsList() {
   const { currentOrg } = useOrg()
   const [searchParams, setSearchParams] = useSearchParams()
-  const activeTab = searchParams.get('tab') === 'companies' ? 'companies' : 'contacts'
+  const activeTab = searchParams.get('tab') === 'contacts' ? 'contacts' : 'companies'
   const [contacts, setContacts] = useState<Contact[]>([])
   const [companies, setCompanies] = useState<Company[]>([])
   const [loading, setLoading] = useState(true)
@@ -59,14 +59,6 @@ export default function ContactsList() {
     ? contacts.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || c.email?.toLowerCase().includes(search.toLowerCase()))
     : contacts
 
-  // Group by first letter
-  const grouped = new Map<string, Contact[]>()
-  for (const c of filtered) {
-    const letter = c.name[0]?.toUpperCase() || '#'
-    if (!grouped.has(letter)) grouped.set(letter, [])
-    grouped.get(letter)!.push(c)
-  }
-
   return (
     <div className="p-4 md:p-6" data-testid="contacts-page">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
@@ -80,17 +72,17 @@ export default function ContactsList() {
       <div className="flex gap-1 mb-4 border-b border-border">
         <button
           type="button"
-          onClick={() => setSearchParams({ tab: 'contacts' })}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'contacts' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
-        >
-          Contacts
-        </button>
-        <button
-          type="button"
           onClick={() => setSearchParams({ tab: 'companies' })}
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'companies' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
         >
           Companies
+        </button>
+        <button
+          type="button"
+          onClick={() => setSearchParams({ tab: 'contacts' })}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'contacts' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
+        >
+          Contacts
         </button>
       </div>
 
@@ -110,23 +102,18 @@ export default function ContactsList() {
           </div>
         ) : (
           <div className="rounded-lg border border-border overflow-hidden" data-testid="contact-list">
-            {[...grouped.entries()].map(([letter, group]) => (
-              <div key={letter}>
-                <div className="px-4 py-1.5 text-xs font-medium text-gray-500 bg-surface-muted/50 border-b border-border">{letter}</div>
-                {group.map((c, i) => (
-                  <Link key={c.id} to={`/contacts/${c.id}`}
-                    className="flex items-center gap-3 px-4 py-3 hover:bg-surface-muted transition-colors border-b border-border last:border-b-0">
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-medium text-white shrink-0 ${COLORS[i % COLORS.length]}`}>
-                      {getInitials(c.name)}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-white text-sm truncate">{c.name}</p>
-                      {c.email && <p className="text-xs text-gray-400 truncate">{c.email}</p>}
-                    </div>
-                    {c.phone && <span className="text-xs text-gray-500 hidden sm:block">{c.phone}</span>}
-                  </Link>
-                ))}
-              </div>
+            {filtered.map((c, i) => (
+              <Link key={c.id} to={`/contacts/${c.id}`}
+                className="flex items-center gap-3 px-4 py-3 hover:bg-surface-muted transition-colors border-b border-border last:border-b-0">
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-medium text-white shrink-0 ${COLORS[i % COLORS.length]}`}>
+                  {getInitials(c.name)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-white text-sm truncate">{c.name}</p>
+                  {c.email && <p className="text-xs text-gray-400 truncate">{c.email}</p>}
+                </div>
+                {c.phone && <span className="text-xs text-gray-500 hidden sm:block">{c.phone}</span>}
+              </Link>
             ))}
           </div>
         )

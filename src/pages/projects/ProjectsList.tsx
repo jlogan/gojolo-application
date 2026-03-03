@@ -47,28 +47,26 @@ export default function ProjectsList() {
 
   return (
     <div className="p-4 md:p-6" data-testid="projects-page">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-xl font-semibold text-white">Projects</h1>
-          <div className="flex gap-1 mt-2 border-b border-border">
-            <button type="button" onClick={() => setFilter('active')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${filter === 'active' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
-              Active
-            </button>
-            <button type="button" onClick={() => setFilter('archived')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${filter === 'archived' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
-              Archive
-            </button>
-          </div>
-        </div>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+        <h1 className="text-xl font-semibold text-white">Projects</h1>
         <Link
           to="/projects/new"
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground font-medium hover:opacity-90"
           data-testid="project-create"
         >
           <Plus className="w-4 h-4" />
-          New project
+          Add project
         </Link>
+      </div>
+      <div className="flex gap-1 mb-4 border-b border-border">
+        <button type="button" onClick={() => setFilter('active')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${filter === 'active' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+          Active
+        </button>
+        <button type="button" onClick={() => setFilter('archived')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${filter === 'archived' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+          Archive
+        </button>
       </div>
 
       {/* Search */}
@@ -85,7 +83,7 @@ export default function ProjectsList() {
           <p className="font-medium text-gray-200">No projects yet</p>
           <p className="text-sm mt-1">Create a project to get started.</p>
           <Link to="/projects/new" className="inline-block mt-4 text-accent hover:underline">
-            New project
+            Add project
           </Link>
         </div>
       ) : (
