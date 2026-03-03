@@ -765,7 +765,13 @@ export default function Inbox() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline justify-between gap-2">
                             <p className={`text-sm truncate ${unread ? 'font-semibold text-white' : 'font-medium text-gray-300'}`}>{t.subject || '(No subject)'}</p>
-                            <span className="text-[10px] text-gray-500 shrink-0">{new Date(t.last_message_at).toLocaleDateString()}</span>
+                            <span className="text-[10px] text-gray-500 shrink-0">{(() => {
+                              const d = new Date(t.last_message_at)
+                              const now = new Date()
+                              return d.toDateString() === now.toDateString()
+                                ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+                                : d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+                            })()}</span>
                           </div>
                           <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
                           <div className="flex items-center gap-2 mt-1">
