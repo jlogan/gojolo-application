@@ -4,8 +4,8 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
-  ArrowLeft, Send, Plus, User, Link as LinkIcon,
-  Paperclip, ExternalLink, Key, Mail, MessageSquare, ChevronRight,
+  ArrowLeft, Send, Plus, User,
+  Paperclip, Key, Mail, ChevronRight,
 } from 'lucide-react'
 
 type Task = {
@@ -50,16 +50,27 @@ export default function TaskDetail() {
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [statusHistory, setStatusHistory] = useState<StatusEntry[]>([])
   const [linkedThreads, setLinkedThreads] = useState<LinkedThread[]>([])
-  const [slackMessages, setSlackMessages] = useState<SlackMsg[]>([])
+  const [_slackMessages, setSlackMessages] = useState<SlackMsg[]>([])
   const [vaultCreds, setVaultCreds] = useState<VaultCred[]>([])
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([])
   const [loading, setLoading] = useState(true)
   const [projectName, setProjectName] = useState('')
-  const [activeTab, setActiveTab] = useState<'comments' | 'time' | 'activity' | 'emails' | 'slack'>('comments')
+  const [activeTab, setActiveTab] = useState<'comments' | 'time' | 'activity' | 'emails'>('comments')
+
+  // Editing
+  const [editing, setEditing] = useState(false)
+  const [editTitle, setEditTitle] = useState('')
+  const [editDesc, setEditDesc] = useState('')
+  const [editPriority, setEditPriority] = useState('')
+  const [editDue, setEditDue] = useState('')
 
   // Comment form
   const [commentText, setCommentText] = useState('')
+  const [commentFile, setCommentFile] = useState<File | null>(null)
+
+  // Loom modal
+  const [loomModalUrl, setLoomModalUrl] = useState<string | null>(null)
 
   // Time log form
   const [showTimeForm, setShowTimeForm] = useState(false)
@@ -158,10 +169,38 @@ export default function TaskDetail() {
     fetchAll()
   }
 
+  const handleStartEdit = () => {
+    if (!task) return
+    setEditTitle(task.title); setEditDesc(task.description ?? ''); setEditPriority(task.priority); setEditDue(task.due_date ?? '')
+    setEditing(true)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!taskId) return
+    await supabase.from('tasks').update({
+      title: editTitle.trim(), description: editDesc.trim() || null,
+      priority: editPriority, due_date: editDue || null, updated_at: new Date().toISOString(),
+    }).eq('id', taskId)
+    setEditing(false); fetchAll()
+  }
+
   const handleAddComment = async () => {
-    if (!taskId || !commentText.trim() || !user?.id) return
-    await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content: commentText.trim() })
-    setCommentText(''); fetchAll()
+    if (!taskId || (!commentText.trim() && !commentFile) || !user?.id) return
+    let fileUrl: string | null = null
+    let fileName: string | null = null
+    if (commentFile && currentOrg?.id) {
+      const path = `${currentOrg.id}/${projectId}/${taskId}/comments/${Date.now()}-${commentFile.name}`
+      const { error } = await supabase.storage.from('task-artifacts').upload(path, commentFile)
+      if (!error) {
+        fileUrl = supabase.storage.from('task-artifacts').getPublicUrl(path).data.publicUrl
+        fileName = commentFile.name
+      }
+    }
+    const content = commentText.trim() + (fileUrl ? `\n\n📎 [${fileName}](${fileUrl})` : '')
+    if (content.trim()) {
+      await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content })
+    }
+    setCommentText(''); setCommentFile(null); fetchAll()
   }
 
   const handleLogTime = async () => {
@@ -201,9 +240,10 @@ export default function TaskDetail() {
     fetchAll()
   }
 
-  const handleAddAssignee = async () => {
-    if (!taskId || !addAssigneeId) return
-    await supabase.from('task_assignees').insert({ task_id: taskId, user_id: addAssigneeId })
+  const handleAddAssignee = async (uid?: string) => {
+    const assignUid = uid ?? addAssigneeId
+    if (!taskId || !assignUid) return
+    await supabase.from('task_assignees').insert({ task_id: taskId, user_id: assignUid })
     setAddAssigneeId(''); fetchAll()
   }
 
@@ -228,64 +268,128 @@ export default function TaskDetail() {
         <ArrowLeft className="w-4 h-4" /> {projectName || 'Project'}
       </Link>
 
+      {/* Loom modal */}
+      {loomModalUrl && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setLoomModalUrl(null)}>
+          <div className="w-full max-w-4xl" onClick={e => e.stopPropagation()}>
+            <iframe src={getLoomEmbedUrl(loomModalUrl)} className="w-full aspect-video rounded-lg" allowFullScreen frameBorder="0" />
+            <button type="button" onClick={() => setLoomModalUrl(null)} className="mt-2 text-sm text-gray-400 hover:text-white">Close</button>
+          </div>
+        </div>
+      )}
+
       {/* Task header */}
       <div className="rounded-lg border border-border bg-surface-elevated p-6 mb-6">
-        <div className="flex items-start justify-between gap-4 mb-4">
-          <div className="flex-1 min-w-0">
-            <h1 className="text-xl font-semibold text-white mb-1">{task.title}</h1>
-            <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
-              <span className={PRIORITY_COLORS[task.priority]}>{task.priority} priority</span>
-              {task.due_date && <span>Due: {task.due_date}</span>}
-              <span>Created: {new Date(task.created_at).toLocaleDateString()}</span>
+        {editing ? (
+          <div className="space-y-3 mb-4">
+            <input type="text" value={editTitle} onChange={e => setEditTitle(e.target.value)}
+              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-lg text-white font-semibold focus:outline-none focus:ring-2 focus:ring-accent" />
+            <textarea value={editDesc} onChange={e => setEditDesc(e.target.value)} rows={6} placeholder="Task description… (paste Loom links to auto-embed)"
+              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent resize-y" />
+            <div className="grid grid-cols-3 gap-3">
+              <select value={editPriority} onChange={e => setEditPriority(e.target.value)}
+                className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
+              </select>
+              <input type="date" value={editDue} onChange={e => setEditDue(e.target.value)}
+                className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
+              <div className="flex gap-2">
+                <button type="button" onClick={handleSaveEdit} className="flex-1 px-3 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90">Save</button>
+                <button type="button" onClick={() => setEditing(false)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted">Cancel</button>
+              </div>
             </div>
           </div>
-          <select value={task.status} onChange={e => handleStatusChange(e.target.value)}
-            className={`rounded-lg px-3 py-2 text-xs font-medium border-0 focus:outline-none focus:ring-2 focus:ring-accent shrink-0 ${currentStatusInfo.color}`}>
-            {STATUS_FLOW.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
-        </div>
+        ) : (
+          <>
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div className="flex-1 min-w-0 cursor-pointer" onClick={handleStartEdit} title="Click to edit">
+                <h1 className="text-xl font-semibold text-white mb-1">{task.title}</h1>
+                <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
+                  <span className={PRIORITY_COLORS[task.priority]}>{task.priority} priority</span>
+                  {task.due_date && <span>Due: {task.due_date}</span>}
+                  <span>Created: {new Date(task.created_at).toLocaleDateString()}</span>
+                </div>
+              </div>
+              <select value={task.status} onChange={e => handleStatusChange(e.target.value)}
+                className={`rounded-lg px-3 py-2 text-xs font-medium border-0 focus:outline-none focus:ring-2 focus:ring-accent shrink-0 ${currentStatusInfo.color}`}>
+                {STATUS_FLOW.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+              </select>
+            </div>
 
-        {/* Status progress bar */}
-        <div className="flex items-center gap-1 mb-4">
-          {STATUS_FLOW.map((s, i) => (
-            <div key={s.value} className={`h-1.5 flex-1 rounded-full transition-colors ${i <= currentStep ? 'bg-accent' : 'bg-surface-muted'}`} title={s.label} />
-          ))}
-        </div>
+            {/* Status progress bar */}
+            <div className="flex items-center gap-1 mb-4">
+              {STATUS_FLOW.map((s, i) => (
+                <div key={s.value} className={`h-1.5 flex-1 rounded-full transition-colors ${i <= currentStep ? 'bg-accent' : 'bg-surface-muted'}`} title={s.label} />
+              ))}
+            </div>
 
-        {/* Description */}
-        {task.description && (
-          <div className="text-sm text-gray-300 whitespace-pre-wrap mb-4 border-l-2 border-accent/30 pl-4">
-            {task.description}
-          </div>
+            {/* Description (click to edit) */}
+            {task.description ? (
+              <div className="text-sm text-gray-300 whitespace-pre-wrap mb-4 border-l-2 border-accent/30 pl-4 cursor-pointer hover:border-accent/60" onClick={handleStartEdit} title="Click to edit">
+                {task.description}
+              </div>
+            ) : (
+              <button type="button" onClick={handleStartEdit} className="text-sm text-gray-500 hover:text-accent mb-4">+ Add description</button>
+            )}
+
+            {/* Loom embeds in description — inline, clickable to modal */}
+            {task.description && (() => {
+              const loomMatches = task.description.match(/https:\/\/www\.loom\.com\/share\/[a-zA-Z0-9]+/g)
+              return loomMatches?.map((url, i) => (
+                <div key={i} className="mb-4 rounded-lg overflow-hidden border border-border cursor-pointer hover:border-accent/30" onClick={() => setLoomModalUrl(url)}>
+                  <div className="relative">
+                    <iframe src={getLoomEmbedUrl(url)} className="w-full aspect-video pointer-events-none" frameBorder="0" />
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/10 transition-colors">
+                      <span className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-sm">▶ Click to expand</span>
+                    </div>
+                  </div>
+                </div>
+              ))
+            })()}
+          </>
         )}
 
-        {/* Loom embeds in description */}
-        {task.description && (() => {
-          const loomMatches = task.description.match(/https:\/\/www\.loom\.com\/share\/[a-zA-Z0-9]+/g)
-          return loomMatches?.map((url, i) => (
-            <div key={i} className="mb-4 rounded-lg overflow-hidden border border-border">
-              <iframe src={getLoomEmbedUrl(url)} className="w-full aspect-video" allowFullScreen frameBorder="0" />
-            </div>
-          ))
-        })()}
-
         {/* Artifacts */}
-        {artifacts.length > 0 && (
+        {/* Resources (links) */}
+        <div className="mb-4">
+          <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Resources</h3>
+          <div className="flex flex-wrap gap-2">
+            {artifacts.filter(a => a.type !== 'file').map(a => {
+              const isLoom = a.type === 'loom' || isLoomUrl(a.url ?? '')
+              const isSlack = a.url?.includes('slack.com')
+              const isGithub = a.url?.includes('github.com')
+              const icon = isLoom ? '🎥' : isSlack ? '💬' : isGithub ? '🔗' : '🌐'
+              return isLoom ? (
+                <button key={a.id} type="button" onClick={() => setLoomModalUrl(a.url!)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 hover:text-accent border border-border hover:border-accent/30">
+                  <span>{icon}</span> {a.label ?? 'Loom video'}
+                </button>
+              ) : (
+                <a key={a.id} href={a.url!} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 hover:text-accent border border-border hover:border-accent/30">
+                  <span>{icon}</span> {a.label ?? a.url?.replace(/^https?:\/\/(www\.)?/, '').slice(0, 40)}
+                </a>
+              )
+            })}
+            <button type="button" onClick={() => setShowArtifactForm(!showArtifactForm)}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-xs text-gray-500 hover:text-accent hover:border-accent/30">
+              <Plus className="w-3 h-3" /> Add
+            </button>
+          </div>
+        </div>
+
+        {/* File attachments (separate from resources) */}
+        {artifacts.filter(a => a.type === 'file').length > 0 && (
           <div className="mb-4">
-            <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Resources</h3>
+            <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Attachments</h3>
             <div className="flex flex-wrap gap-2">
-              {artifacts.map(a => (
-                <a key={a.id} href={a.type === 'loom' ? getLoomEmbedUrl(a.url!) : (a.url ?? supabase.storage.from('task-artifacts').getPublicUrl(a.file_path!).data.publicUrl)}
+              {artifacts.filter(a => a.type === 'file').map(a => (
+                <a key={a.id} href={supabase.storage.from('task-artifacts').getPublicUrl(a.file_path!).data.publicUrl}
                   target="_blank" rel="noreferrer"
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 hover:text-accent border border-border hover:border-accent/30">
-                  {a.type === 'loom' ? <ExternalLink className="w-3 h-3" /> : a.type === 'file' ? <Paperclip className="w-3 h-3" /> : <LinkIcon className="w-3 h-3" />}
-                  {a.label ?? a.file_name ?? a.url?.slice(0, 40)}
+                  <Paperclip className="w-3 h-3" /> {a.file_name ?? a.label}
                 </a>
               ))}
-              <button type="button" onClick={() => setShowArtifactForm(!showArtifactForm)}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-xs text-gray-500 hover:text-accent hover:border-accent/30">
-                <Plus className="w-3 h-3" /> Add
-              </button>
             </div>
           </div>
         )}
@@ -343,7 +447,7 @@ export default function TaskDetail() {
               <button type="button" onClick={() => handleRemoveAssignee(a.user_id)} className="text-gray-500 hover:text-red-400">&times;</button>
             </span>
           ))}
-          <select value={addAssigneeId} onChange={e => { setAddAssigneeId(e.target.value); if (e.target.value) { handleAddAssignee(); setAddAssigneeId('') } }}
+          <select value="" onChange={e => { if (e.target.value) handleAddAssignee(e.target.value) }}
             className="rounded border border-border bg-surface-muted px-2 py-0.5 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
             <option value="">+ Add</option>
             {orgUsers.filter(u => !assignees.some(a => a.user_id === u.user_id)).map(u => (
@@ -360,7 +464,6 @@ export default function TaskDetail() {
           ['time', `Time (${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m)`],
           ['activity', `Activity (${statusHistory.length})`],
           ['emails', `Emails (${linkedThreads.length})`],
-          ['slack', `Slack (${slackMessages.length})`],
         ] as const).map(([id, label]) => (
           <button key={id} type="button" onClick={() => setActiveTab(id)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === id ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
@@ -388,16 +491,23 @@ export default function TaskDetail() {
               </div>
             ))}
           </div>
-          <div className="flex gap-2">
+          <div className="space-y-2">
             <textarea value={commentText} onChange={e => setCommentText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && commentText.trim()) { e.preventDefault(); handleAddComment() } }}
               placeholder="Add a comment… (Shift+Enter for new line)"
               rows={2}
-              className="flex-1 rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent resize-y" />
-            <button type="button" onClick={handleAddComment} disabled={!commentText.trim()}
-              className="px-3 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 self-end">
-              <Send className="w-4 h-4" />
-            </button>
+              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent resize-y" />
+            {commentFile && <span className="text-xs text-gray-400 flex items-center gap-1"><Paperclip className="w-3 h-3" /> {commentFile.name} <button type="button" onClick={() => setCommentFile(null)} className="text-gray-500 hover:text-red-400">&times;</button></span>}
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={handleAddComment} disabled={!commentText.trim() && !commentFile}
+                className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                <Send className="w-4 h-4 inline mr-1" /> Comment
+              </button>
+              <label className="px-3 py-2 rounded-lg border border-border text-sm text-gray-400 hover:text-white hover:bg-surface-muted cursor-pointer">
+                <Paperclip className="w-4 h-4 inline mr-1" /> Attach
+                <input type="file" className="hidden" onChange={e => { if (e.target.files?.[0]) setCommentFile(e.target.files[0]); e.target.value = '' }} />
+              </label>
+            </div>
           </div>
         </div>
       )}
@@ -510,22 +620,6 @@ export default function TaskDetail() {
         </div>
       )}
 
-      {activeTab === 'slack' && (
-        <div className="space-y-3">
-          {slackMessages.length === 0 ? <p className="text-gray-500 text-sm">No Slack messages linked to this task.</p> : slackMessages.map(s => (
-            <div key={s.id} className="flex gap-3">
-              <div className="w-8 h-8 rounded-full bg-surface-muted flex items-center justify-center shrink-0 mt-0.5"><MessageSquare className="w-4 h-4 text-gray-500" /></div>
-              <div className="flex-1 rounded-lg border border-border bg-surface-muted/50 px-4 py-2.5">
-                <div className="flex items-baseline gap-2 text-[11px] mb-1">
-                  <span className="text-white font-medium">{s.user_name ?? 'Slack user'}</span>
-                  <span className="text-gray-500">{new Date(s.received_at).toLocaleString()}</span>
-                </div>
-                <p className="text-sm text-gray-200">{s.content}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
