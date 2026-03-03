@@ -27,7 +27,7 @@ type InboxMessage = {
 }
 type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
-  mentions: string[] | null; created_at: string; display_name?: string | null
+  mentions: string[] | null; created_at: string; display_name?: string | null; avatar_url?: string | null
 }
 type Attachment = { id: string; message_id: string | null; thread_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string }
 type TimelineItem = { kind: 'message'; data: InboxMessage; ts: string } | { kind: 'comment'; data: InboxComment; ts: string }
@@ -222,9 +222,9 @@ export default function Inbox() {
     const rows = (data ?? []) as InboxComment[]
     if (rows.length > 0) {
       const uids = [...new Set(rows.map(c => c.user_id))]
-      const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', uids)
-      const nm = new Map((profiles ?? []).map((p: { id: string; display_name: string | null }) => [p.id, p.display_name]))
-      rows.forEach(c => { c.display_name = nm.get(c.user_id) ?? null })
+      const { data: profiles } = await supabase.from('profiles').select('id, display_name, avatar_url').in('id', uids)
+      const nm = new Map((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => [p.id, p]))
+      rows.forEach(c => { const p = nm.get(c.user_id); c.display_name = p?.display_name ?? null; c.avatar_url = p?.avatar_url ?? null })
     }
     setComments(rows)
   }, [])
@@ -848,7 +848,13 @@ export default function Inbox() {
                         const c = item.data
                         return (
                           <div key={`cmt-${c.id}`} className="flex gap-3">
-                            <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5"><MessageSquare className="w-4 h-4 text-amber-400" /></div>
+                            {c.avatar_url ? (
+                              <img src={c.avatar_url} alt="" className="w-8 h-8 rounded-full shrink-0 mt-0.5" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5 text-[11px] font-medium text-amber-400">
+                                {(c.display_name ?? '?')[0].toUpperCase()}
+                              </div>
+                            )}
                             <div className="flex-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
                               <div className="flex items-baseline gap-2 text-[11px] mb-1">
                                 <span className="text-amber-400 font-medium">{c.display_name ?? getUserName(c.user_id)}</span>
