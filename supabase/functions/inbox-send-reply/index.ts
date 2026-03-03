@@ -172,7 +172,7 @@ Deno.serve(async (req: Request) => {
     const msgPayload: Record<string, unknown> = {
       thread_id: saveThreadId, channel: 'email', direction: 'outbound',
       from_identifier: account.email, to_identifier: toAddress,
-      cc: cc?.trim() || null, imap_account_id: account.id, received_at: now,
+      cc: cc?.trim() || null, bcc: bcc?.trim() || null, imap_account_id: account.id, received_at: now,
     }
     if (isHtml) { msgPayload.html_body = bodyContent; msgPayload.body = stripHtml(bodyContent) }
     else { msgPayload.body = bodyContent }

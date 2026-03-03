@@ -261,12 +261,16 @@ serve(async (req) => {
             const source = msg.source as Uint8Array | Buffer | undefined
             const parsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
             const bodyText = parsed.body
+            const ccStr = source ? getHeader(source, 'Cc') : null
+            const bccStr = source ? getHeader(source, 'Bcc') : null
             const { error: updateErr } = await service
               .from('inbox_messages')
               .update({
                 body: bodyText,
                 from_identifier: fromAddr,
                 to_identifier: toAddr,
+                cc: ccStr?.trim() || null,
+                bcc: bccStr?.trim() || null,
                 received_at: date.toISOString(),
               })
               .eq('imap_account_id', acc.id)
@@ -291,7 +295,7 @@ serve(async (req) => {
       }
 
       // Fetch headers only — no body/source download
-      const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references'], uid: true }, { uid: true })
+      const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc'], uid: true }, { uid: true })
 
       const newMsgs = envelopes
         .filter((m) => (m.uid as number) > lastUid)
@@ -321,10 +325,14 @@ serve(async (req) => {
         const inReplyTo = normalizeMessageId(getHdr('in-reply-to'))
         const refsRaw = getHdr('references')
         const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map(r => normalizeMessageId(r)).filter(Boolean) as string[]) : []
+        const ccRaw = getHdr('cc') ?? getHdr('Cc')
+        const bccRaw = getHdr('bcc') ?? getHdr('Bcc')
         return {
           uid, messageId, inReplyTo, refsList,
           fromAddr: envelope?.from?.[0]?.address ?? '',
           toAddr: envelope?.to?.[0]?.address ?? '',
+          ccAddr: ccRaw?.trim() || null,
+          bccAddr: bccRaw?.trim() || null,
           subject: envelope?.subject ?? '',
           date: envelope?.date ? new Date(envelope.date) : new Date(),
           externalId: messageId ?? `uid-${acc.id}-${uid}`,
@@ -394,6 +402,7 @@ serve(async (req) => {
         insertRows.push({
           thread_id: threadId, channel: 'email', direction: 'inbound',
           from_identifier: p.fromAddr, to_identifier: p.toAddr,
+          cc: p.ccAddr ?? null, bcc: p.bccAddr ?? null,
           body: null, html_body: null,
           external_id: p.externalId, external_uid: p.uid,
           imap_account_id: acc.id, received_at: p.date.toISOString(),

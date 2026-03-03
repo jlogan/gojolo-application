@@ -155,6 +155,8 @@ Deno.serve(async (req: Request) => {
           const inReplyTo = normalizeMessageId(source ? getHeader(source, 'In-Reply-To') : null)
           const refsRaw = source ? getHeader(source, 'References') : null
           const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map(r => normalizeMessageId(r)).filter(Boolean) as string[]) : []
+          const ccStr = source ? getHeader(source, 'Cc') : null
+          const bccStr = source ? getHeader(source, 'Bcc') : null
 
           // Parse body
           let bodyText = '', htmlBody: string | null = null
@@ -229,6 +231,7 @@ Deno.serve(async (req: Request) => {
           const { data: insertedMsg } = await service.from('inbox_messages').insert({
             thread_id: threadId, channel: 'email', direction: 'inbound',
             from_identifier: fromAddr, to_identifier: toAddr,
+            cc: ccStr?.trim() || null, bcc: bccStr?.trim() || null,
             body: bodyText, html_body: htmlBody,
             external_id: externalId, external_uid: uid,
             imap_account_id: acc.id, received_at: date.toISOString(),
