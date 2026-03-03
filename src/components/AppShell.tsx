@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
+import { Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import {
@@ -24,7 +24,6 @@ import OrganizationsList from '@/pages/OrganizationsList'
 import ContactsList from '@/pages/contacts/ContactsList'
 import ContactDetail from '@/pages/contacts/ContactDetail'
 import ContactForm from '@/pages/contacts/ContactForm'
-import CompaniesList from '@/pages/companies/CompaniesList'
 import CompanyDetail from '@/pages/companies/CompanyDetail'
 import CompanyForm from '@/pages/companies/CompanyForm'
 import { supabase } from '@/lib/supabase'
@@ -43,7 +42,6 @@ const NAV = [
   { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
-  { to: '/companies', label: 'Companies', icon: Building2, testId: 'nav-companies' },
 ]
 
 export default function AppShell() {
@@ -307,7 +305,7 @@ export default function AppShell() {
               <Route path="/projects/:id" element={<ProjectDetail />} />
               <Route path="/projects/:id/edit" element={<ProjectForm />} />
               <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetail />} />
-              <Route path="/companies" element={<CompaniesList />} />
+              <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
               <Route path="/companies/:id/edit" element={<CompanyForm />} />
@@ -322,7 +320,7 @@ export default function AppShell() {
 
           {/* Mobile bottom nav */}
           <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 border-t border-border bg-surface-elevated/95 backdrop-blur" aria-label="Mobile navigation">
-            <ul className="grid grid-cols-5 h-16">
+            <ul className="grid h-16" style={{ gridTemplateColumns: `repeat(${NAV.length}, minmax(0, 1fr))` }}>
               {NAV.map(({ to, label, icon: Icon, testId }) => {
                 const active = location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
                 return (
