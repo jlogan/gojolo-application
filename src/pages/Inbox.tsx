@@ -140,6 +140,7 @@ export default function Inbox() {
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
   const replyFileRef = useRef<HTMLInputElement>(null)
+  const replyFileInputId = 'inbox-reply-file-input'
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -681,8 +682,29 @@ export default function Inbox() {
     }
   }
 
+  const appendReplyAttachments = useCallback((incoming: File[]) => {
+    setReplyAttachments((prev) => {
+      const key = (f: File) => `${f.name}:${f.size}:${f.lastModified}`
+      const seen = new Set(prev.map(key))
+      const next = [...prev]
+      for (const file of incoming) {
+        const k = key(file)
+        if (!seen.has(k)) {
+          seen.add(k)
+          next.push(file)
+        }
+      }
+      return next
+    })
+  }, [])
+
   // File drop handling
-  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); if (e.dataTransfer.files.length > 0) setReplyAttachments(prev => [...prev, ...Array.from(e.dataTransfer.files)]) }
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+    if (e.dataTransfer.files.length > 0) appendReplyAttachments(Array.from(e.dataTransfer.files))
+  }
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true) }
   const handleDragLeave = () => setIsDragging(false)
 
@@ -760,33 +782,46 @@ export default function Inbox() {
         )}
       </div>
       <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your message…" autofocus />
-      {replyAttachments.length > 0 && (
-        <div className="flex flex-wrap gap-2">{replyAttachments.map((f, i) => (
-          <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300 inline-flex items-center gap-1">
-            <Paperclip className="w-3 h-3" /> {f.name}
-            <button type="button" onClick={() => setReplyAttachments(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 ml-1">&times;</button>
-          </span>
-        ))}</div>
-      )}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-gray-500">Attached:</span>
+        {replyAttachments.length === 0 ? (
+          <span className="text-xs text-gray-600">none</span>
+        ) : (
+          replyAttachments.map((f, i) => (
+            <span key={`${f.name}-${f.size}-${f.lastModified}-${i}`} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300 inline-flex items-center gap-1">
+              <Paperclip className="w-3 h-3 shrink-0" /> {f.name}
+              <button type="button" onClick={() => setReplyAttachments(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 ml-1" aria-label={`Remove ${f.name}`}>&times;</button>
+            </span>
+          ))
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
           <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
         </button>
-        <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
-          <Paperclip className="w-4 h-4" />
-        </button>
-        <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
+        <label htmlFor={replyFileInputId} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted inline-flex items-center gap-1.5 cursor-pointer" title="Attach file">
+          <Paperclip className="w-4 h-4 shrink-0" />
+          {replyAttachments.length > 0 && <span className="text-xs text-accent">({replyAttachments.length})</span>}
+        </label>
         <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
       </div>
     </div>
   )
+
+  const handleReplyFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files?.length) appendReplyAttachments(Array.from(files))
+    e.target.value = ''
+  }
 
   return (
     <div
       className="flex flex-col h-full min-h-[100dvh] md:min-h-0 pt-[var(--safe-top)] pb-[var(--safe-bottom)]"
       data-testid="inbox-page"
     >
+      {/* Single file input for reply/compose so paperclip always works regardless of which form is visible */}
+      <input id={replyFileInputId} ref={replyFileRef} type="file" multiple className="sr-only" aria-hidden onChange={handleReplyFileChange} onInput={handleReplyFileChange} />
       {toastMsg && (
         <div
           className="fixed left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg bg-accent text-white text-sm shadow-lg"
