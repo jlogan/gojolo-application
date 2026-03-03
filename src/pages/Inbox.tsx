@@ -40,8 +40,8 @@ const FILTERS: { id: InboxFilter; label: string; icon: React.ComponentType<{ cla
   { id: 'inbox', label: 'Inbox', icon: InboxIcon },
   { id: 'assigned', label: 'Mine', icon: User },
   { id: 'closed', label: 'Closed', icon: Check },
-  { id: 'trash', label: 'Trash', icon: Archive },
   { id: 'all', label: 'All', icon: List },
+  { id: 'trash', label: 'Trash', icon: Archive },
 ]
 
 // Resolve email to contact name
@@ -188,13 +188,14 @@ export default function Inbox() {
         // Inbox = open threads assigned to me OR unassigned
         query = query.eq('status', 'open')
       } else if (filter === 'assigned') {
-        // Mine = all threads assigned to me (any status)
+        // Mine = threads assigned to me, excluding trash
         const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
         const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
         if (!tids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
-        query = query.in('id', tids)
+        query = query.in('id', tids).neq('status', 'archived')
       } else if (filter === 'closed') query = query.eq('status', 'closed')
       else if (filter === 'trash') query = query.eq('status', 'archived')
+      else if (filter === 'all') query = query.neq('status', 'archived')
       const { data } = await query
       let result = (data as InboxThread[]) ?? []
       // For inbox filter: only show threads assigned to me or unassigned
