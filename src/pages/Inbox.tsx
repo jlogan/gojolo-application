@@ -501,7 +501,10 @@ export default function Inbox() {
       }).catch(() => {})
     }
 
-    await fetchThreads(); setActionLoading(false); toast(`Assigned to ${getUserName(uid)}`)
+    await fetchThreads()
+    setActionLoading(false)
+    toast(`Assigned to ${getUserName(uid)}`)
+    if (isNarrow) setSelectedThreadId(null)
   }
 
   const handleUnassign = async (uid: string) => {
@@ -527,13 +530,17 @@ export default function Inbox() {
       }).catch(() => {})
     }
 
-    await fetchThreads(); setActionLoading(false)
+    await fetchThreads()
+    setActionLoading(false)
     if (status === 'archived' || status === 'closed') {
-      // Auto-load next thread
-      const currentIdx = threads.findIndex(t => t.id === selectedThreadId)
-      const nextThread = threads[currentIdx + 1] ?? threads[currentIdx - 1]
-      setSelectedThreadId(nextThread?.id ?? null)
       toast(status === 'archived' ? 'Moved to trash' : 'Thread closed')
+      if (isNarrow) {
+        setSelectedThreadId(null)
+      } else {
+        const currentIdx = threads.findIndex(t => t.id === selectedThreadId)
+        const nextThread = threads[currentIdx + 1] ?? threads[currentIdx - 1]
+        setSelectedThreadId(nextThread?.id ?? null)
+      }
     } else {
       toast('Thread re-opened')
     }
