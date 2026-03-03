@@ -6,8 +6,6 @@ dist/
 tsconfig.tsbuildinfo
 
 # Env (never commit secrets)
-.env
-.env.local
 .env.*.local
 
 # Editor
@@ -21,3 +19,4 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+config.bat
