@@ -31,7 +31,7 @@ type InboxComment = {
 }
 type Attachment = { id: string; message_id: string | null; thread_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string }
 type TimelineItem = { kind: 'message'; data: InboxMessage; ts: string } | { kind: 'comment'; data: InboxComment; ts: string }
-type InboxUser = { user_id: string; display_name: string | null; email: string | null }
+type InboxUser = { user_id: string; display_name: string | null; email: string | null; avatar_url?: string | null }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
 type ContactMatch = { contact_id: string; name: string; email: string | null }
 type ReadStatus = { thread_id: string; last_read_at: string }
@@ -246,7 +246,15 @@ export default function Inbox() {
   useEffect(() => {
     if (!currentOrg?.id) return
     supabase.rpc('org_users_with_permission', { p_org_id: currentOrg.id, p_permission: 'inbox.view' })
-      .then(({ data }) => setInboxUsers((data ?? []) as InboxUser[]))
+      .then(async ({ data }) => {
+        const users = (data ?? []) as InboxUser[]
+        if (users.length > 0) {
+          const { data: profiles } = await supabase.from('profiles').select('id, avatar_url').in('id', users.map(u => u.user_id))
+          const avatarMap = new Map((profiles ?? []).map((p: { id: string; avatar_url: string | null }) => [p.id, p.avatar_url]))
+          users.forEach(u => { u.avatar_url = avatarMap.get(u.user_id) ?? null })
+        }
+        setInboxUsers(users)
+      })
     supabase.from('imap_accounts').select('id, email, label, addresses').eq('org_id', currentOrg.id).eq('is_active', true)
       .then(({ data }) => {
         const accs = (data as ImapAccount[]) ?? []
@@ -339,7 +347,8 @@ export default function Inbox() {
 
   const selectedThread = threads.find(t => t.id === selectedThreadId)
   const getUserName = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
-  const currentAssigneeId = (selectedThread?.inbox_thread_assignments?.[0] as { user_id?: string } | undefined)?.user_id ?? ''
+  const getUserAvatar = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.avatar_url ?? null
+  const currentAssignees = (selectedThread?.inbox_thread_assignments ?? []) as { user_id: string }[]
   const toast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), 3000) }
 
   const isUnread = (t: InboxThread) => {
@@ -444,7 +453,9 @@ export default function Inbox() {
   const handleAssignTo = async (uid: string) => {
     if (!selectedThreadId) return
     setActionLoading(true)
-    await supabase.from('inbox_thread_assignments').upsert({ thread_id: selectedThreadId, user_id: uid }, { onConflict: 'thread_id' })
+    // Add assignee (multi-assign — doesn't replace existing)
+    const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert({ thread_id: selectedThreadId, user_id: uid })
+    if (assignErr) console.warn('[Inbox] Assign error:', assignErr.message)
 
     // Remove Inbox label on Gmail (archive)
     const { data: { session } } = await supabase.auth.getSession()
@@ -457,6 +468,13 @@ export default function Inbox() {
     }
 
     await fetchThreads(); setActionLoading(false); toast(`Assigned to ${getUserName(uid)}`)
+  }
+
+  const handleUnassign = async (uid: string) => {
+    if (!selectedThreadId) return
+    setActionLoading(true)
+    await supabase.from('inbox_thread_assignments').delete().eq('thread_id', selectedThreadId).eq('user_id', uid)
+    await fetchThreads(); setActionLoading(false); toast('Unassigned')
   }
 
   const handleUpdateStatus = async (status: string) => {
@@ -761,7 +779,7 @@ export default function Inbox() {
           ) : (
             <ul className="overflow-y-auto divide-y divide-border flex-1">
               {filteredThreads.map(t => {
-                const assignee = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments[0] : null
+                const assignees = (Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []) as { user_id: string }[]
                 const unread = isUnread(t)
                 return (
                   <li key={t.id}>
@@ -788,12 +806,19 @@ export default function Inbox() {
                           <div className="flex items-center gap-2 mt-1">
                             {t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
                             {t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
-                            {assignee && (
-                              <span className="inline-flex items-center gap-1 text-[10px] text-gray-500">
-                                <span className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent shrink-0">
-                                  {(getUserName(assignee.user_id) || '?')[0].toUpperCase()}
-                                </span>
-                                {getUserName(assignee.user_id)}
+                            {assignees.length > 0 && (
+                              <span className="inline-flex items-center gap-0.5">
+                                {assignees.slice(0, 3).map(a => {
+                                  const av = getUserAvatar(a.user_id)
+                                  return av ? (
+                                    <img key={a.user_id} src={av} alt="" className="w-4 h-4 rounded-full" title={getUserName(a.user_id)} />
+                                  ) : (
+                                    <span key={a.user_id} className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent" title={getUserName(a.user_id)}>
+                                      {(getUserName(a.user_id))[0]?.toUpperCase()}
+                                    </span>
+                                  )
+                                })}
+                                {assignees.length > 3 && <span className="text-[9px] text-gray-500 ml-0.5">+{assignees.length - 3}</span>}
                               </span>
                             )}
                           </div>
@@ -833,10 +858,25 @@ export default function Inbox() {
                   </button>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <select value={currentAssigneeId} onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
+                  {/* Assigned people pills */}
+                  {currentAssignees.map(a => (
+                    <span key={a.user_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-surface-muted text-[11px] text-gray-200">
+                      {getUserAvatar(a.user_id) ? (
+                        <img src={getUserAvatar(a.user_id)!} alt="" className="w-4 h-4 rounded-full" />
+                      ) : (
+                        <span className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent">{(getUserName(a.user_id))[0]?.toUpperCase()}</span>
+                      )}
+                      {getUserName(a.user_id)}
+                      <button type="button" onClick={() => handleUnassign(a.user_id)} className="text-gray-500 hover:text-red-400 ml-0.5">&times;</button>
+                    </span>
+                  ))}
+                  {/* Add assignee dropdown */}
+                  <select value="" onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
                     className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
-                    <option value="">Assign…</option>
-                    {inboxUsers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>)}
+                    <option value="">{currentAssignees.length > 0 ? '+' : 'Assign…'}</option>
+                    {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
+                      <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>
+                    ))}
                   </select>
                   {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
                   {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
