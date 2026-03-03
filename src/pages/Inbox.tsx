@@ -198,7 +198,7 @@ export default function Inbox() {
         if (!rpcErr && Array.isArray(rpcTids) && rpcTids.length > 0) {
           tids = rpcTids as string[]
         } else {
-          const { data: assigned, error: assignErr } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
+          const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
           tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
         }
         if (!tids.length) {
@@ -756,13 +756,13 @@ export default function Inbox() {
     setActiveSuggestionsField(newCurrent.length >= 2 ? field : null)
   }
 
-  const removeEmailChip = (field: 'to' | 'cc' | 'bcc', effectiveValue: string, setValue: (v: string) => void, email: string) => {
+  const removeEmailChip = (_field: 'to' | 'cc' | 'bcc', effectiveValue: string, setValue: (v: string) => void, email: string) => {
     const { chips, current } = parseEmailChips(effectiveValue)
     const newChips = chips.filter((e) => e !== email)
     setValue([...newChips, current].filter(Boolean).join(', '))
   }
 
-  const selectEmailSuggestion = (field: 'to' | 'cc' | 'bcc', effectiveValue: string, setValue: (v: string) => void, email: string) => {
+  const selectEmailSuggestion = (_field: 'to' | 'cc' | 'bcc', effectiveValue: string, setValue: (v: string) => void, email: string) => {
     const { chips } = parseEmailChips(effectiveValue)
     setValue([...chips, email].join(', ') + ', ')
     setActiveSuggestionsField(null)
@@ -791,8 +791,6 @@ export default function Inbox() {
   }
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true) }
   const handleDragLeave = () => setIsDragging(false)
-
-  const getDownloadUrl = (path: string) => attachmentUrls[path] ?? '#'
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`

@@ -42,7 +42,7 @@ function RequireOrg({ children }: { children: React.ReactNode }) {
     setResolvingFromUrl(true)
     let cancelled = false
     ;(async () => {
-      const { data, error } = await supabase.from('inbox_threads').select('org_id').eq('id', threadId).maybeSingle()
+      const { data } = await supabase.from('inbox_threads').select('org_id').eq('id', threadId).maybeSingle()
       if (cancelled) return
       setResolveDone(true)
       setResolvingFromUrl(false)
