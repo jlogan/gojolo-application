@@ -440,24 +440,25 @@ export default function ProjectDetail() {
             )}
           </section>
 
-          {/* Companies */}
+          {/* Company (single) */}
           <section className="rounded-lg border border-border bg-surface-elevated p-4">
-            <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3"><Building2 className="w-4 h-4" /> Companies ({companies.length})</h2>
-            {companies.map(c => (
-              <div key={c.company_id} className="flex items-center justify-between py-1.5 text-sm">
-                <Link to={`/companies/${c.company_id}`} className="text-accent hover:underline truncate">{c.name}</Link>
-                <button type="button" onClick={() => handleRemoveCompany(c.company_id)} className="p-1 text-gray-500 hover:text-red-400"><X className="w-3 h-3" /></button>
+            <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3"><Building2 className="w-4 h-4" /> Company</h2>
+            {companies.length > 0 ? (
+              <div className="flex items-center justify-between py-1.5 text-sm">
+                <Link to={`/companies/${companies[0].company_id}`} className="text-accent hover:underline truncate">{companies[0].name}</Link>
+                <button type="button" onClick={() => handleRemoveCompany(companies[0].company_id)} className="p-1 text-gray-500 hover:text-red-400" title="Remove company"><X className="w-3 h-3" /></button>
               </div>
-            ))}
-            <div className="flex gap-2 mt-2">
-              <select value={addCompanyId} onChange={e => setAddCompanyId(e.target.value)}
-                className="flex-1 rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-accent">
-                <option value="">Link company…</option>
-                {allCompanies.filter(c => !companies.some(pc => pc.company_id === c.id)).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <button type="button" onClick={handleAddCompany} disabled={!addCompanyId}
-                className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50">Add</button>
-            </div>
+            ) : (
+              <div className="flex gap-2">
+                <select value={addCompanyId} onChange={e => setAddCompanyId(e.target.value)}
+                  className="flex-1 rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-accent">
+                  <option value="">Link company…</option>
+                  {allCompanies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <button type="button" onClick={handleAddCompany} disabled={!addCompanyId}
+                  className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50">Add</button>
+              </div>
+            )}
           </section>
 
           {/* Contacts */}
@@ -487,54 +488,56 @@ export default function ProjectDetail() {
   )
 }
 
-function SlackChannelPicker({ projectId, orgId }: { projectId: string; orgId: string }) {
-  const [channels, setChannels] = useState<{ id: string; name: string }[]>([])
-  const [selectedChannel, setSelectedChannel] = useState('')
-  const [loading, setLoading] = useState(false)
+function SlackChannelPicker({ projectId }: { projectId: string; orgId: string }) {
+  const [channelName, setChannelName] = useState('')
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    if (!orgId) return
-    setLoading(true)
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session?.access_token) { setLoading(false); return }
-      try {
-        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-channels`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-          body: JSON.stringify({ orgId }),
-        })
-        const data = await res.json().catch(() => ({ channels: [] }))
-        setChannels(data.channels ?? [])
-      } catch { setChannels([]) }
-      setLoading(false)
-    })
-    // Load current mapping
+    if (!projectId) return
     supabase.from('slack_project_channels').select('channel_id, channel_name').eq('project_id', projectId).limit(1)
-      .then(({ data }) => { if (data?.[0]) setSelectedChannel(data[0].channel_id) })
-  }, [orgId, projectId])
+      .then(({ data }) => {
+        const row = data?.[0] as { channel_id: string; channel_name: string | null } | undefined
+        setChannelName(row?.channel_name ?? row?.channel_id ?? '')
+      })
+  }, [projectId])
 
-  const handleChange = async (channelId: string) => {
-    setSelectedChannel(channelId)
-    // Remove old mapping
+  const handleSave = async () => {
+    const trimmed = channelName.trim().replace(/^#+/, '') || ''
+    setSaving(true)
     await supabase.from('slack_project_channels').delete().eq('project_id', projectId)
-    if (channelId) {
-      const ch = channels.find(c => c.id === channelId)
-      await supabase.from('slack_project_channels').insert({ project_id: projectId, channel_id: channelId, channel_name: ch?.name ?? channelId })
+    if (trimmed) {
+      const value = trimmed.startsWith('#') ? trimmed : '#' + trimmed
+      await supabase.from('slack_project_channels').insert({
+        project_id: projectId,
+        channel_id: value,
+        channel_name: value,
+      })
     }
+    setSaving(false)
   }
 
   return (
     <section className="rounded-lg border border-border bg-surface-elevated p-4">
       <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">Slack channel</h2>
-      {loading ? <p className="text-xs text-gray-500">Loading channels…</p> : channels.length === 0 ? (
-        <p className="text-xs text-gray-500">No Slack bot configured or no channels found.</p>
-      ) : (
-        <select value={selectedChannel} onChange={e => handleChange(e.target.value)}
-          className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-accent">
-          <option value="">No channel linked</option>
-          {channels.map(c => <option key={c.id} value={c.id}>#{c.name}</option>)}
-        </select>
-      )}
+      <p className="text-xs text-gray-500 mb-2">New emails from linked contacts will be posted here.</p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={channelName}
+          onChange={e => setChannelName(e.target.value)}
+          onBlur={handleSave}
+          placeholder="#general or general"
+          className="flex-1 rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+        />
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50 shrink-0"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
     </section>
   )
 }
