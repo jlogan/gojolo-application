@@ -3,7 +3,7 @@ node_modules/
 
 # Build
 dist/
-*.tsbuildinfo
+tsconfig.tsbuildinfo
 
 # Env (never commit secrets)
 .env
@@ -21,4 +21,3 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
-gojolo-application.code-workspace
