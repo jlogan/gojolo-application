@@ -490,7 +490,7 @@ export default function Admin() {
     setSlackTestMessage(null)
     setSlackTestChannels([])
     try {
-      const callSlackChannels = async (accessToken: string) => {
+      const callSlackChannels = async () => {
         const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-channels`, {
           method: 'POST',
           headers: {
@@ -508,7 +508,7 @@ export default function Admin() {
         return { res, raw, data }
       }
 
-      let { res, raw, data } = await callSlackChannels('')
+      let { res, raw, data } = await callSlackChannels()
 
       if (!res.ok || data.error) {
         const fallback = raw?.slice(0, 240) || `HTTP ${res.status}`
