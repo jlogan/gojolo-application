@@ -79,6 +79,12 @@ export default function Inbox() {
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
+
+  // Multi-select
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  // Pagination
+  const [pageSize] = useState(50)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -157,9 +163,9 @@ export default function Inbox() {
     try {
       let query = supabase.from('inbox_threads')
         .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
-        .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false })
+        .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
       if (filter === 'inbox') {
-        // Inbox = open threads: assigned to me OR unassigned
+        // Inbox = open threads assigned to me OR unassigned
         query = query.eq('status', 'open')
       } else if (filter === 'assigned') {
         // Mine = all threads assigned to me (any status)
@@ -170,7 +176,15 @@ export default function Inbox() {
       } else if (filter === 'closed') query = query.eq('status', 'closed')
       else if (filter === 'trash') query = query.eq('status', 'archived')
       const { data } = await query
-      setThreads((data as InboxThread[]) ?? [])
+      let result = (data as InboxThread[]) ?? []
+      // For inbox filter: only show threads assigned to me or unassigned
+      if (filter === 'inbox') {
+        result = result.filter(t => {
+          const assigns = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []
+          return assigns.length === 0 || assigns.some(a => a.user_id === userId)
+        })
+      }
+      setThreads(result)
       initialLoadDone.current = true
     } catch { if (!initialLoadDone.current) setThreads([]) }
     setLoading(false)
@@ -494,9 +508,15 @@ export default function Inbox() {
     }
 
     await fetchThreads(); setActionLoading(false)
-    if (status === 'archived') { setSelectedThreadId(null); toast('Moved to trash') }
-    else if (status === 'closed') toast('Thread closed')
-    else toast('Thread re-opened')
+    if (status === 'archived' || status === 'closed') {
+      // Auto-load next thread
+      const currentIdx = threads.findIndex(t => t.id === selectedThreadId)
+      const nextThread = threads[currentIdx + 1] ?? threads[currentIdx - 1]
+      setSelectedThreadId(nextThread?.id ?? null)
+      toast(status === 'archived' ? 'Moved to trash' : 'Thread closed')
+    } else {
+      toast('Thread re-opened')
+    }
   }
 
   const getSendableAddresses = (): { accountId: string; email: string; label: string }[] => {
@@ -773,6 +793,26 @@ export default function Inbox() {
             </div>
           </div>
 
+          {/* Bulk actions */}
+          {selectedIds.size > 0 && (
+            <div className="px-3 py-2 border-b border-border bg-surface-elevated flex items-center gap-2">
+              <span className="text-xs text-gray-300">{selectedIds.size} selected</span>
+              <button type="button" onClick={async () => {
+                for (const tid of selectedIds) {
+                  await supabase.from('inbox_threads').update({ status: 'archived', updated_at: new Date().toISOString() }).eq('id', tid)
+                }
+                setSelectedIds(new Set()); fetchThreads(); toast(`${selectedIds.size} thread(s) trashed`)
+              }} className="px-2 py-1 rounded text-[11px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30">Trash</button>
+              <button type="button" onClick={async () => {
+                for (const tid of selectedIds) {
+                  await supabase.from('inbox_threads').update({ status: 'closed', updated_at: new Date().toISOString() }).eq('id', tid)
+                }
+                setSelectedIds(new Set()); fetchThreads(); toast(`${selectedIds.size} thread(s) closed`)
+              }} className="px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">Close</button>
+              <button type="button" onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-500 hover:text-gray-300 ml-auto">Cancel</button>
+            </div>
+          )}
+
           {loading ? <div className="p-4 text-gray-400 text-sm">Loading…</div>
           : filteredThreads.length === 0 ? (
             <div className="p-4 text-gray-400 text-sm text-center mt-8"><InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" /><p>No threads</p></div>
@@ -781,9 +821,24 @@ export default function Inbox() {
               {filteredThreads.map(t => {
                 const assignees = (Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []) as { user_id: string }[]
                 const unread = isUnread(t)
+                const isSelected = selectedIds.has(t.id)
                 return (
-                  <li key={t.id}>
-                    <button type="button" onClick={() => { setSelectedThreadId(t.id); setReplyMode(null) }}
+                  <li key={t.id} className="relative group/row">
+                    {/* Multi-select checkbox */}
+                    <input type="checkbox" checked={isSelected}
+                      onChange={e => { e.stopPropagation(); const next = new Set(selectedIds); if (e.target.checked) next.add(t.id); else next.delete(t.id); setSelectedIds(next) }}
+                      className="absolute left-1.5 top-4 w-3.5 h-3.5 rounded border-border bg-surface-muted text-accent focus:ring-accent opacity-0 group-hover/row:opacity-100 checked:opacity-100 z-10 cursor-pointer"
+                      onClick={e => e.stopPropagation()} />
+                    <button type="button" onClick={() => {
+                      if (selectedIds.size > 0) { const next = new Set(selectedIds); if (isSelected) next.delete(t.id); else next.add(t.id); setSelectedIds(next); return }
+                      setSelectedThreadId(t.id); setReplyMode(null)
+                      if (userId) {
+                        setReadStatuses(prev => {
+                          const existing = prev.filter(r => r.thread_id !== t.id)
+                          return [...existing, { thread_id: t.id, last_read_at: new Date().toISOString() }]
+                        })
+                      }
+                    }}
                       className={`w-full text-left px-4 py-3 transition-colors ${selectedThreadId === t.id ? 'bg-surface-muted' : 'hover:bg-surface-muted/50'}`}>
                       <div className="flex items-start gap-2">
                         {/* Unread indicator */}
@@ -804,8 +859,10 @@ export default function Inbox() {
                           </div>
                           <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
                           <div className="flex items-center gap-2 mt-1">
-                            {t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
-                            {t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
+                            {/* Only show status badges in search results */}
+                            {searchQuery.trim() && t.status === 'open' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">open</span>}
+                            {searchQuery.trim() && t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
+                            {searchQuery.trim() && t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
                             {assignees.length > 0 && (
                               <span className="inline-flex items-center gap-0.5">
                                 {assignees.slice(0, 3).map(a => {
@@ -858,7 +915,34 @@ export default function Inbox() {
                   </button>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  {/* Assigned people pills */}
+                  {/* Reordered: Read/Unread → Reply → All → Fwd → Close → Trash → Assign → Assignees */}
+                  <button type="button" onClick={async () => {
+                    const isRead = !isUnread(selectedThread)
+                    if (isRead) {
+                      await supabase.from('inbox_thread_reads').delete().eq('thread_id', selectedThread.id).eq('user_id', userId!)
+                      setReadStatuses(prev => prev.filter(r => r.thread_id !== selectedThread.id))
+                    } else {
+                      setReadStatuses(prev => [...prev.filter(r => r.thread_id !== selectedThread.id), { thread_id: selectedThread.id, last_read_at: new Date().toISOString() }])
+                    }
+                    toast(isRead ? 'Marked unread' : 'Marked read')
+                  }} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">
+                    <Mail className="w-3 h-3" /> {isUnread(selectedThread) ? 'Read' : 'Unread'}
+                  </button>
+                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Reply className="w-3 h-3" /> Reply</button>
+                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><ReplyAll className="w-3 h-3" /> All</button>
+                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Forward className="w-3 h-3" /> Fwd</button>
+                  <div className="w-px h-4 bg-border mx-0.5" />
+                  {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
+                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
+                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
+                  <div className="w-px h-4 bg-border mx-0.5" />
+                  <select value="" onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
+                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
+                    <option value="">{currentAssignees.length > 0 ? '+ Assign' : 'Assign…'}</option>
+                    {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
+                      <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>
+                    ))}
+                  </select>
                   {currentAssignees.map(a => (
                     <span key={a.user_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-surface-muted text-[11px] text-gray-200">
                       {getUserAvatar(a.user_id) ? (
@@ -870,21 +954,6 @@ export default function Inbox() {
                       <button type="button" onClick={() => handleUnassign(a.user_id)} className="text-gray-500 hover:text-red-400 ml-0.5">&times;</button>
                     </span>
                   ))}
-                  {/* Add assignee dropdown */}
-                  <select value="" onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
-                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
-                    <option value="">{currentAssignees.length > 0 ? '+' : 'Assign…'}</option>
-                    {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
-                      <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>
-                    ))}
-                  </select>
-                  {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
-                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
-                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
-                  <div className="w-px h-4 bg-border mx-0.5" />
-                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Reply className="w-3 h-3" /> Reply</button>
-                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><ReplyAll className="w-3 h-3" /> All</button>
-                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Forward className="w-3 h-3" /> Fwd</button>
                 </div>
               </div>
 
