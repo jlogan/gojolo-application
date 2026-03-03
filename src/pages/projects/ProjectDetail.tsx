@@ -458,21 +458,61 @@ export default function ProjectDetail() {
             </div>
           </section>
           {/* Slack channel */}
-          <section className="rounded-lg border border-border bg-surface-elevated p-4">
-            <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">Slack channel</h2>
-            <p className="text-xs text-gray-500 mb-2">Link a Slack channel to get notifications for this project.</p>
-            <input type="text" placeholder="#channel-name"
-              className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-accent placeholder-gray-500"
-              onBlur={async (e) => {
-                if (!id || !e.target.value.trim()) return
-                await supabase.from('slack_project_channels').upsert(
-                  { project_id: id, channel_id: e.target.value.trim().replace('#', ''), channel_name: e.target.value.trim() },
-                  { onConflict: 'project_id,channel_id' }
-                )
-              }} />
-          </section>
+          <SlackChannelPicker projectId={id!} orgId={currentOrg?.id ?? ''} />
         </div>
       </div>
     </div>
+  )
+}
+
+function SlackChannelPicker({ projectId, orgId }: { projectId: string; orgId: string }) {
+  const [channels, setChannels] = useState<{ id: string; name: string }[]>([])
+  const [selectedChannel, setSelectedChannel] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!orgId) return
+    setLoading(true)
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session?.access_token) { setLoading(false); return }
+      try {
+        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-channels`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+          body: JSON.stringify({ orgId }),
+        })
+        const data = await res.json().catch(() => ({ channels: [] }))
+        setChannels(data.channels ?? [])
+      } catch { setChannels([]) }
+      setLoading(false)
+    })
+    // Load current mapping
+    supabase.from('slack_project_channels').select('channel_id, channel_name').eq('project_id', projectId).limit(1)
+      .then(({ data }) => { if (data?.[0]) setSelectedChannel(data[0].channel_id) })
+  }, [orgId, projectId])
+
+  const handleChange = async (channelId: string) => {
+    setSelectedChannel(channelId)
+    // Remove old mapping
+    await supabase.from('slack_project_channels').delete().eq('project_id', projectId)
+    if (channelId) {
+      const ch = channels.find(c => c.id === channelId)
+      await supabase.from('slack_project_channels').insert({ project_id: projectId, channel_id: channelId, channel_name: ch?.name ?? channelId })
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-surface-elevated p-4">
+      <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">Slack channel</h2>
+      {loading ? <p className="text-xs text-gray-500">Loading channels…</p> : channels.length === 0 ? (
+        <p className="text-xs text-gray-500">No Slack bot configured or no channels found.</p>
+      ) : (
+        <select value={selectedChannel} onChange={e => handleChange(e.target.value)}
+          className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-accent">
+          <option value="">No channel linked</option>
+          {channels.map(c => <option key={c.id} value={c.id}>#{c.name}</option>)}
+        </select>
+      )}
+    </section>
   )
 }
