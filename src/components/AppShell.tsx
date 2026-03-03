@@ -68,6 +68,11 @@ export default function AppShell() {
       .then(({ data }) => setChatSessions((data ?? []) as { id: string; title: string | null; project_id: string | null; updated_at: string }[]))
   }, [currentOrg?.id, mode])
 
+  useEffect(() => {
+    // Ensure mobile drawer closes after navigation.
+    setSidebarOpen(false)
+  }, [location.pathname])
+
   const setModeAndStore = (m: AppMode) => {
     setMode(m)
     localStorage.setItem('jolo_app_mode', m)
@@ -274,8 +279,8 @@ export default function AppShell() {
           <ChatView />
         </main>
       ) : (
-        <>
-          <header className="md:hidden flex items-center h-14 px-4 border-b border-border shrink-0">
+        <div className="flex-1 min-w-0 flex flex-col relative">
+          <header className="md:hidden sticky top-0 z-20 bg-surface/95 backdrop-blur flex items-center h-14 px-4 border-b border-border shrink-0">
             <button
               type="button"
               className="p-2 rounded-lg hover:bg-surface-muted"
@@ -290,7 +295,7 @@ export default function AppShell() {
             </span>
             <NotificationBell />
           </header>
-          <main className="flex-1 overflow-y-auto min-w-0" data-testid="main-content">
+          <main className="flex-1 overflow-y-auto min-w-0 pb-16 md:pb-0" data-testid="main-content">
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/contacts" element={<ContactsList />} />
@@ -314,7 +319,30 @@ export default function AppShell() {
               <Route path="/admin" element={<Admin />} />
             </Routes>
           </main>
-        </>
+
+          {/* Mobile bottom nav */}
+          <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 border-t border-border bg-surface-elevated/95 backdrop-blur" aria-label="Mobile navigation">
+            <ul className="grid grid-cols-5 h-16">
+              {NAV.map(({ to, label, icon: Icon, testId }) => {
+                const active = location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
+                return (
+                  <li key={`mobile-${to}`}>
+                    <Link
+                      to={to}
+                      data-testid={`${testId}-mobile`}
+                      className={`h-full w-full flex flex-col items-center justify-center gap-1 text-[11px] transition-colors ${
+                        active ? 'text-accent' : 'text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate max-w-[70px]">{label}</span>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </nav>
+        </div>
       )}
     </div>
   )

@@ -50,11 +50,27 @@ function resolveEmail(email: string, contacts: ContactMatch[]): { name: string |
   return match ? { name: match.name, contactId: match.contact_id } : { name: null, contactId: null }
 }
 
+const INBOX_TWO_COLUMN_BREAKPOINT = 1024
+
+function useIsNarrowViewport(breakpoint: number) {
+  const [isNarrow, setIsNarrow] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < breakpoint : true
+  )
+  useEffect(() => {
+    const check = () => setIsNarrow(window.innerWidth < breakpoint)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [breakpoint])
+  return isNarrow
+}
+
 export default function Inbox() {
   const { currentOrg } = useOrg()
   const { user } = useAuth()
   const { threadId: urlThreadId } = useParams<{ threadId?: string }>()
   const navigate = useNavigate()
+  const isNarrow = useIsNarrowViewport(INBOX_TWO_COLUMN_BREAKPOINT)
   const [filter, setFilter] = useState<InboxFilter>('inbox')
   const [threads, setThreads] = useState<InboxThread[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(urlThreadId ?? null)
@@ -809,9 +825,21 @@ export default function Inbox() {
         </div>
       </div>
 
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Thread list — full-width on mobile, panel on desktop */}
-        <div className={`${selectedThreadId || replyMode === 'compose' ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-col border-r border-border bg-surface-muted/20 md:bg-surface-muted/20 shrink-0`}>
+      <div
+        data-inbox-panels
+        className="flex flex-1 min-h-0 overflow-hidden"
+        style={isNarrow ? { flexDirection: 'column' } : { flexDirection: 'row' }}
+      >
+        {/* Thread list — full-width when narrow, side panel when wide */}
+        <div
+          className="flex flex-col border-r border-border bg-surface-muted/20 min-w-0 min-h-0"
+          style={{
+            display: isNarrow && (selectedThreadId || replyMode === 'compose') ? 'none' : 'flex',
+            ...(isNarrow
+              ? { width: '100%', maxWidth: '100%', flex: '1 1 0%' }
+              : { width: '20rem', flex: '0 0 20rem' }),
+          }}
+        >
           {/* Search — touch-friendly on mobile */}
           <div className="p-2 md:p-2 border-b border-border shrink-0">
             <div className="relative">
@@ -919,13 +947,18 @@ export default function Inbox() {
           )}
         </div>
 
-        {/* Detail */}
-        <div className={`${selectedThreadId || replyMode === 'compose' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 min-h-0 bg-surface`}>
+        {/* Detail — full-width when narrow and thread/compose selected; side panel when wide */}
+        <div
+          className="flex-1 flex flex-col min-w-0 min-h-0 bg-surface"
+          style={{
+            display: isNarrow && !selectedThreadId && replyMode !== 'compose' ? 'none' : 'flex',
+          }}
+        >
           {!selectedThread && replyMode !== 'compose' ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-gray-500 text-sm px-6 py-8 md:py-0">
-              <Mail className="w-12 h-12 text-gray-600 mb-3 md:hidden" />
+            <div className={`flex-1 flex flex-col items-center justify-center text-gray-500 text-sm px-6 py-8 ${!isNarrow ? 'py-0' : ''}`}>
+              {isNarrow && <Mail className="w-12 h-12 text-gray-600 mb-3" />}
               <p className="text-center">Select a thread</p>
-              <p className="text-xs text-gray-600 mt-1 text-center max-w-[200px] md:hidden">Tap a conversation in the list</p>
+              {isNarrow && <p className="text-xs text-gray-600 mt-1 text-center max-w-[200px]">Tap a conversation in the list</p>}
             </div>
           ) : replyMode === 'compose' && !selectedThread ? (
             <div className="flex-1 flex flex-col min-h-0 bg-surface">
@@ -934,7 +967,7 @@ export default function Inbox() {
                 <button
                   type="button"
                   onClick={() => setReplyMode(null)}
-                  className="md:hidden flex items-center gap-2 min-h-[44px] min-w-[44px] -ml-1 pl-1 pr-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted touch-manipulation"
+                  className={`flex items-center gap-2 min-h-[44px] min-w-[44px] -ml-1 pl-1 pr-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted touch-manipulation ${!isNarrow ? 'hidden' : ''}`}
                   aria-label="Back to inbox"
                 >
                   <ChevronRight className="w-5 h-5 rotate-180 shrink-0" />
@@ -952,7 +985,7 @@ export default function Inbox() {
                   <button
                     type="button"
                     onClick={() => { setSelectedThreadId(null); setReplyMode(null) }}
-                    className="md:hidden flex items-center gap-2 min-h-[44px] min-w-[44px] -ml-1 pl-1 pr-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted touch-manipulation shrink-0"
+                    className={`flex items-center gap-2 min-h-[44px] min-w-[44px] -ml-1 pl-1 pr-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted touch-manipulation shrink-0 ${!isNarrow ? 'hidden' : ''}`}
                     aria-label="Back to inbox"
                   >
                     <ChevronRight className="w-5 h-5 rotate-180 shrink-0" />

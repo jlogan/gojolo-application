@@ -48,3 +48,14 @@ body {
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+
+/* Inbox: force single-column layout on narrow viewports (backup for JS) */
+@media (max-width: 1023px) {
+  [data-testid="inbox-page"] [data-inbox-panels] {
+    flex-direction: column !important;
+  }
+  [data-testid="inbox-page"] [data-inbox-panels] > div:first-child {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+}
