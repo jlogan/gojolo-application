@@ -47,24 +47,39 @@ Deno.serve(async (req: Request) => {
     const trashPath = isGmail ? '[Gmail]/Trash' : 'Trash'
     const uids = msgs.map(m => m.external_uid as number)
 
+    const uidRange = uids.join(',')
     if (body.action === 'archive') {
       const lock = await client.getMailboxLock(mailboxPath)
       try {
         if (isGmail) {
-          await client.messageFlagsRemove({ uid: uids.join(',') }, ['\\Inbox'], { uid: true }).catch(() => {})
+          // Gmail: remove Inbox label (archives it)
+          await client.messageFlagsRemove({ uid: uidRange }, ['\\Inbox'], { uid: true }).catch(() => {})
         }
-        await client.messageFlagsAdd({ uid: uids.join(',') }, ['\\Seen'], { uid: true }).catch(() => {})
+        await client.messageFlagsAdd({ uid: uidRange }, ['\\Seen'], { uid: true }).catch(() => {})
       } finally { await lock.release() }
     } else if (body.action === 'trash') {
       const lock = await client.getMailboxLock(mailboxPath)
       try {
-        await client.messageMove({ uid: uids.join(',') }, trashPath, { uid: true }).catch(() => {})
+        if (isGmail) {
+          // Gmail: move to Trash label
+          await client.messageMove({ uid: uidRange }, trashPath, { uid: true }).catch(async () => {
+            // Fallback: add Trash flag and remove Inbox
+            await client.messageFlagsAdd({ uid: uidRange }, ['\\Deleted'], { uid: true }).catch(() => {})
+            await client.messageFlagsRemove({ uid: uidRange }, ['\\Inbox'], { uid: true }).catch(() => {})
+          })
+        } else {
+          // Standard IMAP: move to Trash folder
+          await client.messageMove({ uid: uidRange }, trashPath, { uid: true }).catch(async () => {
+            // Fallback: flag as deleted
+            await client.messageFlagsAdd({ uid: uidRange }, ['\\Deleted'], { uid: true }).catch(() => {})
+          })
+        }
       } finally { await lock.release() }
     } else if (body.action === 'unarchive') {
       const lock = await client.getMailboxLock(mailboxPath)
       try {
         if (isGmail) {
-          await client.messageFlagsAdd({ uid: uids.join(',') }, ['\\Inbox'], { uid: true }).catch(() => {})
+          await client.messageFlagsAdd({ uid: uidRange }, ['\\Inbox'], { uid: true }).catch(() => {})
         }
       } finally { await lock.release() }
     }

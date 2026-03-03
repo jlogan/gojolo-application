@@ -420,6 +420,29 @@ serve(async (req) => {
       totalThreads += threadsCreated
       totalMessages += messagesInserted
 
+      // Detect messages moved to trash on the server (UIDs gone from inbox)
+      // Check recent open threads — if their UIDs no longer exist, mark as archived
+      if (highestUid > 0) {
+        const { data: recentOpenThreads } = await service.from('inbox_threads')
+          .select('id').eq('org_id', acc.org_id).eq('imap_account_id', acc.id)
+          .eq('status', 'open').order('last_message_at', { ascending: false }).limit(20)
+
+        for (const t of (recentOpenThreads ?? []) as { id: string }[]) {
+          const { data: threadMsgs } = await service.from('inbox_messages')
+            .select('external_uid').eq('thread_id', t.id).eq('imap_account_id', acc.id)
+            .not('external_uid', 'is', null).limit(1)
+          const uid = (threadMsgs?.[0] as { external_uid: number } | undefined)?.external_uid
+          if (uid) {
+            try {
+              const check = await client.fetchAll(String(uid), { uid: true }, { uid: true })
+              if (check.length === 0) {
+                await service.from('inbox_threads').update({ status: 'archived', updated_at: new Date().toISOString() }).eq('id', t.id)
+              }
+            } catch { /* UID might be out of range — skip */ }
+          }
+        }
+      }
+
       if (lock) await lock.release()
       lock = null
 
