@@ -40,10 +40,10 @@ type AppMode = 'software' | 'chat'
 
 const NAV = [
   { to: '/', label: 'Home', icon: LayoutGrid, testId: 'nav-home' },
+  { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
   { to: '/companies', label: 'Companies', icon: Building2, testId: 'nav-companies' },
-  { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
 ]
 
 export default function AppShell() {
