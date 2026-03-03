@@ -21,6 +21,19 @@ export default function Login() {
     else if (user && memberships.length === 0) navigate('/workspace', { replace: true })
   }, [user, loading, memberships.length, navigate])
 
+  const isLocalSupabase = import.meta.env.VITE_SUPABASE_URL?.includes('127.0.0.1') ?? false
+
+  function normalizeAuthError(error: { message: string } | null): string {
+    if (!error) return ''
+    const msg = error.message
+    if (msg === 'Failed to fetch' || msg.toLowerCase().includes('network') || msg.toLowerCase().includes('load failed')) {
+      return isLocalSupabase
+        ? 'Cannot reach Supabase. Start it with: Docker running, then run supabase start in the project folder.'
+        : 'Cannot reach the server. Check your connection and that the API is running.'
+    }
+    return msg
+  }
+
   const handleEmailSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!email.trim()) return
@@ -31,7 +44,7 @@ export default function Login() {
       password,
     })
     if (error) {
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: normalizeAuthError(error) })
     }
     setSubmitLoading(false)
   }
@@ -46,7 +59,7 @@ export default function Login() {
       options: { emailRedirectTo: `${window.location.origin}/` },
     })
     if (error) {
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: normalizeAuthError(error) })
     } else {
       setMessage({ type: 'success', text: 'Check your inbox for a sign-in link.' })
     }

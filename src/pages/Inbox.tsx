@@ -760,40 +760,69 @@ export default function Inbox() {
   )
 
   return (
-    <div className="flex flex-col h-full min-h-0" data-testid="inbox-page">
-      {toastMsg && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-accent text-white text-sm shadow-lg">{toastMsg}</div>}
+    <div
+      className="flex flex-col h-full min-h-[100dvh] md:min-h-0 pt-[var(--safe-top)] pb-[var(--safe-bottom)]"
+      data-testid="inbox-page"
+    >
+      {toastMsg && (
+        <div
+          className="fixed left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg bg-accent text-white text-sm shadow-lg"
+          style={{ bottom: 'max(1rem, var(--safe-bottom))' }}
+        >
+          {toastMsg}
+        </div>
+      )}
 
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 overflow-x-auto">
+      {/* Header: filters + sync + compose — touch-friendly on mobile */}
+      <div className="px-3 md:px-4 py-2.5 md:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2 bg-surface">
+        <div className="flex items-center gap-1.5 md:gap-2 overflow-x-auto scrollbar-none -mx-1 min-h-[44px]">
           {FILTERS.map(f => (
-            <button key={f.id} type="button" onClick={() => { setFilter(f.id); setSelectedThreadId(null); initialLoadDone.current = false }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
-                filter === f.id ? 'bg-accent text-white' : 'bg-surface-muted text-gray-300 hover:bg-surface-muted/80'}`}>
-              <f.icon className="w-3.5 h-3.5" /> {f.label}
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => { setFilter(f.id); setSelectedThreadId(null); initialLoadDone.current = false }}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 md:py-1.5 rounded-lg text-xs font-medium whitespace-nowrap min-h-[44px] md:min-h-0 touch-manipulation ${
+                filter === f.id ? 'bg-accent text-white' : 'bg-surface-muted text-gray-300 hover:bg-surface-muted/80 active:bg-surface-muted'
+              }`}
+            >
+              <f.icon className="w-3.5 h-3.5 shrink-0" /> {f.label}
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button type="button" onClick={handleSync} disabled={syncing} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50" title="Sync emails">
+        <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleSync}
+            disabled={syncing}
+            className="p-2.5 md:p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50 min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center touch-manipulation"
+            title="Sync emails"
+          >
             <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
           </button>
-          <button type="button" onClick={() => { setSelectedThreadId(null); openReply('compose') }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:opacity-90">
-            <Plus className="w-3.5 h-3.5" /> Compose
+          <button
+            type="button"
+            onClick={() => { setSelectedThreadId(null); openReply('compose') }}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 md:py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:opacity-90 min-h-[44px] touch-manipulation active:opacity-90"
+          >
+            <Plus className="w-3.5 h-3.5 shrink-0" /> Compose
           </button>
         </div>
       </div>
 
-      <div className="flex flex-1 min-h-0">
-        {/* Thread list */}
-        <div className={`${selectedThreadId || replyMode === 'compose' ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-col border-r border-border bg-surface-muted/20 shrink-0`}>
-          {/* Search */}
-          <div className="p-2 border-b border-border">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Thread list — full-width on mobile, panel on desktop */}
+        <div className={`${selectedThreadId || replyMode === 'compose' ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-col border-r border-border bg-surface-muted/20 md:bg-surface-muted/20 shrink-0`}>
+          {/* Search — touch-friendly on mobile */}
+          <div className="p-2 md:p-2 border-b border-border shrink-0">
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
-              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search threads…"
-                className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search threads…"
+                className="w-full rounded-lg border border-border bg-surface-muted pl-9 pr-3 py-2.5 md:py-1.5 text-sm md:text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent touch-manipulation"
+              />
             </div>
           </div>
 
@@ -843,7 +872,8 @@ export default function Inbox() {
                         })
                       }
                     }}
-                      className={`w-full text-left pl-5 pr-4 py-3 transition-colors border-l-2 ${unread ? 'border-accent bg-accent/5' : 'border-transparent'} ${selectedThreadId === t.id ? 'bg-surface-muted' : 'hover:bg-surface-muted/50'}`}>
+                      className={`w-full text-left pl-5 pr-4 py-3 min-h-[72px] md:min-h-0 flex flex-col justify-center transition-colors border-l-2 touch-manipulation active:bg-surface-muted/70 ${unread ? 'border-accent bg-accent/5' : 'border-transparent'} ${selectedThreadId === t.id ? 'bg-surface-muted' : 'hover:bg-surface-muted/50'}`}
+                    >
                       <div className="flex items-start gap-2">
                         <span className="mt-1 shrink-0 text-gray-500">{t.channel === 'email' ? <Mail className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}</span>
                         <div className="min-w-0 flex-1">
@@ -890,31 +920,56 @@ export default function Inbox() {
         </div>
 
         {/* Detail */}
-        <div className={`${selectedThreadId || replyMode === 'compose' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 min-h-0`}>
+        <div className={`${selectedThreadId || replyMode === 'compose' ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 min-h-0 bg-surface`}>
           {!selectedThread && replyMode !== 'compose' ? (
-            <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Select a thread</div>
+            <div className="flex-1 flex flex-col items-center justify-center text-gray-500 text-sm px-6 py-8 md:py-0">
+              <Mail className="w-12 h-12 text-gray-600 mb-3 md:hidden" />
+              <p className="text-center">Select a thread</p>
+              <p className="text-xs text-gray-600 mt-1 text-center max-w-[200px] md:hidden">Tap a conversation in the list</p>
+            </div>
           ) : replyMode === 'compose' && !selectedThread ? (
-            <div className="flex-1 flex flex-col min-h-0">
-              <div className="border-b border-border px-4 py-2.5 shrink-0 flex items-center gap-2">
-                <button type="button" onClick={() => setReplyMode(null)} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
+            <div className="flex-1 flex flex-col min-h-0 bg-surface">
+              {/* Compose: mobile back bar */}
+              <div className="border-b border-border px-2 md:px-4 py-2.5 shrink-0 flex items-center gap-2 min-h-[52px] bg-surface-elevated">
+                <button
+                  type="button"
+                  onClick={() => setReplyMode(null)}
+                  className="md:hidden flex items-center gap-2 min-h-[44px] min-w-[44px] -ml-1 pl-1 pr-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted touch-manipulation"
+                  aria-label="Back to inbox"
+                >
+                  <ChevronRight className="w-5 h-5 rotate-180 shrink-0" />
+                  <span className="text-sm font-medium text-gray-300">Inbox</span>
+                </button>
                 <h2 className="text-white font-medium text-sm">New message</h2>
               </div>
               <div className="flex-1 overflow-y-auto p-4">{renderReplyForm(true)}</div>
             </div>
           ) : selectedThread && (
             <>
-              {/* Thread header */}
-              <div className="border-b border-border px-4 py-2.5 shrink-0">
-                <div className="flex items-center gap-2 mb-2">
-                  <button type="button" onClick={() => { setSelectedThreadId(null); setReplyMode(null) }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
-                  <h2 className="text-white font-medium truncate flex-1 text-sm">{selectedThread.subject || '(No subject)'}</h2>
+              {/* Thread header — mobile: prominent back bar, then scrollable actions */}
+              <div className="border-b border-border shrink-0 bg-surface-elevated">
+                <div className="flex items-center gap-2 px-2 md:px-4 py-2.5 min-h-[52px]">
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedThreadId(null); setReplyMode(null) }}
+                    className="md:hidden flex items-center gap-2 min-h-[44px] min-w-[44px] -ml-1 pl-1 pr-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted touch-manipulation shrink-0"
+                    aria-label="Back to inbox"
+                  >
+                    <ChevronRight className="w-5 h-5 rotate-180 shrink-0" />
+                    <span className="text-sm font-medium text-gray-300">Inbox</span>
+                  </button>
+                  <h2 className="text-white font-medium truncate flex-1 min-w-0 text-sm">{selectedThread.subject || '(No subject)'}</h2>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${selectedThread.status === 'open' ? 'bg-accent/20 text-accent' : selectedThread.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{selectedThread.status}</span>
-                  <button type="button" onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/inbox/${selectedThread.id}`); toast('Thread link copied') }}
-                    className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted" title="Copy thread link">
+                  <button
+                    type="button"
+                    onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/inbox/${selectedThread.id}`); toast('Thread link copied') }}
+                    className="p-2 md:p-1 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center touch-manipulation"
+                    title="Copy thread link"
+                  >
                     <Link2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="flex items-center gap-1.5 overflow-x-auto overflow-y-hidden px-2 md:px-4 pb-2 md:pb-2 scrollbar-none -mx-1 touch-manipulation">
                   {/* Reordered: Read/Unread → Reply → All → Fwd → Close → Trash → Assign → Assignees */}
                   <button type="button" onClick={async () => {
                     const isRead = !isUnread(selectedThread)
@@ -925,19 +980,19 @@ export default function Inbox() {
                       setReadStatuses(prev => [...prev.filter(r => r.thread_id !== selectedThread.id), { thread_id: selectedThread.id, last_read_at: new Date().toISOString() }])
                     }
                     toast(isRead ? 'Marked unread' : 'Marked read')
-                  }} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">
-                    <Mail className="w-3 h-3" /> {isUnread(selectedThread) ? 'Read' : 'Unread'}
+                  }} className="inline-flex items-center gap-1 px-2.5 py-2 md:py-1 rounded-lg text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 min-h-[40px] md:min-h-0 shrink-0 touch-manipulation">
+                    <Mail className="w-3 h-3 shrink-0" /> {isUnread(selectedThread) ? 'Read' : 'Unread'}
                   </button>
-                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Reply className="w-3 h-3" /> Reply</button>
-                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><ReplyAll className="w-3 h-3" /> All</button>
-                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Forward className="w-3 h-3" /> Fwd</button>
-                  <div className="w-px h-4 bg-border mx-0.5" />
-                  {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
-                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
-                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
-                  <div className="w-px h-4 bg-border mx-0.5" />
+                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2.5 py-2 md:py-1 rounded-lg text-[11px] font-medium bg-accent/20 text-accent hover:bg-accent/30 min-h-[40px] md:min-h-0 shrink-0 touch-manipulation"><Reply className="w-3 h-3 shrink-0" /> Reply</button>
+                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2.5 py-2 md:py-1 rounded-lg text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 min-h-[40px] md:min-h-0 shrink-0 touch-manipulation"><ReplyAll className="w-3 h-3 shrink-0" /> All</button>
+                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2.5 py-2 md:py-1 rounded-lg text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 min-h-[40px] md:min-h-0 shrink-0 touch-manipulation"><Forward className="w-3 h-3 shrink-0" /> Fwd</button>
+                  <div className="w-px h-4 bg-border mx-0.5 shrink-0" />
+                  {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2.5 py-2 md:py-1 rounded-lg text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 min-h-[40px] md:min-h-0 shrink-0 touch-manipulation disabled:opacity-50"><Check className="w-3 h-3 shrink-0" /> Close</button>}
+                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2.5 py-2 md:py-1 rounded-lg text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 min-h-[40px] md:min-h-0 shrink-0 touch-manipulation disabled:opacity-50"><RotateCcw className="w-3 h-3 shrink-0" /> Re-open</button>}
+                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2.5 py-2 md:py-1 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 min-h-[40px] md:min-h-0 shrink-0 touch-manipulation disabled:opacity-50"><Archive className="w-3 h-3 shrink-0" /> Trash</button>}
+                  <div className="w-px h-4 bg-border mx-0.5 shrink-0" />
                   <select value="" onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
-                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
+                    className="rounded-lg border border-border bg-surface-muted px-2.5 py-2 md:py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent min-h-[40px] md:min-h-0 shrink-0 touch-manipulation">
                     <option value="">{currentAssignees.length > 0 ? '+ Assign' : 'Assign…'}</option>
                     {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
                       <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>
@@ -1065,30 +1120,42 @@ export default function Inbox() {
                 </div>
               </div>
 
-              {/* Comment input */}
-              <div className="border-t border-border px-4 py-2.5 shrink-0">
+              {/* Comment input — sticky at bottom on mobile with safe area */}
+              <div
+                className="border-t border-border px-3 md:px-4 py-2.5 shrink-0 bg-surface-elevated pb-[max(0.5rem,var(--safe-bottom))]"
+              >
                 <div className="flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
-                  <div className="flex-1 relative">
-                    <input type="text" value={commentText} onChange={e => {
-                      setCommentText(e.target.value)
-                      if (e.target.value.endsWith('@')) setShowMentionPicker(true)
-                      else if (!e.target.value.includes('@')) setShowMentionPicker(false)
-                    }}
+                  <MessageSquare className="w-4 h-4 text-amber-400 shrink-0 hidden sm:block" />
+                  <div className="flex-1 relative min-w-0">
+                    <input
+                      type="text"
+                      value={commentText}
+                      onChange={e => {
+                        setCommentText(e.target.value)
+                        if (e.target.value.endsWith('@')) setShowMentionPicker(true)
+                        else if (!e.target.value.includes('@')) setShowMentionPicker(false)
+                      }}
                       onKeyDown={e => { if (e.key === 'Enter' && commentText.trim()) handleAddComment() }}
-                      placeholder="Add an internal comment… (type @ to mention)"
-                      className="w-full rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-amber-500/50" />
+                      placeholder="Add internal comment… (@mention)"
+                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2.5 md:py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 min-h-[44px] md:min-h-0 touch-manipulation"
+                    />
                     {showMentionPicker && (
-                      <div className="absolute bottom-full left-0 mb-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-64 z-10">
+                      <div className="absolute bottom-full left-0 mb-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-[min(16rem,100vw-2rem)] z-10">
                         {inboxUsers.map(u => (
                           <button key={u.user_id} type="button" onClick={() => insertMention(u)}
-                            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted">{u.display_name ?? u.email}</button>
+                            className="w-full text-left px-3 py-2.5 md:py-1.5 text-sm text-gray-200 hover:bg-surface-muted touch-manipulation">{u.display_name ?? u.email}</button>
                         ))}
                       </div>
                     )}
                   </div>
-                  <button type="button" onClick={handleAddComment} disabled={!commentText.trim()}
-                    className="px-3 py-1.5 rounded bg-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/30 disabled:opacity-50">Comment</button>
+                  <button
+                    type="button"
+                    onClick={handleAddComment}
+                    disabled={!commentText.trim()}
+                    className="px-4 py-2.5 md:py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/30 disabled:opacity-50 min-h-[44px] md:min-h-0 touch-manipulation shrink-0"
+                  >
+                    Comment
+                  </button>
                 </div>
               </div>
             </>
