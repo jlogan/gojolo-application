@@ -49,6 +49,39 @@ body {
   display: none;
 }
 
+/* TipTap inbox editor list styles (bullets, numbers, indentation) */
+.inbox-editor-content ul,
+.inbox-editor-content ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+
+.inbox-editor-content ul {
+  list-style: disc;
+}
+
+.inbox-editor-content ol {
+  list-style: decimal;
+}
+
+.inbox-editor-content li {
+  margin: 0.125rem 0;
+}
+
+.inbox-editor-content li p {
+  margin: 0;
+}
+
+.inbox-editor-content a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.inbox-editor-content a:hover {
+  opacity: 0.9;
+}
+
 /* Inbox: force single-column layout on narrow viewports (backup for JS) */
 @media (max-width: 1023px) {
   [data-testid="inbox-page"] [data-inbox-panels] {

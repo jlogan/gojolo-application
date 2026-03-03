@@ -31,7 +31,7 @@ interface ReqBody {
   isHtml?: boolean
   compose?: boolean
   accountId?: string
-  attachments?: { fileName: string; filePath: string; contentType?: string }[]
+  attachments?: { fileName: string; filePath: string; contentType?: string; fileSize?: number }[]
 }
 
 function jsonRes(data: Record<string, unknown>, status = 200) {
@@ -143,11 +143,16 @@ Deno.serve(async (req: Request) => {
     const nodeAttachments: { filename: string; content: Uint8Array; contentType?: string }[] = []
     for (const att of attachmentRefs) {
       const { data: fileData, error: dlErr } = await service.storage.from('inbox-attachments').download(att.filePath)
-      if (dlErr || !fileData) continue
+      if (dlErr || !fileData) {
+        return jsonRes({ error: `Failed to load attachment: ${att.fileName}` })
+      }
       const buf = new Uint8Array(await fileData.arrayBuffer())
       nodeAttachments.push({ filename: att.fileName, content: buf, contentType: att.contentType })
     }
-    if (nodeAttachments.length > 0) mailOpts.attachments = nodeAttachments
+    if (nodeAttachments.length !== attachmentRefs.length) {
+      return jsonRes({ error: 'One or more attachments could not be loaded' })
+    }
+    mailOpts.attachments = nodeAttachments
   }
 
   try {
@@ -177,7 +182,25 @@ Deno.serve(async (req: Request) => {
     if (isHtml) { msgPayload.html_body = bodyContent; msgPayload.body = stripHtml(bodyContent) }
     else { msgPayload.body = bodyContent }
 
-    await service.from('inbox_messages').insert(msgPayload)
+    const { data: insertedMsg, error: msgErr } = await service
+      .from('inbox_messages')
+      .insert(msgPayload)
+      .select('id')
+      .single()
+    if (msgErr) return jsonRes({ error: 'Failed to save outbound message' })
+
+    if (attachmentRefs?.length) {
+      const rows = attachmentRefs.map((att) => ({
+        message_id: (insertedMsg as { id: string }).id,
+        thread_id: saveThreadId,
+        file_name: att.fileName,
+        file_path: att.filePath,
+        file_size: att.fileSize ?? null,
+        content_type: att.contentType ?? null,
+      }))
+      const { error: attErr } = await service.from('inbox_attachments').insert(rows)
+      if (attErr) return jsonRes({ error: 'Email sent, but failed to save attachments metadata' })
+    }
     await service.from('inbox_threads').update({ last_message_at: now, updated_at: now }).eq('id', saveThreadId)
   }
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react'
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
@@ -392,6 +392,17 @@ export default function Inbox() {
     return new Date(t.last_message_at) > new Date(readStatus.last_read_at)
   }
 
+  const attachmentsByMessageId = useMemo(() => {
+    const byMessage = new Map<string, Attachment[]>()
+    for (const att of attachments) {
+      if (!att.message_id) continue
+      const list = byMessage.get(att.message_id) ?? []
+      list.push(att)
+      byMessage.set(att.message_id, list)
+    }
+    return byMessage
+  }, [attachments])
+
   // Filtered threads by search
   const filteredThreads = searchQuery.trim()
     ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -602,12 +613,18 @@ export default function Inbox() {
     setSendingReply(true)
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) { toast('Please sign in again'); setSendingReply(false); return }
-    let attachmentRefs: { fileName: string; filePath: string; contentType: string }[] = []
+    let attachmentRefs: { fileName: string; filePath: string; contentType: string; fileSize: number }[] = []
     if (replyAttachments.length > 0 && currentOrg?.id) {
       for (const file of replyAttachments) {
-        const path = `${currentOrg.id}/${selectedThreadId ?? 'compose'}/${Date.now()}-${file.name}`
-        const { error } = await supabase.storage.from('inbox-attachments').upload(path, file)
-        if (!error) attachmentRefs.push({ fileName: file.name, filePath: path, contentType: file.type })
+        const safeName = file.name.replace(/[^\w.\-]+/g, '_')
+        const path = `${currentOrg.id}/${selectedThreadId ?? 'compose'}/${crypto.randomUUID()}-${safeName}`
+        const { error } = await supabase.storage.from('inbox-attachments').upload(path, file, { upsert: false })
+        if (error) {
+          setSendingReply(false)
+          toast(`Failed to upload attachment: ${file.name}`)
+          return
+        }
+        attachmentRefs.push({ fileName: file.name, filePath: path, contentType: file.type || 'application/octet-stream', fileSize: file.size })
       }
     }
     const payload: Record<string, unknown> = {
@@ -1091,10 +1108,10 @@ export default function Inbox() {
               <div className="flex-1 overflow-y-auto" onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
                 {isDragging && <div className="mx-4 mt-4 p-4 rounded-lg border-2 border-dashed border-accent bg-accent/5 text-center text-accent text-sm">Drop files to attach</div>}
                 <div className="p-4 space-y-4">
-                  {attachments.length > 0 && (
+                  {attachments.filter(a => !a.message_id).length > 0 && (
                     <div className="flex items-center gap-2 flex-wrap text-xs">
                       <span className="text-gray-500">Attachments:</span>
-                      {attachments.map(a => <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent"><Download className="w-3 h-3" /> {a.file_name}</a>)}
+                      {attachments.filter(a => !a.message_id).map(a => <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent"><Download className="w-3 h-3" /> {a.file_name}</a>)}
                     </div>
                   )}
 
@@ -1130,6 +1147,7 @@ export default function Inbox() {
                       const { html, content } = isExpanded ? cleanMessageBody(m) : { html: false, content: '' }
                       const sanitized = html ? sanitizeEmailHtml(content) : content
                       const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
+                      const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
                       return (<React.Fragment key={`msg-${m.id}`}>
                         <article className="rounded-lg border border-border overflow-hidden group/msg">
                           <header onClick={() => setExpandedMsgs(prev => { const n = new Set(prev); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n })}
@@ -1167,19 +1185,35 @@ export default function Inbox() {
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Forward className="w-3.5 h-3.5" /></button>
                             </div>}
                           </header>
-                          {isExpanded && (html ? (() => {
-                            const { srcDoc, isDark } = buildEmailSrcDoc(sanitized)
-                            return (
-                              <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
-                                <iframe title="Email" srcDoc={srcDoc}
-                                  className="w-full border-0 rounded-b" sandbox="allow-same-origin"
-                                  onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
-                                  style={{ minHeight: '80px', background: isDark ? '#0f0f0f' : '#fff' }} />
-                              </div>
-                            )
-                          })() : (
-                            <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
-                          ))}
+                          {isExpanded && (
+                            <>
+                              {html ? (() => {
+                                const { srcDoc, isDark } = buildEmailSrcDoc(sanitized)
+                                return (
+                                  <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
+                                    <iframe title="Email" srcDoc={srcDoc}
+                                      className="w-full border-0 rounded-b" sandbox="allow-same-origin"
+                                      onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
+                                      style={{ minHeight: '80px', background: isDark ? '#0f0f0f' : '#fff' }} />
+                                  </div>
+                                )
+                              })() : (
+                                <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
+                              )}
+                              {msgAttachments.length > 0 && (
+                                <div className="px-4 py-2.5 border-t border-border bg-surface-elevated/40">
+                                  <div className="text-[11px] text-gray-500 mb-1.5">Attachments</div>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    {msgAttachments.map(a => (
+                                      <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 text-xs hover:text-accent">
+                                        <Download className="w-3 h-3" /> {a.file_name}
+                                      </a>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          )}
                         </article>
                         {/* Render reply form directly below the anchored message */}
                         {replyMode && replyMode !== 'compose' && replyAnchorMsgId === m.id && (
