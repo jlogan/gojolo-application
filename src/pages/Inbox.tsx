@@ -523,7 +523,9 @@ export default function Inbox() {
     if (!selectedThreadId) return
     setActionLoading(true)
     await supabase.from('inbox_thread_assignments').delete().eq('thread_id', selectedThreadId).eq('user_id', uid)
-    await fetchThreads(); setActionLoading(false); toast('Unassigned')
+    await fetchThreads()
+    setActionLoading(false)
+    toast('Unassigned')
   }
 
   const handleUpdateStatus = async (status: string) => {
