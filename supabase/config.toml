@@ -53,6 +53,10 @@ verify_jwt = false
 [functions.imap-fetch-body]
 verify_jwt = false
 
+# slack-channels: list channels for project/Admin; requires JWT so gateway accepts request.
+[functions.slack-channels]
+verify_jwt = false
+
 # slack-events: Slack Events API endpoint (signature verified in function).
 [functions.slack-events]
 verify_jwt = false

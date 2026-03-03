@@ -490,12 +490,20 @@ export default function Admin() {
     setSlackTestMessage(null)
     setSlackTestChannels([])
     try {
+      const { data: { session }, error: sessionError } = await supabase.auth.refreshSession()
+      const token = session?.access_token
+      if (sessionError || !token) {
+        setSlackTestMessage('You must be signed in to test Slack channel access. Try signing out and back in.')
+        setSlackTestLoading(false)
+        return
+      }
       const callSlackChannels = async () => {
         const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-channels`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${token}`,
           },
           body: JSON.stringify({ orgId: currentOrg.id }),
         })
@@ -512,7 +520,11 @@ export default function Admin() {
 
       if (!res.ok || data.error) {
         const fallback = raw?.slice(0, 240) || `HTTP ${res.status}`
-        setSlackTestMessage(data.error || `Could not retrieve channels from Slack (${fallback}).`)
+        let msg = data.error || `Could not retrieve channels from Slack (${fallback}).`
+        if (res.status === 401 && (raw.includes('Invalid JWT') || raw.includes('invalid') || raw.includes('JWT'))) {
+          msg = 'Session expired or invalid. Sign out and sign back in, then try again. If it persists, deploy the function with: supabase functions deploy slack-channels --no-verify-jwt'
+        }
+        setSlackTestMessage(msg)
         return
       }
       const channels = data.channels ?? []
