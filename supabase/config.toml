@@ -56,3 +56,7 @@ verify_jwt = false
 # slack-events: Slack Events API endpoint (signature verified in function).
 [functions.slack-events]
 verify_jwt = false
+
+# sync-profile-avatar: sync OAuth avatar image into Supabase Storage.
+[functions.sync-profile-avatar]
+verify_jwt = false

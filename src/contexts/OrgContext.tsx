@@ -141,6 +141,7 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return
     const run = async () => {
+      await supabase.rpc('ensure_my_profile')
       const { data: profile } = await supabase.from('profiles').select('email').eq('id', user.id).maybeSingle()
       if (user.email && profile && (profile as { email: string | null }).email !== user.email) {
         await supabase.from('profiles').update({ email: user.email }).eq('id', user.id)
