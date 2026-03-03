@@ -22,9 +22,8 @@ type InboxThread = {
 }
 type InboxMessage = {
   id: string; thread_id: string; channel: string; direction: string
-  from_identifier: string; to_identifier: string | null; cc: string | null; bcc: string | null
+  from_identifier: string; to_identifier: string | null; cc: string | null
   body: string | null; html_body: string | null; received_at: string
-  external_id?: string | null
 }
 type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
@@ -80,6 +79,12 @@ export default function Inbox() {
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
+
+  // Multi-select
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  // Pagination
+  const [pageSize] = useState(50)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -91,9 +96,6 @@ export default function Inbox() {
   const [replyAnchorMsgId, setReplyAnchorMsgId] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState('')
   const [replyCc, setReplyCc] = useState('')
-  // When opening reply from a message, hold To/Cc here so the form shows them before state commits
-  const pendingReplyToRef = useRef<string | null>(null)
-  const pendingReplyCcRef = useRef<string | null>(null)
   const [replyBcc, setReplyBcc] = useState('')
   const [replySubject, setReplySubject] = useState('')
   const [replyHtml, setReplyHtml] = useState('')
@@ -110,41 +112,15 @@ export default function Inbox() {
   const [threadContacts, setThreadContacts] = useState<ContactMatch[]>([])
   const [allContacts, setAllContacts] = useState<{ id: string; name: string; email: string | null }[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({})
-  const [activeSuggestionsField, setActiveSuggestionsField] = useState<'to' | 'cc' | 'bcc' | null>(null)
+  const [toSuggestions, setToSuggestions] = useState<{ name: string; email: string }[]>([])
+  const [showToSuggestions, setShowToSuggestions] = useState(false)
 
   // Drag state
   const [isDragging, setIsDragging] = useState(false)
 
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
-  const replyFormContainerRef = useRef<HTMLDivElement>(null)
   const replyFileRef = useRef<HTMLInputElement>(null)
-  const sendingReplyRef = useRef(false)
-
-  // Emails from contacts + thread messages for To/Cc/Bcc autocomplete
-  const emailSuggestionSource = React.useMemo(() => {
-    const byEmail = new Map<string, { name: string; email: string }>()
-    allContacts.forEach((c) => {
-      if (c.email?.trim()) {
-        const e = c.email.trim().toLowerCase()
-        if (!byEmail.has(e)) byEmail.set(e, { name: c.name || c.email || e, email: c.email!.trim() })
-      }
-    })
-    messages.forEach((m) => {
-      for (const addr of [m.from_identifier, m.to_identifier].filter(Boolean) as string[]) {
-        const e = addr.trim().toLowerCase()
-        if (e && !byEmail.has(e)) byEmail.set(e, { name: e, email: addr.trim() })
-      }
-      if (m.cc) {
-        m.cc.split(',').forEach((addr) => {
-          const e = addr.trim().toLowerCase()
-          if (e && !byEmail.has(e)) byEmail.set(e, { name: e, email: addr.trim() })
-        })
-      }
-    })
-    return Array.from(byEmail.values())
-  }, [allContacts, messages])
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -187,28 +163,28 @@ export default function Inbox() {
     try {
       let query = supabase.from('inbox_threads')
         .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
-        .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false })
+        .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
       if (filter === 'inbox') {
-        // Inbox = open threads: assigned to me OR unassigned
+        // Inbox = open threads assigned to me OR unassigned
         query = query.eq('status', 'open')
       } else if (filter === 'assigned') {
-        // Mine = threads assigned to the current user (prefer RPC; fallback to client query if RPC missing/fails)
-        let tids: string[] = []
-        const { data: rpcTids, error: rpcErr } = await supabase.rpc('get_my_assigned_inbox_thread_ids', { p_org_id: currentOrg.id })
-        if (!rpcErr && Array.isArray(rpcTids) && rpcTids.length > 0) {
-          tids = rpcTids as string[]
-        } else {
-          const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
-          tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
-        }
-        if (!tids.length) {
-          setThreads([]); setLoading(false); initialLoadDone.current = true; return
-        }
+        // Mine = all threads assigned to me (any status)
+        const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
+        const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
+        if (!tids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
         query = query.in('id', tids)
       } else if (filter === 'closed') query = query.eq('status', 'closed')
       else if (filter === 'trash') query = query.eq('status', 'archived')
       const { data } = await query
-      setThreads((data as InboxThread[]) ?? [])
+      let result = (data as InboxThread[]) ?? []
+      // For inbox filter: only show threads assigned to me or unassigned
+      if (filter === 'inbox') {
+        result = result.filter(t => {
+          const assigns = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []
+          return assigns.length === 0 || assigns.some(a => a.user_id === userId)
+        })
+      }
+      setThreads(result)
       initialLoadDone.current = true
     } catch { if (!initialLoadDone.current) setThreads([]) }
     setLoading(false)
@@ -217,17 +193,9 @@ export default function Inbox() {
   const fetchMessages = useCallback(async (tid: string) => {
     setMessagesLoading(true)
     const { data } = await supabase.from('inbox_messages')
-      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, bcc, body, html_body, received_at, external_id')
+      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
       .eq('thread_id', tid).order('received_at', { ascending: true })
-    const raw = (data as InboxMessage[]) ?? []
-    // Dedupe: same message can exist twice (e.g. send-reply insert + IMAP sync of sent mail). Keep one per (external_id or received_at+from+to).
-    const seen = new Set<string>()
-    const msgs = raw.filter((m) => {
-      const key = (m.external_id && m.external_id.trim()) ? `${tid}:${m.external_id}` : `${tid}:${m.received_at}:${m.from_identifier}:${m.to_identifier ?? ''}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+    const msgs = (data as InboxMessage[]) ?? []
     setMessages(msgs)
     setMessagesLoading(false)
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
@@ -240,6 +208,7 @@ export default function Inbox() {
     // Lazy-load bodies for messages that haven't been fetched yet
     const needBody = msgs.filter(m => m.body === null && m.html_body === null && m.direction === 'inbound')
     if (needBody.length > 0) {
+      console.log(`[Inbox] Lazy-loading body for ${needBody.length} message(s)`)
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return
 
@@ -284,25 +253,7 @@ export default function Inbox() {
 
   const fetchAttachments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
-    const raw = (data as Attachment[]) ?? []
-    const seen = new Set<string>()
-    const list = raw.filter((a) => {
-      const key = `${a.file_name}:${a.file_size ?? 0}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-    setAttachments(list)
-    if (list.length > 0) {
-      const urls: Record<string, string> = {}
-      await Promise.all(
-        list.map(async (a) => {
-          const { data: signed } = await supabase.storage.from('inbox-attachments').createSignedUrl(a.file_path, 3600)
-          if (signed?.signedUrl) urls[a.file_path] = signed.signedUrl
-        })
-      )
-      setAttachmentUrls((prev) => ({ ...prev, ...urls }))
-    }
+    setAttachments((data as Attachment[]) ?? [])
   }, [])
 
   // Load inbox users, accounts, all contacts, read statuses
@@ -359,6 +310,7 @@ export default function Inbox() {
         event: '*', schema: 'public', table: 'inbox_threads',
         filter: `org_id=eq.${currentOrg.id}`,
       }, (payload) => {
+        console.log('[Inbox RT] Thread change:', payload.eventType)
         fetchThreadsRef.current()
         const changedId = (payload.new as { id?: string })?.id
         if (changedId && changedId === selectedThreadIdRef.current) {
@@ -369,6 +321,7 @@ export default function Inbox() {
         event: 'INSERT', schema: 'public', table: 'inbox_messages',
       }, (payload) => {
         const tid = (payload.new as { thread_id: string }).thread_id
+        console.log('[Inbox RT] New message in thread:', tid)
         if (tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current)
         }
@@ -382,6 +335,7 @@ export default function Inbox() {
         }
       })
       .subscribe((status) => {
+        console.log('[Inbox RT] Status:', status)
         setRealtimeConnected(status === 'SUBSCRIBED')
       })
 
@@ -400,40 +354,10 @@ export default function Inbox() {
   }, [fetchThreads, realtimeConnected])
 
   useEffect(() => {
-    if (!selectedThreadId) {
-      setMessages([])
-      setComments([])
-      setThreadContacts([])
-      setAttachments([])
-      if (replyMode !== 'compose') {
-        setReplyMode(null)
-        pendingReplyToRef.current = null
-        pendingReplyCcRef.current = null
-      }
-      return
-    }
+    if (!selectedThreadId) { setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); return }
     fetchMessages(selectedThreadId); fetchComments(selectedThreadId); fetchThreadContacts(selectedThreadId); fetchAttachments(selectedThreadId)
     supabase.rpc('match_thread_contacts', { p_thread_id: selectedThreadId }).then(() => fetchThreadContacts(selectedThreadId))
-  }, [selectedThreadId, fetchMessages, fetchComments, fetchThreadContacts, fetchAttachments, replyMode])
-
-  // When reply form opens from a message, sync pending To/Cc refs into state (do not clear refs here so the form shows the value immediately)
-  useEffect(() => {
-    if (!replyAnchorMsgId) return
-    if (pendingReplyToRef.current != null) {
-      setReplyTo(pendingReplyToRef.current)
-      setReplyCc(pendingReplyCcRef.current ?? '')
-    }
-  }, [replyAnchorMsgId])
-
-  // When reply/forward form opens or mode changes, scroll it into view (anchored form or bottom fallback)
-  useEffect(() => {
-    if (!replyMode || replyMode === 'compose') return
-    const scrollTarget = replyAnchorMsgId ? replyFormContainerRef.current : timelineEndRef.current
-    if (scrollTarget) {
-      const t = setTimeout(() => scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100)
-      return () => clearTimeout(t)
-    }
-  }, [replyMode, replyAnchorMsgId])
+  }, [selectedThreadId, fetchMessages, fetchComments, fetchThreadContacts, fetchAttachments])
 
   const selectedThread = threads.find(t => t.id === selectedThreadId)
   const getUserName = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
@@ -455,6 +379,7 @@ export default function Inbox() {
   // Sync — all accounts in parallel with timeout
   const handleSync = async () => {
     if (!currentOrg?.id || syncing) return
+    console.log('[Inbox Sync] Starting sync for org:', currentOrg.id)
     setSyncing(true)
 
     const { data: { session } } = await supabase.auth.getSession()
@@ -467,6 +392,7 @@ export default function Inbox() {
       const { data: accounts, error: accErr } = await supabase.from('imap_accounts').select('id, email').eq('org_id', currentOrg.id).eq('is_active', true)
       if (accErr) console.error('[Inbox Sync] Failed to fetch accounts:', accErr)
       const accountList = (accounts ?? []) as { id: string; email: string }[]
+      console.log('[Inbox Sync] Found', accountList.length, 'active account(s):', accountList.map(a => a.email))
 
       if (accountList.length === 0) { toast('No email accounts configured'); setSyncing(false); return }
 
@@ -476,6 +402,7 @@ export default function Inbox() {
       const syncAccount = async (acc: { id: string; email: string }) => {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 90_000)
+        console.log('[Inbox Sync] Syncing account:', acc.email, acc.id)
         try {
           const res = await fetch(syncUrl, {
             method: 'POST', headers, signal: controller.signal,
@@ -483,6 +410,7 @@ export default function Inbox() {
           })
           clearTimeout(timeout)
           const text = await res.text()
+          console.log('[Inbox Sync] Response for', acc.email, '- status:', res.status, '- body:', text.slice(0, 500))
           try {
             const json = JSON.parse(text)
             if (json.error) console.warn('[Inbox Sync] Error from', acc.email, ':', json.error)
@@ -500,6 +428,11 @@ export default function Inbox() {
       }
 
       const results = await Promise.allSettled(accountList.map(acc => syncAccount(acc)))
+      console.log('[Inbox Sync] All results:', results.map((r, i) => ({
+        account: accountList[i].email,
+        status: r.status,
+        value: r.status === 'fulfilled' ? r.value : (r as PromiseRejectedResult).reason,
+      })))
 
       let totalNew = 0
       const errors: string[] = []
@@ -512,6 +445,8 @@ export default function Inbox() {
           errors.push(`${accountList[i].email}: ${(r as PromiseRejectedResult).reason}`)
         }
       }
+
+      console.log('[Inbox Sync] Total new:', totalNew, 'Errors:', errors)
 
       if (errors.length > 0 && totalNew === 0) {
         toast(`Sync error: ${errors[0]}`)
@@ -532,14 +467,9 @@ export default function Inbox() {
   const handleAssignTo = async (uid: string) => {
     if (!selectedThreadId) return
     setActionLoading(true)
-    // Add assignee (multi-assign). Upsert so duplicate assign is idempotent; conflict target must match unique (thread_id, user_id).
-    const { error: assignErr } = await supabase.from('inbox_thread_assignments').upsert(
-      { thread_id: selectedThreadId, user_id: uid },
-      { onConflict: 'thread_id,user_id' }
-    )
-    if (assignErr) {
-      console.warn('[Inbox] Assign error:', assignErr.message, { thread_id: selectedThreadId, user_id: uid })
-    }
+    // Add assignee (multi-assign — doesn't replace existing)
+    const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert({ thread_id: selectedThreadId, user_id: uid })
+    if (assignErr) console.warn('[Inbox] Assign error:', assignErr.message)
 
     // Remove Inbox label on Gmail (archive)
     const { data: { session } } = await supabase.auth.getSession()
@@ -578,9 +508,15 @@ export default function Inbox() {
     }
 
     await fetchThreads(); setActionLoading(false)
-    if (status === 'archived') { setSelectedThreadId(null); toast('Moved to trash') }
-    else if (status === 'closed') toast('Thread closed')
-    else toast('Thread re-opened')
+    if (status === 'archived' || status === 'closed') {
+      // Auto-load next thread
+      const currentIdx = threads.findIndex(t => t.id === selectedThreadId)
+      const nextThread = threads[currentIdx + 1] ?? threads[currentIdx - 1]
+      setSelectedThreadId(nextThread?.id ?? null)
+      toast(status === 'archived' ? 'Moved to trash' : 'Thread closed')
+    } else {
+      toast('Thread re-opened')
+    }
   }
 
   const getSendableAddresses = (): { accountId: string; email: string; label: string }[] => {
@@ -610,15 +546,13 @@ export default function Inbox() {
 
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
     setReplyAnchorMsgId(null)
-    pendingReplyToRef.current = null
-    pendingReplyCcRef.current = null
     if (mode === 'compose') {
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
     } else if (selectedThread && messages.length > 0) {
       const last = messages.filter(m => m.direction === 'inbound').pop() ?? messages[messages.length - 1]
       setSelectedAccountId(findFromAccount(last.to_identifier, last.cc))
-      setReplyTo(mode === 'forward' ? '' : last.from_identifier + (last.from_identifier ? ', ' : ''))
-      setReplyCc(mode === 'reply_all' ? (last.cc ?? '') + ((last.cc ?? '').trim() ? ', ' : '') : '')
+      setReplyTo(mode === 'forward' ? '' : last.from_identifier)
+      setReplyCc(mode === 'reply_all' ? (last.cc ?? '') : '')
       setReplyBcc('')
       setShowCcBcc(mode === 'reply_all' && !!(last.cc))
       const prefix = mode === 'forward' ? 'Fwd: ' : 'Re: '
@@ -635,46 +569,23 @@ export default function Inbox() {
   }
 
   const handleSendReply = async () => {
-    if (sendingReplyRef.current) return
-    const toAddr = (pendingReplyToRef.current ?? replyTo).trim().replace(/,\s*$/, '')
-    const ccAddr = (pendingReplyCcRef.current ?? replyCc).trim().replace(/,\s*$/, '')
-    const bccAddr = (replyBcc ?? '').trim().replace(/,\s*$/, '')
-    if (!toAddr && replyMode !== 'compose') { toast('Recipient required'); return }
-    const toList = toAddr.split(',').map((s) => s.trim()).filter(Boolean)
-    const invalidTo = toList.find((e) => !isValidEmail(e))
-    if (invalidTo) { toast(`Invalid email in To: ${invalidTo}`); return }
-    const ccList = (ccAddr || '').split(',').map((s) => s.trim()).filter(Boolean)
-    if (ccList.some((e) => !isValidEmail(e))) { toast('Invalid email in Cc'); return }
-    const bccList = (bccAddr || '').split(',').map((s) => s.trim()).filter(Boolean)
-    if (bccList.some((e) => !isValidEmail(e))) { toast('Invalid email in Bcc'); return }
+    if (!replyTo.trim() && replyMode !== 'compose') { toast('Recipient required'); return }
     if (!replyHtml.trim()) { toast('Message body is empty'); return }
-    sendingReplyRef.current = true
     setSendingReply(true)
     const { data: { session } } = await supabase.auth.getSession()
-    if (!session?.access_token) { toast('Please sign in again'); setSendingReply(false); sendingReplyRef.current = false; return }
+    if (!session?.access_token) { toast('Please sign in again'); setSendingReply(false); return }
     let attachmentRefs: { fileName: string; filePath: string; contentType: string }[] = []
     if (replyAttachments.length > 0 && currentOrg?.id) {
-      console.log('[Inbox Attachments] Sending with', replyAttachments.length, 'file(s):', replyAttachments.map((f) => ({ name: f.name, size: f.size, type: f.type })))
       for (const file of replyAttachments) {
         const path = `${currentOrg.id}/${selectedThreadId ?? 'compose'}/${Date.now()}-${file.name}`
         const { error } = await supabase.storage.from('inbox-attachments').upload(path, file)
-        if (error) {
-          console.warn('[Inbox Attachments] Upload failed for', file.name, error.message)
-        } else {
-          attachmentRefs.push({ fileName: file.name, filePath: path, contentType: file.type })
-          console.log('[Inbox Attachments] Uploaded', file.name, '->', path)
-        }
+        if (!error) attachmentRefs.push({ fileName: file.name, filePath: path, contentType: file.type })
       }
-      console.log('[Inbox Attachments] Payload attachments:', attachmentRefs)
     }
     const payload: Record<string, unknown> = {
-      body: replyHtml,
-      subject: replySubject,
-      to: toAddr,
-      cc: ccAddr || undefined,
-      bcc: bccAddr ? bccAddr : undefined,
-      isHtml: true,
-      accountId: selectedAccountId || undefined,
+      body: replyHtml, subject: replySubject, to: replyTo.trim(),
+      cc: replyCc.trim() || undefined, bcc: replyBcc.trim() || undefined,
+      isHtml: true, accountId: selectedAccountId || undefined,
       attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
     }
     if (selectedThreadId && replyMode !== 'compose' && replyMode !== 'forward') payload.threadId = selectedThreadId
@@ -686,9 +597,7 @@ export default function Inbox() {
     })
     const data = await res.json().catch(() => ({}))
     setSendingReply(false)
-    sendingReplyRef.current = false
     if (data?.error) { toast(data.error); return }
-    console.log('[Inbox Attachments] Send success, clearing', replyAttachments.length, 'attachment(s)')
     setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
     toast('Sent'); fetchThreads()
     if (selectedThreadId) fetchMessages(selectedThreadId)
@@ -717,55 +626,21 @@ export default function Inbox() {
     setShowMentionPicker(false)
   }
 
-  const isValidEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || '').trim())
-
-  const parseEmailChips = (value: string): { chips: string[]; current: string } => {
-    const parts = value.split(',').map((s) => s.trim())
-    const current = parts[parts.length - 1] ?? ''
-    const chips = parts.length > 1 ? parts.slice(0, -1).filter(Boolean) : []
-    return { chips, current }
+  const updateToSuggestions = (val: string) => {
+    setReplyTo(val)
+    const lastPart = val.split(',').pop()?.trim().toLowerCase() ?? ''
+    if (lastPart.length < 2) { setShowToSuggestions(false); return }
+    const matches = allContacts.filter(c => c.email && (c.name.toLowerCase().includes(lastPart) || c.email.toLowerCase().includes(lastPart))).slice(0, 5)
+    setToSuggestions(matches.map(c => ({ name: c.name, email: c.email! })))
+    setShowToSuggestions(matches.length > 0)
   }
 
-  const getSuggestionsForCurrent = (current: string, chips: string[], limit = 8) => {
-    const q = current.trim().toLowerCase()
-    if (q.length < 2) return []
-    const chipSet = new Set(chips.map((c) => c.toLowerCase()))
-    return emailSuggestionSource
-      .filter((s) => !chipSet.has(s.email.toLowerCase()) && (s.email.toLowerCase().includes(q) || (s.name && s.name.toLowerCase().includes(q))))
-      .slice(0, limit)
-  }
-
-  const handleEmailChipsChange = (
-    field: 'to' | 'cc' | 'bcc',
-    effectiveValue: string,
-    setValue: (v: string) => void,
-    newInput: string
-  ) => {
-    const { chips } = parseEmailChips(effectiveValue)
-    const parts = newInput.split(',').map((s) => s.trim())
-    const committed = parts.slice(0, -1).filter(Boolean)
-    const lastPart = parts[parts.length - 1] ?? ''
-    const validCommitted = committed.filter(isValidEmail)
-    const invalidCommitted = committed.filter((s) => !isValidEmail(s))
-    const newChips = [...chips, ...validCommitted]
-    const newCurrent = [...invalidCommitted, lastPart].filter(Boolean).join(', ')
-    const next = newChips.length > 0 && !newCurrent
-      ? newChips.join(', ') + ', '
-      : [...newChips, newCurrent].filter(Boolean).join(', ')
-    setValue(next.replace(/,\s*,/g, ',').replace(/^\s*,\s*/, ''))
-    setActiveSuggestionsField(newCurrent.length >= 2 ? field : null)
-  }
-
-  const removeEmailChip = (_field: 'to' | 'cc' | 'bcc', effectiveValue: string, setValue: (v: string) => void, email: string) => {
-    const { chips, current } = parseEmailChips(effectiveValue)
-    const newChips = chips.filter((e) => e !== email)
-    setValue([...newChips, current].filter(Boolean).join(', '))
-  }
-
-  const selectEmailSuggestion = (_field: 'to' | 'cc' | 'bcc', effectiveValue: string, setValue: (v: string) => void, email: string) => {
-    const { chips } = parseEmailChips(effectiveValue)
-    setValue([...chips, email].join(', ') + ', ')
-    setActiveSuggestionsField(null)
+  const selectToSuggestion = (email: string) => {
+    const parts = replyTo.split(',').map(s => s.trim()).filter(Boolean)
+    parts.pop()
+    parts.push(email)
+    setReplyTo(parts.join(', ') + ', ')
+    setShowToSuggestions(false)
   }
 
   const handleCreateContact = async (email: string) => {
@@ -780,29 +655,11 @@ export default function Inbox() {
   }
 
   // File drop handling
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    if (e.dataTransfer.files.length > 0) {
-      const files = Array.from(e.dataTransfer.files)
-      console.log('[Inbox Attachments] Drop added', files.length, 'file(s):', files.map((f) => ({ name: f.name, size: f.size })))
-      setReplyAttachments((prev) => [...prev, ...files])
-    }
-  }
+  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); if (e.dataTransfer.files.length > 0) setReplyAttachments(prev => [...prev, ...Array.from(e.dataTransfer.files)]) }
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true) }
   const handleDragLeave = () => setIsDragging(false)
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  }
-
-  const removeReplyAttachment = (index: number) => {
-    const file = replyAttachments[index]
-    console.log('[Inbox Attachments] Removed', file?.name, '(index', index, '), remaining:', replyAttachments.length - 1)
-    setReplyAttachments((prev) => prev.filter((_, j) => j !== index))
-  }
+  const getDownloadUrl = (path: string) => supabase.storage.from('inbox-attachments').getPublicUrl(path).data.publicUrl
 
   // Render email address with contact linking
   const renderEmail = (email: string) => {
@@ -843,110 +700,30 @@ export default function Inbox() {
         )}
         <div className="flex items-center gap-2 relative"><label className="text-xs text-gray-500 w-12 shrink-0">To</label>
           <div className="flex-1 relative">
-            {(() => {
-              const toVal = pendingReplyToRef.current != null ? pendingReplyToRef.current : replyTo
-              const { chips, current } = parseEmailChips(toVal)
-              const setTo = (v: string) => { pendingReplyToRef.current = null; setReplyTo(v) }
-              const toSuggestionsList = activeSuggestionsField === 'to' ? getSuggestionsForCurrent(current, chips) : []
-              return (
-                <>
-                  <div className="flex flex-wrap items-center gap-1.5 rounded border border-border bg-surface-muted px-2 py-1.5 min-h-[34px] focus-within:ring-1 focus-within:ring-accent">
-                    {chips.map((email) => (
-                      <span key={email} className="inline-flex items-center gap-0.5 pl-2 pr-1 py-0.5 rounded bg-surface-elevated text-sm text-gray-200">
-                        {email}
-                        <button type="button" onClick={() => removeEmailChip('to', toVal, setTo, email)} className="text-gray-500 hover:text-red-400 p-0.5" aria-label="Remove">&times;</button>
-                      </span>
-                    ))}
-                    <input type="text" value={current} onChange={e => handleEmailChipsChange('to', toVal, setTo, e.target.value)} onFocus={() => current.length >= 2 && setActiveSuggestionsField('to')} onBlur={() => setTimeout(() => setActiveSuggestionsField(null), 200)} placeholder={chips.length ? '' : 'recipient@example.com'}
-                      className="flex-1 min-w-[120px] bg-transparent text-sm text-white placeholder-gray-500 focus:outline-none py-0.5" />
-                  </div>
-                  {toSuggestionsList.length > 0 && (
-                    <div className="absolute top-full left-0 mt-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-full z-20">
-                      {toSuggestionsList.map((s) => (
-                        <button key={s.email} type="button" onMouseDown={() => selectEmailSuggestion('to', toVal, setTo, s.email)}
-                          className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted flex items-center justify-between">
-                          <span>{s.name}</span>
-                          <span className="text-xs text-gray-500">{s.email}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )
-            })()}
+            <input type="text" value={replyTo} onChange={e => updateToSuggestions(e.target.value)} onBlur={() => setTimeout(() => setShowToSuggestions(false), 200)} placeholder="recipient@example.com"
+              className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+            {showToSuggestions && (
+              <div className="absolute top-full left-0 mt-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-full z-20">
+                {toSuggestions.map(s => (
+                  <button key={s.email} type="button" onMouseDown={() => selectToSuggestion(s.email)}
+                    className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted flex items-center justify-between">
+                    <span>{s.name}</span>
+                    <span className="text-xs text-gray-500">{s.email}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
         </div>
         {showCcBcc && (
           <>
             <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Cc</label>
-              <div className="flex-1 relative">
-                {(() => {
-                  const ccVal = pendingReplyCcRef.current != null ? pendingReplyCcRef.current : replyCc
-                  const { chips, current } = parseEmailChips(ccVal)
-                  const setCc = (v: string) => { pendingReplyCcRef.current = null; setReplyCc(v) }
-                  const ccSuggestionsList = activeSuggestionsField === 'cc' ? getSuggestionsForCurrent(current, chips) : []
-                  return (
-                    <>
-                      <div className="flex flex-wrap items-center gap-1.5 rounded border border-border bg-surface-muted px-2 py-1.5 min-h-[34px] focus-within:ring-1 focus-within:ring-accent">
-                        {chips.map((email) => (
-                          <span key={email} className="inline-flex items-center gap-0.5 pl-2 pr-1 py-0.5 rounded bg-surface-elevated text-sm text-gray-200">
-                            {email}
-                            <button type="button" onClick={() => removeEmailChip('cc', ccVal, setCc, email)} className="text-gray-500 hover:text-red-400 p-0.5" aria-label="Remove">&times;</button>
-                          </span>
-                        ))}
-                        <input type="text" value={current} onChange={e => handleEmailChipsChange('cc', ccVal, setCc, e.target.value)} onFocus={() => current.length >= 2 && setActiveSuggestionsField('cc')} onBlur={() => setTimeout(() => setActiveSuggestionsField(null), 200)} placeholder={chips.length ? '' : 'Cc'}
-                          className="flex-1 min-w-[100px] bg-transparent text-sm text-white placeholder-gray-500 focus:outline-none py-0.5" />
-                      </div>
-                      {ccSuggestionsList.length > 0 && (
-                        <div className="absolute top-full left-0 mt-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-full z-20">
-                          {ccSuggestionsList.map((s) => (
-                            <button key={s.email} type="button" onMouseDown={() => selectEmailSuggestion('cc', ccVal, setCc, s.email)}
-                              className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted flex items-center justify-between">
-                              <span>{s.name}</span>
-                              <span className="text-xs text-gray-500">{s.email}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )
-                })()}
-              </div>
-            </div>
+              <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)}
+                className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
             <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Bcc</label>
-              <div className="flex-1 relative">
-                {(() => {
-                  const { chips, current } = parseEmailChips(replyBcc)
-                  const bccSuggestionsList = activeSuggestionsField === 'bcc' ? getSuggestionsForCurrent(current, chips) : []
-                  return (
-                    <>
-                      <div className="flex flex-wrap items-center gap-1.5 rounded border border-border bg-surface-muted px-2 py-1.5 min-h-[34px] focus-within:ring-1 focus-within:ring-accent">
-                        {chips.map((email) => (
-                          <span key={email} className="inline-flex items-center gap-0.5 pl-2 pr-1 py-0.5 rounded bg-surface-elevated text-sm text-gray-200">
-                            {email}
-                            <button type="button" onClick={() => removeEmailChip('bcc', replyBcc, setReplyBcc, email)} className="text-gray-500 hover:text-red-400 p-0.5" aria-label="Remove">&times;</button>
-                          </span>
-                        ))}
-                        <input type="text" value={current} onChange={e => handleEmailChipsChange('bcc', replyBcc, setReplyBcc, e.target.value)} onFocus={() => current.length >= 2 && setActiveSuggestionsField('bcc')} onBlur={() => setTimeout(() => setActiveSuggestionsField(null), 200)} placeholder={chips.length ? '' : 'Bcc'}
-                          className="flex-1 min-w-[100px] bg-transparent text-sm text-white placeholder-gray-500 focus:outline-none py-0.5" />
-                      </div>
-                      {bccSuggestionsList.length > 0 && (
-                        <div className="absolute top-full left-0 mt-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-full z-20">
-                          {bccSuggestionsList.map((s) => (
-                            <button key={s.email} type="button" onMouseDown={() => selectEmailSuggestion('bcc', replyBcc, setReplyBcc, s.email)}
-                              className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted flex items-center justify-between">
-                              <span>{s.name}</span>
-                              <span className="text-xs text-gray-500">{s.email}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )
-                })()}
-              </div>
-            </div>
+              <input type="text" value={replyBcc} onChange={e => setReplyBcc(e.target.value)}
+                className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
           </>
         )}
         {isCompose && (
@@ -957,53 +734,23 @@ export default function Inbox() {
       </div>
       <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your message…" autofocus />
       {replyAttachments.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-gray-500 shrink-0">Attachments:</span>
-          {replyAttachments.map((f, i) => (
-            <span
-              key={i}
-              className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1.5 rounded-md bg-surface-muted border border-border text-xs text-gray-200"
-            >
-              <Paperclip className="w-3.5 h-3.5 shrink-0 text-gray-500" />
-              <span className="max-w-[160px] truncate" title={f.name}>{f.name}</span>
-              <span className="text-gray-500 shrink-0">({formatFileSize(f.size)})</span>
-              <button
-                type="button"
-                onClick={() => removeReplyAttachment(i)}
-                className="shrink-0 p-0.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                title="Remove attachment"
-                aria-label={`Remove ${f.name}`}
-              >
-                &times;
-              </button>
-            </span>
-          ))}
-        </div>
+        <div className="flex flex-wrap gap-2">{replyAttachments.map((f, i) => (
+          <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300 inline-flex items-center gap-1">
+            <Paperclip className="w-3 h-3" /> {f.name}
+            <button type="button" onClick={() => setReplyAttachments(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 ml-1">&times;</button>
+          </span>
+        ))}</div>
       )}
       <div className="flex items-center gap-2">
-        <button type="button" onClick={handleSendReply} disabled={sendingReply || !(pendingReplyToRef.current ?? replyTo).trim()}
+        <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
           <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
         </button>
-        <label className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted cursor-pointer inline-flex items-center justify-center" title="Attach file" htmlFor="inbox-reply-file-input">
+        <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
           <Paperclip className="w-4 h-4" />
-        </label>
-        <input
-          id="inbox-reply-file-input"
-          ref={replyFileRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files && e.target.files.length > 0) {
-              const files = Array.from(e.target.files)
-              console.log('[Inbox Attachments] Picker added', files.length, 'file(s):', files.map((f) => ({ name: f.name, size: f.size, type: f.type })))
-              setReplyAttachments((prev) => [...prev, ...files])
-            }
-            e.target.value = ''
-          }}
-        />
-        <button type="button" onClick={() => { pendingReplyToRef.current = null; pendingReplyCcRef.current = null; setReplyMode(null) }} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
+        </button>
+        <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
+        <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
       </div>
     </div>
   )
@@ -1046,6 +793,26 @@ export default function Inbox() {
             </div>
           </div>
 
+          {/* Bulk actions */}
+          {selectedIds.size > 0 && (
+            <div className="px-3 py-2 border-b border-border bg-surface-elevated flex items-center gap-2">
+              <span className="text-xs text-gray-300">{selectedIds.size} selected</span>
+              <button type="button" onClick={async () => {
+                for (const tid of selectedIds) {
+                  await supabase.from('inbox_threads').update({ status: 'archived', updated_at: new Date().toISOString() }).eq('id', tid)
+                }
+                setSelectedIds(new Set()); fetchThreads(); toast(`${selectedIds.size} thread(s) trashed`)
+              }} className="px-2 py-1 rounded text-[11px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30">Trash</button>
+              <button type="button" onClick={async () => {
+                for (const tid of selectedIds) {
+                  await supabase.from('inbox_threads').update({ status: 'closed', updated_at: new Date().toISOString() }).eq('id', tid)
+                }
+                setSelectedIds(new Set()); fetchThreads(); toast(`${selectedIds.size} thread(s) closed`)
+              }} className="px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">Close</button>
+              <button type="button" onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-500 hover:text-gray-300 ml-auto">Cancel</button>
+            </div>
+          )}
+
           {loading ? <div className="p-4 text-gray-400 text-sm">Loading…</div>
           : filteredThreads.length === 0 ? (
             <div className="p-4 text-gray-400 text-sm text-center mt-8"><InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" /><p>No threads</p></div>
@@ -1054,9 +821,24 @@ export default function Inbox() {
               {filteredThreads.map(t => {
                 const assignees = (Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []) as { user_id: string }[]
                 const unread = isUnread(t)
+                const isSelected = selectedIds.has(t.id)
                 return (
-                  <li key={t.id}>
-                    <button type="button" onClick={() => { setSelectedThreadId(t.id); setReplyMode(null) }}
+                  <li key={t.id} className="relative group/row">
+                    {/* Multi-select checkbox */}
+                    <input type="checkbox" checked={isSelected}
+                      onChange={e => { e.stopPropagation(); const next = new Set(selectedIds); if (e.target.checked) next.add(t.id); else next.delete(t.id); setSelectedIds(next) }}
+                      className="absolute left-1.5 top-4 w-3.5 h-3.5 rounded border-border bg-surface-muted text-accent focus:ring-accent opacity-0 group-hover/row:opacity-100 checked:opacity-100 z-10 cursor-pointer"
+                      onClick={e => e.stopPropagation()} />
+                    <button type="button" onClick={() => {
+                      if (selectedIds.size > 0) { const next = new Set(selectedIds); if (isSelected) next.delete(t.id); else next.add(t.id); setSelectedIds(next); return }
+                      setSelectedThreadId(t.id); setReplyMode(null)
+                      if (userId) {
+                        setReadStatuses(prev => {
+                          const existing = prev.filter(r => r.thread_id !== t.id)
+                          return [...existing, { thread_id: t.id, last_read_at: new Date().toISOString() }]
+                        })
+                      }
+                    }}
                       className={`w-full text-left px-4 py-3 transition-colors ${selectedThreadId === t.id ? 'bg-surface-muted' : 'hover:bg-surface-muted/50'}`}>
                       <div className="flex items-start gap-2">
                         {/* Unread indicator */}
@@ -1077,8 +859,10 @@ export default function Inbox() {
                           </div>
                           <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
                           <div className="flex items-center gap-2 mt-1">
-                            {t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
-                            {t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
+                            {/* Only show status badges in search results */}
+                            {searchQuery.trim() && t.status === 'open' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">open</span>}
+                            {searchQuery.trim() && t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
+                            {searchQuery.trim() && t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
                             {assignees.length > 0 && (
                               <span className="inline-flex items-center gap-0.5">
                                 {assignees.slice(0, 3).map(a => {
@@ -1131,7 +915,34 @@ export default function Inbox() {
                   </button>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  {/* Assigned people pills */}
+                  {/* Reordered: Read/Unread → Reply → All → Fwd → Close → Trash → Assign → Assignees */}
+                  <button type="button" onClick={async () => {
+                    const isRead = !isUnread(selectedThread)
+                    if (isRead) {
+                      await supabase.from('inbox_thread_reads').delete().eq('thread_id', selectedThread.id).eq('user_id', userId!)
+                      setReadStatuses(prev => prev.filter(r => r.thread_id !== selectedThread.id))
+                    } else {
+                      setReadStatuses(prev => [...prev.filter(r => r.thread_id !== selectedThread.id), { thread_id: selectedThread.id, last_read_at: new Date().toISOString() }])
+                    }
+                    toast(isRead ? 'Marked unread' : 'Marked read')
+                  }} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">
+                    <Mail className="w-3 h-3" /> {isUnread(selectedThread) ? 'Read' : 'Unread'}
+                  </button>
+                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Reply className="w-3 h-3" /> Reply</button>
+                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><ReplyAll className="w-3 h-3" /> All</button>
+                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Forward className="w-3 h-3" /> Fwd</button>
+                  <div className="w-px h-4 bg-border mx-0.5" />
+                  {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
+                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
+                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
+                  <div className="w-px h-4 bg-border mx-0.5" />
+                  <select value="" onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
+                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
+                    <option value="">{currentAssignees.length > 0 ? '+ Assign' : 'Assign…'}</option>
+                    {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
+                      <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>
+                    ))}
+                  </select>
                   {currentAssignees.map(a => (
                     <span key={a.user_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-surface-muted text-[11px] text-gray-200">
                       {getUserAvatar(a.user_id) ? (
@@ -1143,21 +954,6 @@ export default function Inbox() {
                       <button type="button" onClick={() => handleUnassign(a.user_id)} className="text-gray-500 hover:text-red-400 ml-0.5">&times;</button>
                     </span>
                   ))}
-                  {/* Add assignee dropdown */}
-                  <select value="" onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
-                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
-                    <option value="">Assign</option>
-                    {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
-                      <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>
-                    ))}
-                  </select>
-                  {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
-                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
-                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
-                  <div className="w-px h-4 bg-border mx-0.5" />
-                  <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Reply className="w-3 h-3" /> Reply</button>
-                  <button type="button" onClick={() => openReply('reply_all')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><ReplyAll className="w-3 h-3" /> All</button>
-                  <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Forward className="w-3 h-3" /> Fwd</button>
                 </div>
               </div>
 
@@ -1168,23 +964,7 @@ export default function Inbox() {
                   {attachments.length > 0 && (
                     <div className="flex items-center gap-2 flex-wrap text-xs">
                       <span className="text-gray-500">Attachments:</span>
-                      {attachments.map((a) => {
-                        const url = attachmentUrls[a.file_path]
-                        const label = (
-                          <>
-                            <Download className="w-3 h-3" /> {a.file_name}
-                          </>
-                        )
-                        return url ? (
-                          <a key={a.id} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent">
-                            {label}
-                          </a>
-                        ) : (
-                          <span key={a.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-500">
-                            {label}
-                          </span>
-                        )
-                      })}
+                      {attachments.map(a => <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent"><Download className="w-3 h-3" /> {a.file_name}</a>)}
                     </div>
                   )}
 
@@ -1222,58 +1002,31 @@ export default function Inbox() {
                               <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
                               {m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
                               {m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
-                              {m.bcc && <span><span className="text-gray-500">Bcc:</span> {m.bcc}</span>}
                               <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                             </div>
                             <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
                               <button type="button" title="Reply" onClick={() => {
-                                const toAddr = (m.from_identifier && m.from_identifier.trim()) ? m.from_identifier : (messages.filter(msg => msg.direction === 'inbound').pop() ?? messages[messages.length - 1])?.from_identifier ?? ''
-                                const toPrefill = toAddr ? toAddr + ', ' : ''
-                                pendingReplyToRef.current = toPrefill
-                                pendingReplyCcRef.current = ''
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
-                                setReplyTo(toPrefill)
-                                setReplyCc('')
-                                setReplyBcc('')
+                                setReplyTo(m.from_identifier); setReplyCc(''); setReplyBcc('')
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
-                                setReplyHtml('')
-                                setShowCcBcc(false)
-                                setReplyAttachments([])
-                                setReplyAnchorMsgId(m.id)
-                                setReplyMode('reply')
+                                setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Reply All" onClick={() => {
-                                const toAddr = (m.from_identifier && m.from_identifier.trim()) ? m.from_identifier : (messages.filter(msg => msg.direction === 'inbound').pop() ?? messages[messages.length - 1])?.from_identifier ?? ''
-                                const ccRaw = m.cc ?? ''
-                                const toPrefill = toAddr ? toAddr + ', ' : ''
-                                const ccPrefill = ccRaw.trim() ? ccRaw.trim() + ', ' : ''
-                                pendingReplyToRef.current = toPrefill
-                                pendingReplyCcRef.current = ccPrefill
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
-                                setReplyTo(toPrefill)
-                                setReplyCc(ccPrefill)
+                                setReplyTo(m.from_identifier)
+                                setReplyCc(m.cc ?? '')
                                 setReplyBcc('')
                                 setShowCcBcc(!!(m.cc))
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
-                                setReplyHtml('')
-                                setReplyAttachments([])
-                                setReplyAnchorMsgId(m.id)
-                                setReplyMode('reply_all')
+                                setReplyHtml(''); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Forward" onClick={() => {
-                                pendingReplyToRef.current = null
-                                pendingReplyCcRef.current = null
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
-                                setReplyTo('')
-                                setReplyCc('')
-                                setReplyBcc('')
-                                setShowCcBcc(false)
+                                setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
                                 const { content: fwdContent } = cleanMessageBody(m)
                                 setReplyHtml(`<br/><br/>---------- Forwarded message ----------<br/><b>From:</b> ${m.from_identifier}<br/><b>Date:</b> ${new Date(m.received_at).toLocaleString()}<br/><b>Subject:</b> ${selectedThread?.subject ?? ''}<br/><br/>${fwdContent}`)
-                                setReplyAttachments([])
-                                setReplyAnchorMsgId(m.id)
-                                setReplyMode('forward')
+                                setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('forward')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Forward className="w-3.5 h-3.5" /></button>
                             </div>
                           </header>
@@ -1291,18 +1044,16 @@ export default function Inbox() {
                             <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
                           )}
                         </article>
-                        {/* Render reply form directly below the anchored message; key forces remount when mode/anchor changes */}
+                        {/* Render reply form directly below the anchored message */}
                         {replyMode && replyMode !== 'compose' && replyAnchorMsgId === m.id && (
-                          <div key={`reply-form-${replyMode}-${m.id}`} ref={replyFormContainerRef} className="mt-2">{renderReplyForm(replyMode === 'forward')}</div>
+                          <div className="mt-2">{renderReplyForm(replyMode === 'forward')}</div>
                         )}
                       </React.Fragment>)
                     })
                   )}
 
-                  {/* Fallback: render at bottom if triggered from header buttons (no anchor); key forces remount when mode changes */}
-                  {replyMode && replyMode !== 'compose' && !replyAnchorMsgId && (
-                    <div key={`reply-form-${replyMode}-bottom`}>{renderReplyForm(replyMode === 'forward')}</div>
-                  )}
+                  {/* Fallback: render at bottom if triggered from header buttons (no anchor) */}
+                  {replyMode && replyMode !== 'compose' && !replyAnchorMsgId && renderReplyForm(replyMode === 'forward')}
                   <div ref={timelineEndRef} />
                 </div>
               </div>
