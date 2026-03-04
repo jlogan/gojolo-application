@@ -65,6 +65,10 @@ verify_jwt = false
 [functions.notify-task-comment]
 verify_jwt = true
 
+# slack-test-project-channel: send test message to project's linked Slack channel (system uses bot token, no user JWT).
+[functions.slack-test-project-channel]
+verify_jwt = false
+
 # sync-profile-avatar: sync OAuth avatar image into Supabase Storage.
 [functions.sync-profile-avatar]
 verify_jwt = false

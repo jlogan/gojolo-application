@@ -502,6 +502,7 @@ function SlackChannelPicker({ projectId, orgId }: { projectId: string; orgId: st
   const [loadingChannels, setLoadingChannels] = useState(false)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
+  const [testLoading, setTestLoading] = useState(false)
 
   const loadChannel = useCallback(async () => {
     if (!projectId) return
@@ -608,6 +609,45 @@ function SlackChannelPicker({ projectId, orgId }: { projectId: string; orgId: st
     setMessage(null)
   }
 
+  const handleTest = async () => {
+    if (!channel || !projectId) return
+    setMessage(null)
+    setTestLoading(true)
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-test-project-channel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ projectId }),
+      })
+      const data = await res.json().catch(() => ({})) as { error?: string; message?: string; msg?: string }
+      if (!res.ok) {
+        const err = data.error || data.message || data.msg
+        if (res.status === 401) {
+          setMessage({ type: 'error', text: err || 'Session expired. Sign out and back in, then try again.' })
+        } else if (res.status === 404) {
+          setMessage({ type: 'error', text: err || 'Slack test function not found. Deploy it: supabase functions deploy slack-test-project-channel' })
+        } else {
+          setMessage({ type: 'error', text: err || `Test failed (${res.status}).` })
+        }
+        setTestLoading(false)
+        return
+      }
+      if (data.error) {
+        setMessage({ type: 'error', text: data.error })
+        setTestLoading(false)
+        return
+      }
+      setMessage({ type: 'success', text: data.message || 'Test message sent. Check the Slack channel.' })
+    } catch (e) {
+      setMessage({ type: 'error', text: (e as Error).message || 'Failed to send test.' })
+    } finally {
+      setTestLoading(false)
+    }
+  }
+
   const channelListId = `project-slack-channels-${projectId}`
   const channelDisplayName = (channel?.channel_name ?? '').replace(/^#/, '')
   const slackUrl = channel?.workspace_domain && channel?.channel_id
@@ -617,12 +657,13 @@ function SlackChannelPicker({ projectId, orgId }: { projectId: string; orgId: st
   return (
     <section className="rounded-lg border border-border bg-surface-elevated p-4">
       <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">Slack channel</h2>
-      <p className="text-xs text-gray-500 mb-2">New emails from linked contacts will be posted here.</p>
+      <p className="text-xs text-gray-500 mb-2">New emails from linked contacts and task updates will be posted here.</p>
       {message && (
         <p className={`text-xs mb-2 ${message.type === 'error' ? 'text-red-400' : 'text-accent'}`}>{message.text}</p>
       )}
       {channel ? (
-        <div className="flex items-center justify-between py-1.5 text-sm">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between py-1.5 text-sm">
             {slackUrl ? (
               <a href={slackUrl} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline truncate inline-flex items-center gap-1.5">
                 {channel.is_private ? <Lock className="w-3.5 h-3.5 shrink-0" /> : <Hash className="w-3.5 h-3.5 shrink-0" />}
@@ -635,6 +676,15 @@ function SlackChannelPicker({ projectId, orgId }: { projectId: string; orgId: st
               </span>
             )}
             <button type="button" onClick={handleRemove} disabled={saving} className="p-1 text-gray-500 hover:text-red-400" title="Remove channel"><X className="w-3 h-3" /></button>
+          </div>
+          <button
+            type="button"
+            onClick={handleTest}
+            disabled={testLoading}
+            className="px-2 py-1.5 rounded-lg border border-border text-xs text-gray-300 hover:bg-surface-muted hover:text-white disabled:opacity-50"
+          >
+            {testLoading ? 'Sending…' : 'Test'}
+          </button>
         </div>
       ) : (
         null
