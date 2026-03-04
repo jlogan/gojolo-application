@@ -15,6 +15,7 @@ import {
   Shield,
   FolderKanban,
   Plus,
+  Clock,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -34,6 +35,7 @@ import ProjectsList from '@/pages/projects/ProjectsList'
 import ProjectDetail from '@/pages/projects/ProjectDetail'
 import ProjectForm from '@/pages/projects/ProjectForm'
 import TaskDetail from '@/pages/projects/TaskDetail'
+import Timesheets from '@/pages/Timesheets'
 
 type AppMode = 'software' | 'chat'
 
@@ -41,6 +43,7 @@ const NAV = [
   { to: '/', label: 'Home', icon: LayoutGrid, testId: 'nav-home' },
   { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
+  { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
 ]
 
@@ -305,6 +308,7 @@ export default function AppShell() {
               <Route path="/projects/:id" element={<ProjectDetail />} />
               <Route path="/projects/:id/edit" element={<ProjectForm />} />
               <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetail />} />
+              <Route path="/timesheets" element={<Timesheets />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />

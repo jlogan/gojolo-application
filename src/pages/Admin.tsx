@@ -67,6 +67,7 @@ type SlackConfig = {
   bot_user_id: string | null; team_id: string | null; team_name: string | null; scopes: string | null
   inbox_channel: string | null; notify_on_new_email: boolean; notify_on_assignment: boolean
   notify_on_mention: boolean; notify_on_thread_close: boolean
+  notify_on_task_created?: boolean; notify_on_task_status_change?: boolean; notify_on_task_comment?: boolean
 }
 type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'settings'
 
@@ -83,6 +84,7 @@ const ALL_PERMISSIONS = [
   { module: 'Contacts', perms: ['contacts.view', 'contacts.create', 'contacts.update', 'contacts.delete'] },
   { module: 'Companies', perms: ['companies.view', 'companies.create', 'companies.update', 'companies.delete'] },
   { module: 'Inbox', perms: ['inbox.view', 'inbox.message', 'inbox.delete'] },
+  { module: 'Timesheets', perms: ['timesheets.view', 'timesheets.billable_status'] },
 ]
 
 export default function Admin() {
@@ -136,6 +138,7 @@ export default function Admin() {
     bot_user_id: '',
     is_active: false, notify_on_new_email: true, notify_on_assignment: true,
     notify_on_mention: true, notify_on_thread_close: false,
+    notify_on_task_created: true, notify_on_task_status_change: true, notify_on_task_comment: true,
   })
   const [slackSaving, setSlackSaving] = useState(false)
   const [slackMessage, setSlackMessage] = useState<string | null>(null)
@@ -199,6 +202,9 @@ export default function Admin() {
           is_active: sc.is_active, notify_on_new_email: sc.notify_on_new_email,
           notify_on_assignment: sc.notify_on_assignment, notify_on_mention: sc.notify_on_mention,
           notify_on_thread_close: sc.notify_on_thread_close,
+          notify_on_task_created: sc.notify_on_task_created !== false,
+          notify_on_task_status_change: sc.notify_on_task_status_change !== false,
+          notify_on_task_comment: sc.notify_on_task_comment !== false,
         })
       }
       const { data: rpData } = await supabase.from('role_permissions').select('id, role_id, permission').order('permission')
@@ -1295,6 +1301,9 @@ export default function Admin() {
                       { key: 'notify_on_assignment' as const, label: 'Thread assignments', desc: 'Post when a thread is assigned to a team member' },
                       { key: 'notify_on_mention' as const, label: 'Internal comment mentions', desc: 'Post when someone is @mentioned in an internal comment' },
                       { key: 'notify_on_thread_close' as const, label: 'Thread closed', desc: 'Post when a thread is closed or resolved' },
+                      { key: 'notify_on_task_created' as const, label: 'Task created', desc: 'Post when a new task is added to a project' },
+                      { key: 'notify_on_task_status_change' as const, label: 'Task status change', desc: 'Post when a task\'s status is updated' },
+                      { key: 'notify_on_task_comment' as const, label: 'Task comment', desc: 'Post when a comment is added to a task' },
                     ].map(ev => (
                       <label key={ev.key} className="flex items-start gap-3 cursor-pointer p-2 rounded-lg hover:bg-surface-muted/50">
                         <input type="checkbox" checked={slackForm[ev.key]} onChange={e => setSlackForm(f => ({ ...f, [ev.key]: e.target.checked }))}
@@ -1384,6 +1393,9 @@ export default function Admin() {
                   notify_on_assignment: slackForm.notify_on_assignment,
                   notify_on_mention: slackForm.notify_on_mention,
                   notify_on_thread_close: slackForm.notify_on_thread_close,
+                  notify_on_task_created: slackForm.notify_on_task_created,
+                  notify_on_task_status_change: slackForm.notify_on_task_status_change,
+                  notify_on_task_comment: slackForm.notify_on_task_comment,
                   updated_at: new Date().toISOString(),
                 }
                 if (slackConfig) {

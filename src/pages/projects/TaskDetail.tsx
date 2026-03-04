@@ -1,17 +1,12 @@
-import { useEffect, useState, useCallback, useMemo, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
-<<<<<<< Updated upstream
   ArrowLeft, Send, Plus, User,
   Paperclip, Key, Mail, ChevronRight,
-=======
-  ArrowLeft, Send, Plus, User, Link as LinkIcon,
-  Paperclip, ExternalLink, Key, Mail, MessageSquare, ChevronRight, Download,
   FileText, Pencil, Trash2,
->>>>>>> Stashed changes
 } from 'lucide-react'
 
 type Task = {
@@ -157,26 +152,24 @@ export default function TaskDetail() {
 
   // Comment form
   const [commentText, setCommentText] = useState('')
-<<<<<<< Updated upstream
-  const [commentFile, setCommentFile] = useState<File | null>(null)
-
-  // Loom modal
-  const [loomModalUrl, setLoomModalUrl] = useState<string | null>(null)
-=======
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
->>>>>>> Stashed changes
+  const [commentFile, setCommentFile] = useState<File | null>(null)
+
+  const [loomModalUrl, setLoomModalUrl] = useState<string | null>(null)
 
   // Time log form
   const [showTimeForm, setShowTimeForm] = useState(false)
   const [logTime, setLogTime] = useState('')
   const [logDate, setLogDate] = useState(new Date().toISOString().split('T')[0])
-  const [logDesc, setLogDesc] = useState('')
-  const [logComment, setLogComment] = useState('')
+  const [logNotes, setLogNotes] = useState('')
   const [logBillable, setLogBillable] = useState(true)
+  const [canEditBillable, setCanEditBillable] = useState(false)
 
   // Artifact form
   const [showArtifactForm, setShowArtifactForm] = useState(false)
+  const [showAttachmentForm, setShowAttachmentForm] = useState(false)
+  const [showTeamForm, setShowTeamForm] = useState(false)
   const [_artType] = useState<'link' | 'file'>('link')
   const [artLabel, setArtLabel] = useState('')
   const [artUrl, setArtUrl] = useState('')
@@ -248,6 +241,16 @@ export default function TaskDetail() {
   useEffect(() => { fetchAll() }, [fetchAll])
 
   useEffect(() => {
+    if (!currentOrg?.id || !user?.id) return
+    supabase.rpc('user_has_permission', { p_org_id: currentOrg.id, p_permission: 'timesheets.billable_status' })
+      .then(({ data }) => setCanEditBillable(data === true))
+  }, [currentOrg?.id, user?.id])
+
+  useEffect(() => {
+    if (showTimeForm && !canEditBillable) setLogBillable(false)
+  }, [showTimeForm, canEditBillable])
+
+  useEffect(() => {
     if (!currentOrg?.id) return
     supabase.from('organization_users').select('user_id').eq('org_id', currentOrg.id)
       .then(async ({ data }) => {
@@ -280,7 +283,6 @@ export default function TaskDetail() {
   }
 
   const handleAddComment = async () => {
-<<<<<<< Updated upstream
     if (!taskId || (!commentText.trim() && !commentFile) || !user?.id) return
     let fileUrl: string | null = null
     let fileName: string | null = null
@@ -288,28 +290,26 @@ export default function TaskDetail() {
       const path = `${currentOrg.id}/${projectId}/${taskId}/comments/${Date.now()}-${commentFile.name}`
       const { error } = await supabase.storage.from('task-artifacts').upload(path, commentFile)
       if (!error) {
-        fileUrl = supabase.storage.from('task-artifacts').getPublicUrl(path).data.publicUrl
+        const { data: signed } = await supabase.storage.from('task-artifacts').createSignedUrl(path, 3600)
+        fileUrl = signed?.signedUrl ?? supabase.storage.from('task-artifacts').getPublicUrl(path).data.publicUrl
         fileName = commentFile.name
       }
     }
-    const content = commentText.trim() + (fileUrl ? `\n\n📎 [${fileName}](${fileUrl})` : '')
-    if (content.trim()) {
-      await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content })
-    }
-    setCommentText(''); setCommentFile(null); fetchAll()
-=======
-    if (!taskId || !commentText.trim() || !user?.id) return
-    const { data: newComment } = await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content: commentText.trim() }).select('id').single()
+    const content = commentText.trim() + (fileUrl && fileName ? `\n\n📎 [${fileName}](${fileUrl})` : '')
+    if (!content.trim()) return
+    const { data: newComment } = await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content }).select('id').single()
     setCommentText('')
+    setCommentFile(null)
     await fetchAll()
     if (newComment && projectId) {
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.access_token) {
+          const preview = commentText.trim().slice(0, 200) + (fileName ? ' [attachment]' : '')
           await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/notify-task-comment`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-            body: JSON.stringify({ taskId, projectId, commentId: (newComment as { id: string }).id, contentPreview: commentText.trim().slice(0, 200), authorName: orgUsers.find(u => u.user_id === user?.id)?.display_name ?? user?.email ?? 'Someone' }),
+            body: JSON.stringify({ taskId, projectId, commentId: (newComment as { id: string }).id, contentPreview: preview, authorName: orgUsers.find(u => u.user_id === user?.id)?.display_name ?? user?.email ?? 'Someone' }),
           })
         }
       } catch (_) { /* ignore */ }
@@ -333,7 +333,6 @@ export default function TaskDetail() {
     if (!window.confirm('Delete this comment?')) return
     await supabase.from('task_comments').delete().eq('id', c.id).eq('user_id', user!.id)
     fetchAll()
->>>>>>> Stashed changes
   }
 
   const handleLogTime = async () => {
@@ -345,9 +344,9 @@ export default function TaskDetail() {
     await supabase.from('time_logs').insert({
       task_id: taskId, project_id: projectId, user_id: user.id,
       hours: h, minutes: m, work_date: logDate,
-      description: logDesc.trim() || null, comment: logComment.trim() || null, billed: logBillable,
+      description: logNotes.trim() || null, comment: null, billed: logBillable,
     })
-    setLogTime(''); setLogDesc(''); setLogComment(''); setShowTimeForm(false); fetchAll()
+    setLogTime(''); setLogNotes(''); setShowTimeForm(false); fetchAll()
   }
 
   const handleAddArtifact = async () => {
@@ -370,6 +369,7 @@ export default function TaskDetail() {
       task_id: taskId, type: 'file', label: file.name,
       file_path: path, file_name: file.name, content_type: file.type, uploaded_by: user.id,
     })
+    setShowAttachmentForm(false)
     fetchAll()
   }
 
@@ -377,7 +377,9 @@ export default function TaskDetail() {
     const assignUid = uid ?? addAssigneeId
     if (!taskId || !assignUid) return
     await supabase.from('task_assignees').insert({ task_id: taskId, user_id: assignUid })
-    setAddAssigneeId(''); fetchAll()
+    setAddAssigneeId('')
+    setShowTeamForm(false)
+    fetchAll()
   }
 
   const handleRemoveAssignee = async (uid: string) => {
@@ -518,45 +520,53 @@ export default function TaskDetail() {
           </div>
         </div>
 
-        {/* File attachments (separate from resources) */}
-        {artifacts.filter(a => a.type === 'file').length > 0 && (
-          <div className="mb-4">
-            <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Attachments</h3>
-            <div className="flex flex-wrap gap-2">
-              {artifacts.filter(a => a.type === 'file').map(a => (
-                <a key={a.id} href={supabase.storage.from('task-artifacts').getPublicUrl(a.file_path!).data.publicUrl}
-                  target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 hover:text-accent border border-border hover:border-accent/30">
-                  <Paperclip className="w-3 h-3" /> {a.file_name ?? a.label}
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-
+        {/* Add resource (link) form - links only */}
         {showArtifactForm && (
-          <div className="rounded-lg border border-border bg-surface-muted p-3 mb-4 space-y-2">
-            <div className="flex gap-2">
+          <div className="rounded-lg border border-border bg-surface-muted p-3 mb-4">
+            <div className="flex flex-wrap gap-2 items-center">
               <input type="text" value={artLabel} onChange={e => setArtLabel(e.target.value)} placeholder="Label (optional)"
-                className="flex-1 rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+                className="min-w-[120px] flex-1 rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
               <input type="url" value={artUrl} onChange={e => setArtUrl(e.target.value)} placeholder="URL (Loom, GitHub, etc.)"
-                className="flex-1 rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+                className="min-w-[160px] flex-1 rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
               <button type="button" onClick={handleAddArtifact} className="px-3 py-1.5 rounded bg-accent text-white text-xs font-medium">Add link</button>
             </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-gray-500">Or upload file:</label>
-              <input type="file" onChange={e => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); e.target.value = '' }}
-                className="text-xs text-gray-400" />
-            </div>
           </div>
         )}
 
-        {artifacts.length === 0 && !showArtifactForm && (
+        {artifacts.filter(a => a.type !== 'file').length === 0 && !showArtifactForm && (
           <button type="button" onClick={() => setShowArtifactForm(true)}
             className="text-xs text-gray-500 hover:text-accent flex items-center gap-1 mb-4">
-            <Plus className="w-3 h-3" /> Add resources (Loom, links, files)
+            <Plus className="w-3 h-3" /> Add resources (Loom, links)
           </button>
         )}
+
+        {/* Attachments: file list + Add button to show upload form */}
+        <div className="mb-4">
+          <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Attachments</h3>
+          <div className="flex flex-wrap gap-2 items-center">
+            {artifacts.filter(a => a.type === 'file').map(a => (
+              <a key={a.id} href={supabase.storage.from('task-artifacts').getPublicUrl(a.file_path!).data.publicUrl}
+                target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 hover:text-accent border border-border hover:border-accent/30">
+                <Paperclip className="w-3 h-3" /> {a.file_name ?? a.label}
+              </a>
+            ))}
+            {!showAttachmentForm && (
+              <button type="button" onClick={() => setShowAttachmentForm(true)}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-xs text-gray-500 hover:text-accent hover:border-accent/30">
+                <Plus className="w-3 h-3" /> Add
+              </button>
+            )}
+          </div>
+          {showAttachmentForm && (
+            <div className="rounded-lg border border-border bg-surface-muted p-3 mt-2 flex flex-wrap items-center gap-2">
+              <label className="text-xs text-gray-500">Upload file</label>
+              <input type="file" onChange={e => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); e.target.value = '' }}
+                className="text-xs text-gray-400 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-accent file:text-white file:cursor-pointer hover:file:opacity-90" />
+              <button type="button" onClick={() => setShowAttachmentForm(false)} className="px-3 py-1.5 rounded border border-border text-xs text-gray-300 hover:bg-surface-elevated">Cancel</button>
+            </div>
+          )}
+        </div>
 
         {/* Vault credentials */}
         {vaultCreds.length > 0 && (
@@ -576,24 +586,38 @@ export default function TaskDetail() {
         )}
 
         {/* Team */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-gray-500">Team:</span>
-          {assignees.map(a => (
-            <span key={a.user_id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-muted text-[11px] text-gray-200">
-              {a.avatar_url ? <img src={a.avatar_url} alt="" className="w-4 h-4 rounded-full" /> : (
-                <span className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent">{(a.display_name ?? '?')[0].toUpperCase()}</span>
-              )}
-              {a.display_name ?? 'User'}
-              <button type="button" onClick={() => handleRemoveAssignee(a.user_id)} className="text-gray-500 hover:text-red-400">&times;</button>
-            </span>
-          ))}
-          <select value="" onChange={e => { if (e.target.value) handleAddAssignee(e.target.value) }}
-            className="rounded border border-border bg-surface-muted px-2 py-0.5 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
-            <option value="">+ Add</option>
-            {orgUsers.filter(u => !assignees.some(a => a.user_id === u.user_id)).map(u => (
-              <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>
+        <div className="mb-4">
+          <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Team</h3>
+          <div className="flex flex-wrap gap-2 items-center">
+            {assignees.map(a => (
+              <span key={a.user_id} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 border border-border hover:border-accent/30">
+                {a.avatar_url ? <img src={a.avatar_url} alt="" className="w-4 h-4 rounded-full shrink-0" /> : (
+                  <span className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent shrink-0">{(a.display_name ?? '?')[0].toUpperCase()}</span>
+                )}
+                {a.display_name ?? 'User'}
+                <button type="button" onClick={() => handleRemoveAssignee(a.user_id)} className="text-gray-500 hover:text-red-400 ml-0.5" aria-label="Remove">&times;</button>
+              </span>
             ))}
-          </select>
+            {!showTeamForm && (
+              <button type="button" onClick={() => setShowTeamForm(true)}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-xs text-gray-500 hover:text-accent hover:border-accent/30">
+                <Plus className="w-3 h-3" /> Add
+              </button>
+            )}
+          </div>
+          {showTeamForm && (
+            <div className="rounded-lg border border-border bg-surface-muted p-3 mt-2 flex flex-wrap items-center gap-2">
+              <select value={addAssigneeId} onChange={e => setAddAssigneeId(e.target.value)}
+                className="rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent min-w-[160px]">
+                <option value="">Select member…</option>
+                {orgUsers.filter(u => !assignees.some(a => a.user_id === u.user_id)).map(u => (
+                  <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>
+                ))}
+              </select>
+              <button type="button" onClick={() => handleAddAssignee()} disabled={!addAssigneeId} className="px-3 py-1.5 rounded bg-accent text-white text-xs font-medium hover:opacity-90 disabled:opacity-50">Add</button>
+              <button type="button" onClick={() => { setShowTeamForm(false); setAddAssigneeId('') }} className="px-3 py-1.5 rounded border border-border text-xs text-gray-300 hover:bg-surface-elevated">Cancel</button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -651,11 +675,16 @@ export default function TaskDetail() {
           </div>
           <div className="space-y-2">
             <textarea value={commentText} onChange={e => setCommentText(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && commentText.trim()) { e.preventDefault(); handleAddComment() } }}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && (commentText.trim() || commentFile)) { e.preventDefault(); handleAddComment() } }}
               placeholder="Add a comment… (Shift+Enter for new line)"
               rows={2}
               className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent resize-y" />
-            {commentFile && <span className="text-xs text-gray-400 flex items-center gap-1"><Paperclip className="w-3 h-3" /> {commentFile.name} <button type="button" onClick={() => setCommentFile(null)} className="text-gray-500 hover:text-red-400">&times;</button></span>}
+            {commentFile && (
+              <span className="text-xs text-gray-400 flex items-center gap-1">
+                <Paperclip className="w-3 h-3" /> {commentFile.name}
+                <button type="button" onClick={() => setCommentFile(null)} className="text-gray-500 hover:text-red-400" aria-label="Remove attachment">&times;</button>
+              </span>
+            )}
             <div className="flex items-center gap-2">
               <button type="button" onClick={handleAddComment} disabled={!commentText.trim() && !commentFile}
                 className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
@@ -683,10 +712,10 @@ export default function TaskDetail() {
 
           {showTimeForm && (
             <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-4 space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Time (HH:MM)</label>
-                  <input type="text" value={logTime} onChange={e => setLogTime(e.target.value)} placeholder="01:30"
+                  <input type="text" value={logTime} onChange={e => setLogTime(e.target.value)} placeholder="1:30"
                     className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
                 </div>
                 <div>
@@ -694,24 +723,27 @@ export default function TaskDetail() {
                   <input type="date" value={logDate} onChange={e => setLogDate(e.target.value)}
                     className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" />
                 </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-[10px] text-gray-500 mb-0.5">What did you work on?</label>
-                  <input type="text" value={logDesc} onChange={e => setLogDesc(e.target.value)} placeholder="Description"
-                    className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-0.5">Billable / Non billable</label>
+                  <select
+                    value={logBillable ? 'billable' : 'non_billable'}
+                    onChange={e => setLogBillable(e.target.value === 'billable')}
+                    disabled={!canEditBillable}
+                    className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    <option value="billable">Billable</option>
+                    <option value="non_billable">Non billable</option>
+                  </select>
                 </div>
               </div>
-              <input type="text" value={logComment} onChange={e => setLogComment(e.target.value)} placeholder="Additional notes (optional)"
-                className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={logBillable} onChange={e => setLogBillable(e.target.checked)}
-                    className="rounded border-border bg-surface-muted text-accent focus:ring-accent" />
-                  <span className="text-sm text-gray-300">Billable</span>
-                </label>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setShowTimeForm(false)} className="px-3 py-1.5 rounded border border-border text-xs text-gray-300">Cancel</button>
-                  <button type="button" onClick={handleLogTime} className="px-3 py-1.5 rounded bg-accent text-white text-xs font-medium">Save</button>
-                </div>
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-0.5">Notes</label>
+                <input type="text" value={logNotes} onChange={e => setLogNotes(e.target.value)} placeholder="What did you work on? (optional)"
+                  className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowTimeForm(false)} className="px-3 py-1.5 rounded border border-border text-xs text-gray-300">Cancel</button>
+                <button type="button" onClick={handleLogTime} className="px-3 py-1.5 rounded bg-accent text-white text-xs font-medium">Save</button>
               </div>
             </div>
           )}

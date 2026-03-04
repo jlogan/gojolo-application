@@ -37,7 +37,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: config, error: cfgErr } = await admin
       .from('slack_configs')
-      .select('bot_token')
+      .select('bot_token, notify_on_task_comment')
       .eq('org_id', task.org_id)
       .eq('is_active', true)
       .limit(1)
@@ -46,14 +46,61 @@ Deno.serve(async (req: Request) => {
     if (cfgErr || !config?.bot_token) {
       return new Response(JSON.stringify({ ok: true, skipped: 'Slack not configured or inactive' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
+    if (config.notify_on_task_comment === false) {
+      return new Response(JSON.stringify({ ok: true, skipped: 'Task comment notifications disabled' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    }
 
-    const preview = (contentPreview ?? '').slice(0, 300).replace(/\[[^\]]*\]\([^)]+\)/g, '[attachment]')
-    const text = `💬 New comment on task *${(task.title || 'Task').replace(/[*_~`]/g, '')}* by ${authorName ?? 'Someone'}:\n${preview || '(no text)'}`
+    const taskTitle = (task.title || 'Task').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
+    const preview = (contentPreview ?? '').slice(0, 300).replace(/\[[^\]]*\]\([^)]+\)/g, '[attachment]').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
+    const author = (authorName ?? 'Someone').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
+    const taskUrl = `https://app.gojolo.io/projects/${projectId}/tasks/${taskId}`
+    const now = new Date()
+    const footerTs = now.toLocaleDateString('en-US', { day: 'numeric', month: 'short' }) + ' at ' + now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+
+    const payload = {
+      channel: channelRow.channel_id,
+      text: `New comment on task: ${task.title || 'Task'}`,
+      unfurl_links: false,
+      attachments: [
+        {
+          color: '#4A90D9',
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*Task comment:* <${taskUrl}|${taskTitle}>`,
+              },
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*Comment*\n${preview || '(no text)'}`,
+              },
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*By*\n${author}`,
+              },
+            },
+            {
+              type: 'context',
+              elements: [
+                { type: 'mrkdwn', text: `JoloCRM Task Comment ${footerTs}` },
+              ],
+            },
+          ],
+        },
+      ],
+    }
 
     const res = await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.bot_token}` },
-      body: JSON.stringify({ channel: channelRow.channel_id, text, unfurl_links: false }),
+      body: JSON.stringify(payload),
     })
 
     const data = await res.json().catch(() => ({})) as { ok?: boolean; error?: string }
