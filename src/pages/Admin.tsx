@@ -150,6 +150,11 @@ export default function Admin() {
   const [userSlackMappings, setUserSlackMappings] = useState<{ user_id: string; slack_user_id: string }[]>([])
   const [slackMappingLoading, setSlackMappingLoading] = useState(false)
   const [slackMappingError, setSlackMappingError] = useState<string | null>(null)
+  const [slackDmTestUserId, setSlackDmTestUserId] = useState<string | null>(null)
+  const [slackDmTestMessage, setSlackDmTestMessage] = useState<string | null>(null)
+  const [notificationProcessorConfigured, setNotificationProcessorConfigured] = useState<boolean | null>(null)
+  const [processPendingLoading, setProcessPendingLoading] = useState(false)
+  const [processPendingMessage, setProcessPendingMessage] = useState<string | null>(null)
   const [orgTimezone, setOrgTimezone] = useState<string>('America/New_York')
   const [orgTimezoneSaving, setOrgTimezoneSaving] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
@@ -195,6 +200,15 @@ export default function Admin() {
     if (slackTab !== 'mapping' || !currentOrg?.id) return
     loadSlackUsersAndMappings()
   }, [slackTab, currentOrg?.id, loadSlackUsersAndMappings])
+
+  useEffect(() => {
+    if (section !== 'slack') return
+    let cancelled = false
+    supabase.rpc('get_notification_processor_configured').then(({ data, error }) => {
+      if (!cancelled && !error) setNotificationProcessorConfigured(!!data)
+    })
+    return () => { cancelled = true }
+  }, [section])
 
   useEffect(() => {
     if (!currentOrg?.id || (!isOrgAdmin && !isPlatformAdmin)) {
@@ -1312,7 +1326,7 @@ export default function Admin() {
                   </div>
                   <div className="rounded-lg border border-border bg-surface-muted/40 p-3 text-xs text-gray-400 space-y-1">
                     <p className="font-medium text-gray-300">Required Slack app bot scopes</p>
-                    <p>chat:write, conversations:read, users:read, app_mentions:read, channels:history, groups:history</p>
+                    <p>chat:write, conversations:read, users:read, im:write (for DMs), app_mentions:read, channels:history, groups:history</p>
                   </div>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" checked={slackForm.is_active} onChange={e => setSlackForm(f => ({ ...f, is_active: e.target.checked }))}
@@ -1386,6 +1400,58 @@ export default function Admin() {
                       {slackMappingLoading ? 'Loading…' : 'Refresh Slack users'}
                     </button>
                   </div>
+                  <div className="rounded-lg border border-border bg-surface-muted/50 p-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="text-gray-400">Notification delivery (Slack DM / email): </span>
+                        {notificationProcessorConfigured === null && <span className="text-gray-500">Checking…</span>}
+                        {notificationProcessorConfigured === true && <span className="text-emerald-400">Configured</span>}
+                        {notificationProcessorConfigured === false && (
+                          <span className="text-amber-500">Not configured — assignment and mention DMs/emails will not be sent until you set app_config and NOTIFICATION_INTERNAL_SECRET. See SECRETS.md.</span>
+                        )}
+                      </div>
+                      {currentOrg?.id && (
+                        <button
+                          type="button"
+                          disabled={processPendingLoading || notificationProcessorConfigured !== true}
+                          onClick={async () => {
+                            setProcessPendingMessage(null)
+                            setProcessPendingLoading(true)
+                            try {
+                              const { data: { session } } = await supabase.auth.getSession()
+                              if (!session?.access_token) {
+                                setProcessPendingMessage('Please sign in again.')
+                                return
+                              }
+                              const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-pending-notifications`, {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  'Authorization': `Bearer ${session.access_token}`,
+                                  'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+                                },
+                                body: JSON.stringify({ orgId: currentOrg.id }),
+                              })
+                              const json = await res.json().catch(() => ({})) as { processed?: number; total?: number; error?: string }
+                              if (res.ok && json.processed !== undefined) {
+                                setProcessPendingMessage(`Processed ${json.processed} of ${json.total ?? 0} pending.`)
+                              } else {
+                                setProcessPendingMessage(json.error ?? `Request failed (${res.status}).`)
+                              }
+                            } catch (e) {
+                              setProcessPendingMessage((e as Error).message)
+                            } finally {
+                              setProcessPendingLoading(false)
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-lg border border-border bg-surface-muted text-gray-200 text-xs font-medium hover:bg-surface-muted/80 disabled:opacity-50"
+                        >
+                          {processPendingLoading ? 'Processing…' : 'Process pending notifications'}
+                        </button>
+                      )}
+                    </div>
+                    {processPendingMessage && <p className="mt-2 text-gray-400">{processPendingMessage}</p>}
+                  </div>
                   {slackMappingError && <p className="text-xs text-amber-500">{slackMappingError}</p>}
                   {slackMappingLoading ? (
                     <p className="text-sm text-gray-500">Loading…</p>
@@ -1400,6 +1466,7 @@ export default function Admin() {
                               <tr className="border-b border-border text-left text-xs text-gray-500">
                                 <th className="px-3 py-2 font-medium">Member</th>
                                 <th className="px-3 py-2 font-medium">Slack user</th>
+                                <th className="px-3 py-2 font-medium w-24">Test</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-border">
@@ -1407,6 +1474,7 @@ export default function Admin() {
                                 const prof = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles
                                 const name = (prof as { display_name?: string | null; email?: string | null })?.display_name ?? (prof as { email?: string | null })?.email ?? m.user_id.slice(0, 8)
                                 const current = userSlackMappings.find((x) => x.user_id === m.user_id)?.slack_user_id ?? ''
+                                const isTesting = slackDmTestUserId === m.user_id
                                 return (
                                   <tr key={m.user_id}>
                                     <td className="px-3 py-2 text-gray-200">{name}</td>
@@ -1416,6 +1484,7 @@ export default function Admin() {
                                         onChange={async (e) => {
                                           const slackUserId = e.target.value
                                           if (!currentOrg?.id) return
+                                          setSlackDmTestMessage(null)
                                           if (slackUserId === '') {
                                             await supabase.from('user_slack_mappings').delete().eq('org_id', currentOrg.id).eq('user_id', m.user_id)
                                           } else {
@@ -1438,11 +1507,51 @@ export default function Admin() {
                                         ))}
                                       </select>
                                     </td>
+                                    <td className="px-3 py-2">
+                                      {current ? (
+                                        <button
+                                          type="button"
+                                          disabled={isTesting || !currentOrg?.id}
+                                          onClick={async () => {
+                                            if (!currentOrg?.id) return
+                                            setSlackDmTestUserId(m.user_id)
+                                            setSlackDmTestMessage(null)
+                                            try {
+                                              const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-test-dm`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json', 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+                                                body: JSON.stringify({ orgId: currentOrg.id, slackUserId: current }),
+                                              })
+                                              const data = await res.json().catch(() => ({})) as { error?: string; message?: string }
+                                              if (!res.ok) {
+                                                setSlackDmTestMessage(data.error ?? `Request failed (${res.status})`)
+                                              } else {
+                                                setSlackDmTestMessage(data.message ?? 'Test DM sent. Check Slack.')
+                                              }
+                                            } catch (e) {
+                                              setSlackDmTestMessage((e as Error).message ?? 'Request failed')
+                                            } finally {
+                                              setSlackDmTestUserId(null)
+                                            }
+                                          }}
+                                          className="text-xs font-medium text-accent hover:underline disabled:opacity-50 disabled:no-underline"
+                                        >
+                                          {isTesting ? 'Sending…' : 'Test DM'}
+                                        </button>
+                                      ) : (
+                                        <span className="text-xs text-gray-500">—</span>
+                                      )}
+                                    </td>
                                   </tr>
                                 )
                               })}
                             </tbody>
                           </table>
+                          {slackDmTestMessage && (
+                            <p className={`px-3 py-2 text-xs border-t border-border ${slackDmTestMessage.startsWith('Test') || slackDmTestMessage.includes('sent') ? 'text-accent' : 'text-amber-500'}`}>
+                              {slackDmTestMessage}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>

@@ -77,6 +77,14 @@ verify_jwt = false
 [functions.process-user-notification]
 verify_jwt = false
 
+# slack-test-dm: send test DM to a Slack user from Admin > User mapping (verify bot can message users).
+[functions.slack-test-dm]
+verify_jwt = false
+
 # sync-profile-avatar: sync OAuth avatar image into Supabase Storage.
 [functions.sync-profile-avatar]
 verify_jwt = false
+
+# process-pending-notifications: org admin triggers processing of queued notifications (e.g. after setting app_config).
+[functions.process-pending-notifications]
+verify_jwt = true

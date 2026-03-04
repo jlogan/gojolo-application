@@ -44,6 +44,37 @@ const FILTERS: { id: InboxFilter; label: string; icon: React.ComponentType<{ cla
   { id: 'all', label: 'All', icon: List },
 ]
 
+// Match @mention: @ plus one word, then optionally more words that start with uppercase (name parts).
+// Stops at trailing text like " hey" or " im testing" so only the name is gold, rest is white.
+const MENTION_REGEX = /(@\S+(?:\s+[A-Z][A-Za-z0-9]*)*)/g
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+/** Render comment content with @mentions in amber, non-mention text in white (for display in thread) */
+function renderCommentContentWithMentions(content: string): React.ReactNode {
+  if (!content) return null
+  const parts = content.split(MENTION_REGEX)
+  return parts.map((part, i) =>
+    part.startsWith('@') ? (
+      <span key={i} className="text-amber-400 font-medium">{part}</span>
+    ) : (
+      <span key={i} className="text-white">{part}</span>
+    )
+  )
+}
+
+/** Return HTML string with mention spans (for contenteditable; inline styles so they apply when set via innerHTML) */
+function commentContentToHtml(content: string): string {
+  if (!content) return ''
+  return content.split(MENTION_REGEX).map(part =>
+    part.startsWith('@')
+      ? `<span style="color:#fbbf24;font-weight:500">${escapeHtml(part)}</span>`
+      : `<span style="color:#fff">${escapeHtml(part)}</span>`
+  ).join('')
+}
+
 // Resolve email to contact name
 function resolveEmail(email: string, contacts: ContactMatch[]): { name: string | null; contactId: string | null } {
   const match = contacts.find(c => c.email?.toLowerCase() === email?.toLowerCase())
@@ -110,6 +141,8 @@ export default function Inbox() {
   // Comment
   const [commentText, setCommentText] = useState('')
   const [showMentionPicker, setShowMentionPicker] = useState(false)
+  const commentInputRef = useRef<HTMLDivElement>(null)
+  const commentProgrammaticRef = useRef(false)
 
   // Contacts, attachments, all contacts for autocomplete
   const [threadContacts, setThreadContacts] = useState<ContactMatch[]>([])
@@ -300,6 +333,24 @@ export default function Inbox() {
   useEffect(() => { fetchMessagesRef.current = fetchMessages }, [fetchMessages])
   useEffect(() => { fetchCommentsRef.current = fetchComments }, [fetchComments])
 
+  // When comment text is set programmatically (mention insert or clear), update contenteditable with styled mentions
+  useEffect(() => {
+    if (!commentProgrammaticRef.current || !commentInputRef.current) return
+    commentProgrammaticRef.current = false
+    const el = commentInputRef.current
+    el.innerHTML = commentContentToHtml(commentText)
+    if (commentText === '') el.focus()
+    else {
+      el.focus()
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      range.collapse(false)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+    }
+  }, [commentText])
+
   // Realtime — only depends on org_id so channel stays stable
   const [realtimeConnected, setRealtimeConnected] = useState(false)
 
@@ -469,15 +520,37 @@ export default function Inbox() {
   }
 
   const handleAssignTo = async (uid: string) => {
-    if (!selectedThreadId) return
+    if (!selectedThreadId || !currentOrg?.id) return
     setActionLoading(true)
+    const selectedThread = threads.find(t => t.id === selectedThreadId)
+    const subject = selectedThread?.subject ?? '(No subject)'
+    const assignerName = user?.id ? getUserName(user.id) : 'Someone'
+
     // Add assignee (multi-assign — doesn't replace existing)
     const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert({ thread_id: selectedThreadId, user_id: uid })
-    if (assignErr) console.warn('[Inbox] Assign error:', assignErr.message)
+    if (assignErr) {
+      console.warn('[Inbox] Assign error:', assignErr.message)
+      setActionLoading(false)
+      return
+    }
 
-    // Remove Inbox label on Gmail (archive)
+    // Send DM (and/or email) to assignee per their Profile → Notifications preference (same as Test DM, no app_config)
     const { data: { session } } = await supabase.auth.getSession()
     if (session?.access_token) {
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-user-notification`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({
+          event_type: 'thread_assigned',
+          user_id: uid,
+          org_id: currentOrg.id,
+          payload: { thread_id: selectedThreadId, subject, assigner_name: assignerName },
+        }),
+      }).catch(() => {})
       fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
@@ -608,19 +681,54 @@ export default function Inbox() {
   }
 
   const handleAddComment = async () => {
-    if (!selectedThreadId || !commentText.trim() || !userId) return
+    if (!selectedThreadId || !commentText.trim() || !userId || !currentOrg?.id) return
     const mentionRegex = /@(\w+)/g
-    const mentionNames = [...commentText.matchAll(mentionRegex)].map(m => m[1].toLowerCase())
+    const mentionNames = [...commentText.trim().matchAll(mentionRegex)].map(m => m[1].toLowerCase())
     const mentionIds = inboxUsers.filter(u => mentionNames.some(n => u.display_name?.toLowerCase().includes(n) || u.email?.toLowerCase().includes(n))).map(u => u.user_id)
-    await supabase.from('inbox_comments').insert({
+    const { error: insertErr } = await supabase.from('inbox_comments').insert({
       thread_id: selectedThreadId, user_id: userId, content: commentText.trim(),
       mentions: mentionIds.length > 0 ? mentionIds : null,
     })
-    setCommentText(''); fetchComments(selectedThreadId)
+    if (insertErr) return
+    const contentPreview = commentText.trim().slice(0, 200) + (commentText.trim().length > 200 ? '...' : '')
+    const commenterName = getUserName(userId)
+    const selectedThread = threads.find(t => t.id === selectedThreadId)
+    const subject = selectedThread?.subject ?? '(No subject)'
+    commentProgrammaticRef.current = true
+    setCommentText('')
+    fetchComments(selectedThreadId)
+
+    // Notify each mentioned user via Slack DM / email (same as thread assignment — no app_config)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) return
+    const payload = {
+      thread_id: selectedThreadId,
+      subject,
+      commenter_name: commenterName,
+      content_preview: contentPreview,
+    }
+    for (const mentionedId of mentionIds) {
+      if (mentionedId === userId) continue
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-user-notification`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({
+          event_type: 'mentioned_in_thread',
+          user_id: mentionedId,
+          org_id: currentOrg.id,
+          payload,
+        }),
+      }).catch(() => {})
+    }
   }
 
   const insertMention = (u: InboxUser) => {
     const name = u.display_name ?? u.email ?? 'user'
+    commentProgrammaticRef.current = true
     setCommentText(prev => {
       // Replace the @partial with the full @name (e.g. "@mu" → "@Muaz Ali ")
       const atIdx = prev.lastIndexOf('@')
@@ -990,7 +1098,7 @@ export default function Inbox() {
                                 <span className="text-gray-500">{new Date(c.created_at).toLocaleString()}</span>
                                 <span className="text-amber-500/50 ml-auto text-[10px]">internal comment</span>
                               </div>
-                              <p className="text-sm text-gray-200">{c.content}</p>
+                              <p className="text-sm text-white whitespace-pre-wrap break-words">{renderCommentContentWithMentions(c.content)}</p>
                             </div>
                           </div>
                         )
@@ -1070,14 +1178,30 @@ export default function Inbox() {
                 <div className="flex items-center gap-2">
                   <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
                   <div className="flex-1 relative">
-                    <input type="text" value={commentText} onChange={e => {
-                      setCommentText(e.target.value)
-                      if (e.target.value.endsWith('@')) setShowMentionPicker(true)
-                      else if (!e.target.value.includes('@')) setShowMentionPicker(false)
-                    }}
-                      onKeyDown={e => { if (e.key === 'Enter' && commentText.trim()) handleAddComment() }}
-                      placeholder="Add an internal comment… (type @ to mention)"
-                      className="w-full rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-amber-500/50" />
+                    {!commentText && (
+                      <div className="pointer-events-none absolute inset-0 flex items-center px-3 py-1.5 text-sm text-gray-500" aria-hidden>
+                        Add an internal comment… (type @ to mention)
+                      </div>
+                    )}
+                    <div
+                      ref={commentInputRef}
+                      contentEditable
+                      suppressContentEditableWarning
+                      onInput={(e) => {
+                        const text = (e.target as HTMLDivElement).innerText
+                        setCommentText(text)
+                        if (text.endsWith('@')) setShowMentionPicker(true)
+                        else if (!text.includes('@')) setShowMentionPicker(false)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && commentText.trim()) {
+                          e.preventDefault()
+                          handleAddComment()
+                        }
+                      }}
+                      className="min-h-[38px] w-full rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                      style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+                    />
                     {showMentionPicker && (
                       <div className="absolute bottom-full left-0 mb-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-64 z-10">
                         {inboxUsers.map(u => (
