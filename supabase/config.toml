@@ -69,6 +69,10 @@ verify_jwt = true
 [functions.slack-test-project-channel]
 verify_jwt = false
 
+# slack-users: list workspace users for Admin > Slack > User mapping (org scoped via orgId in body).
+[functions.slack-users]
+verify_jwt = false
+
 # sync-profile-avatar: sync OAuth avatar image into Supabase Storage.
 [functions.sync-profile-avatar]
 verify_jwt = false

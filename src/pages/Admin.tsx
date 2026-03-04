@@ -145,12 +145,44 @@ export default function Admin() {
   const [slackTestLoading, setSlackTestLoading] = useState(false)
   const [slackTestMessage, setSlackTestMessage] = useState<string | null>(null)
   const [slackTestChannels, setSlackTestChannels] = useState<{ id: string; name: string; is_private: boolean; is_member: boolean }[]>([])
-  const [slackTab, setSlackTab] = useState<'connection' | 'notifications' | 'test'>('connection')
+  const [slackTab, setSlackTab] = useState<'connection' | 'notifications' | 'test' | 'mapping'>('connection')
+  const [slackUsers, setSlackUsers] = useState<{ id: string; label: string; name: string; email: string | null }[]>([])
+  const [userSlackMappings, setUserSlackMappings] = useState<{ user_id: string; slack_user_id: string }[]>([])
+  const [slackMappingLoading, setSlackMappingLoading] = useState(false)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
   useEffect(() => {
     if (section === 'imap') setImapView('list')
   }, [section])
+
+  useEffect(() => {
+    if (slackTab !== 'mapping' || !currentOrg?.id) return
+    let cancelled = false
+    setSlackMappingLoading(true)
+    ;(async () => {
+      try {
+        const [usersRes, mapRes] = await Promise.all([
+          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-users`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+            body: JSON.stringify({ orgId: currentOrg!.id }),
+          }),
+          supabase.from('user_slack_mappings').select('user_id, slack_user_id').eq('org_id', currentOrg!.id),
+        ])
+        if (cancelled) return
+        const usersData = await usersRes.json().catch(() => ({})) as { users?: { id: string; label: string; name: string; email: string | null }[] }
+        setSlackUsers(usersData.users ?? [])
+        const maps = (mapRes.data ?? []) as { user_id: string; slack_user_id: string }[]
+        setUserSlackMappings(maps)
+      } catch (_) {
+        if (!cancelled) setSlackUsers([])
+        if (!cancelled) setUserSlackMappings([])
+      } finally {
+        if (!cancelled) setSlackMappingLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [slackTab, currentOrg?.id])
 
   useEffect(() => {
     if (!currentOrg?.id || (!isOrgAdmin && !isPlatformAdmin)) {
@@ -1211,7 +1243,7 @@ export default function Admin() {
               <p className="text-gray-400 text-sm mb-4">Connect a custom Slack bot for real-time notifications and team collaboration.</p>
 
               <div className="flex gap-1 mb-6 border-b border-border">
-                {([['connection', 'Bot Configuration'], ['notifications', 'Notification Settings'], ['test', 'Channel Access Test']] as const).map(([id, label]) => (
+                {([['connection', 'Bot Configuration'], ['notifications', 'Notification Settings'], ['mapping', 'User mapping'], ['test', 'Channel Access Test']] as const).map(([id, label]) => (
                   <button key={id} type="button" onClick={() => setSlackTab(id)}
                     className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${slackTab === id ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
                     {label}
@@ -1327,6 +1359,76 @@ export default function Admin() {
                 </div>
               )}
 
+              {slackTab === 'mapping' && (
+                <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-4">
+                  <h3 className="text-sm font-medium text-white">Map users to Slack</h3>
+                  <p className="text-xs text-gray-500">Link workspace members to their Slack profiles. Used for @mentions and notifications. Only admins can edit.</p>
+                  {slackMappingLoading ? (
+                    <p className="text-sm text-gray-500">Loading…</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {members.length === 0 ? (
+                        <p className="text-sm text-gray-500">No workspace members. Add members in Users &amp; Roles.</p>
+                      ) : (
+                        <div className="rounded-lg border border-border overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-border text-left text-xs text-gray-500">
+                                <th className="px-3 py-2 font-medium">Member</th>
+                                <th className="px-3 py-2 font-medium">Slack user</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border">
+                              {members.map((m) => {
+                                const prof = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles
+                                const name = (prof as { display_name?: string | null; email?: string | null })?.display_name ?? (prof as { email?: string | null })?.email ?? m.user_id.slice(0, 8)
+                                const current = userSlackMappings.find((x) => x.user_id === m.user_id)?.slack_user_id ?? ''
+                                return (
+                                  <tr key={m.user_id}>
+                                    <td className="px-3 py-2 text-gray-200">{name}</td>
+                                    <td className="px-3 py-2">
+                                      <select
+                                        value={current}
+                                        onChange={async (e) => {
+                                          const slackUserId = e.target.value
+                                          if (!currentOrg?.id) return
+                                          if (slackUserId === '') {
+                                            await supabase.from('user_slack_mappings').delete().eq('org_id', currentOrg.id).eq('user_id', m.user_id)
+                                          } else {
+                                            await supabase.from('user_slack_mappings').upsert(
+                                              { org_id: currentOrg.id, user_id: m.user_id, slack_user_id: slackUserId },
+                                              { onConflict: 'org_id,user_id' }
+                                            )
+                                          }
+                                          setUserSlackMappings((prev) => {
+                                            const rest = prev.filter((x) => x.user_id !== m.user_id)
+                                            if (slackUserId === '') return rest
+                                            return [...rest, { user_id: m.user_id, slack_user_id: slackUserId }]
+                                          })
+                                        }}
+                                        className="w-full max-w-xs rounded border border-border bg-surface-muted px-2 py-1.5 text-gray-200 text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+                                      >
+                                        <option value="">— Not linked</option>
+                                        {slackUsers.map((u) => (
+                                          <option key={u.id} value={u.id}>{u.label}</option>
+                                        ))}
+                                      </select>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {members.length > 0 && slackUsers.length === 0 && !slackMappingLoading && (
+                        <p className="text-xs text-amber-500">Slack not configured or users.list failed. Complete Bot Configuration and try again.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {slackTab === 'test' && (
                 <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
                   <h3 className="text-sm font-medium text-white">Slack channel access test</h3>
@@ -1370,7 +1472,7 @@ export default function Admin() {
               )}
 
               {slackMessage && <p className={`text-sm mt-4 ${slackMessage.includes('Saved') ? 'text-accent' : 'text-red-400'}`}>{slackMessage}</p>}
-              {slackTab !== 'test' && (
+              {slackTab !== 'test' && slackTab !== 'mapping' && (
                 <button type="button" onClick={async () => {
                 if (!currentOrg?.id) return
                 if (!slackForm.bot_token.trim() || !slackForm.signing_secret.trim() || !slackForm.app_id.trim() || !slackForm.bot_user_id.trim() || !slackForm.client_id.trim() || !slackForm.client_secret.trim()) {

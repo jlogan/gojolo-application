@@ -19,10 +19,11 @@ Deno.serve(async (req: Request) => {
 
     const admin = createClient(supabaseUrl, serviceKey)
 
-    const { data: task, error: taskErr } = await admin.from('tasks').select('id, title, org_id').eq('id', taskId).single()
+    const { data: task, error: taskErr } = await admin.from('tasks').select('id, title, org_id, status, priority').eq('id', taskId).single()
     if (taskErr || !task) {
       return new Response(JSON.stringify({ error: 'Task not found' }), { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
+    const taskData = task as { id: string; title: string; org_id: string; status?: string; priority?: string }
 
     const { data: channelRow, error: chErr } = await admin
       .from('slack_project_channels')
@@ -50,16 +51,18 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true, skipped: 'Task comment notifications disabled' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
-    const taskTitle = (task.title || 'Task').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
+    const taskTitle = (taskData.title || 'Task').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
     const preview = (contentPreview ?? '').slice(0, 300).replace(/\[[^\]]*\]\([^)]+\)/g, '[attachment]').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
     const author = (authorName ?? 'Someone').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
     const taskUrl = `https://app.gojolo.io/projects/${projectId}/tasks/${taskId}`
     const now = new Date()
     const footerTs = now.toLocaleDateString('en-US', { day: 'numeric', month: 'short' }) + ' at ' + now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    const priority = (taskData.priority ?? '—').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
+    const status = (taskData.status ?? '—').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
 
     const payload = {
       channel: channelRow.channel_id,
-      text: `New comment on task: ${task.title || 'Task'}`,
+      text: `New comment on task: ${taskData.title || 'Task'}`,
       unfurl_links: false,
       attachments: [
         {
@@ -69,22 +72,24 @@ Deno.serve(async (req: Request) => {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: `*Task comment:* <${taskUrl}|${taskTitle}>`,
+                text: `*New comment on task:* <${taskUrl}|${taskTitle}>`,
               },
             },
             {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: `*Comment*\n${preview || '(no text)'}`,
+                text: preview || '(no text)',
               },
             },
             {
               type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: `*By*\n${author}`,
-              },
+              fields: [
+                { type: 'mrkdwn', text: `*Commented By*\n${author}` },
+                { type: 'mrkdwn', text: `*Priority*\n${priority}` },
+                { type: 'mrkdwn', text: `*Time*\n${footerTs}` },
+                { type: 'mrkdwn', text: `*Status*\n${status}` },
+              ],
             },
             {
               type: 'context',
