@@ -1,13 +1,24 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
+import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { ArrowLeft, Key, Mail } from 'lucide-react'
+import { ArrowLeft, Key, Mail, Bell } from 'lucide-react'
 
 type ProfileRow = { id: string; display_name: string | null; avatar_url: string | null }
 
+const NOTIFICATION_TYPES = [
+  { id: 'task_assigned', label: 'Task Assigned To You', description: 'When a task is assigned to you' },
+  { id: 'thread_assigned', label: 'Thread Assigned To You', description: 'When an inbox thread is assigned to you' },
+  { id: 'mentioned_in_thread', label: 'Mentioned In Thread Internal Comment', description: 'When someone @mentions you in an internal thread comment' },
+] as const
+
+type NotificationChannel = 'slack' | 'email' | 'both'
+
 export default function Profile() {
   const { user } = useAuth()
+  const { currentOrg } = useOrg()
+  const [profileTab, setProfileTab] = useState<'profile' | 'notifications'>('profile')
   const [displayName, setDisplayName] = useState('')
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileSaving, setProfileSaving] = useState(false)
@@ -17,6 +28,11 @@ export default function Profile() {
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null)
+
+  const [notificationPrefs, setNotificationPrefs] = useState<Record<string, NotificationChannel>>({})
+  const [notificationLoading, setNotificationLoading] = useState(false)
+  const [notificationSaving, setNotificationSaving] = useState(false)
+  const [notificationMessage, setNotificationMessage] = useState<string | null>(null)
 
   const email = user?.email ?? ''
   const provider = user?.app_metadata?.provider ?? 'email'
@@ -35,6 +51,46 @@ export default function Profile() {
         setProfileLoading(false)
       })
   }, [user?.id])
+
+  const loadNotificationPrefs = useCallback(async () => {
+    if (!user?.id || !currentOrg?.id) return
+    setNotificationLoading(true)
+    const { data } = await supabase
+      .from('user_notification_preferences')
+      .select('notification_type, channel')
+      .eq('user_id', user.id)
+      .eq('org_id', currentOrg.id)
+    const map: Record<string, NotificationChannel> = {}
+    ;(data ?? []).forEach((row: { notification_type: string; channel: string }) => {
+      map[row.notification_type] = row.channel as NotificationChannel
+    })
+    NOTIFICATION_TYPES.forEach(({ id }) => {
+      if (!(id in map)) map[id] = 'both'
+    })
+    setNotificationPrefs(map)
+    setNotificationLoading(false)
+  }, [user?.id, currentOrg?.id])
+
+  useEffect(() => {
+    if (profileTab === 'notifications' && currentOrg?.id) loadNotificationPrefs()
+  }, [profileTab, currentOrg?.id, loadNotificationPrefs])
+
+  const setNotificationChannel = async (notificationType: string, channel: NotificationChannel) => {
+    if (!user?.id || !currentOrg?.id) return
+    setNotificationSaving(true)
+    setNotificationMessage(null)
+    const { error } = await supabase.from('user_notification_preferences').upsert(
+      { user_id: user.id, org_id: currentOrg.id, notification_type: notificationType, channel, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,org_id,notification_type' }
+    )
+    setNotificationSaving(false)
+    if (error) setNotificationMessage(error.message)
+    else {
+      setNotificationPrefs((prev) => ({ ...prev, [notificationType]: channel }))
+      setNotificationMessage('Saved.')
+      setTimeout(() => setNotificationMessage(null), 2000)
+    }
+  }
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -87,8 +143,71 @@ export default function Profile() {
         Back
       </Link>
 
-      <h1 className="text-xl font-semibold text-white mb-6">Profile</h1>
+      <h1 className="text-xl font-semibold text-white mb-4">Profile</h1>
 
+      <div className="flex gap-1 mb-6 border-b border-border">
+        <button
+          type="button"
+          onClick={() => setProfileTab('profile')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${profileTab === 'profile' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
+          data-testid="profile-tab-profile"
+        >
+          Profile
+        </button>
+        <button
+          type="button"
+          onClick={() => setProfileTab('notifications')}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 ${profileTab === 'notifications' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
+          data-testid="profile-tab-notifications"
+        >
+          <Bell className="w-4 h-4" />
+          Notifications
+        </button>
+      </div>
+
+      {profileTab === 'notifications' && (
+        <section className="mb-8" data-testid="profile-notifications">
+          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Notification delivery</h2>
+          <p className="text-sm text-gray-400 mb-4">
+            Choose how you want to receive each type of notification for this workspace.
+          </p>
+          {!currentOrg?.id ? (
+            <p className="text-sm text-gray-500">Select a workspace to manage notification preferences.</p>
+          ) : notificationLoading ? (
+            <p className="text-sm text-gray-500">Loading…</p>
+          ) : (
+            <div className="rounded-lg border border-border bg-surface-elevated divide-y divide-border">
+              {NOTIFICATION_TYPES.map(({ id, label, description }) => (
+                <div key={id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-200">{label}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{description}</p>
+                  </div>
+                  <select
+                    value={notificationPrefs[id] ?? 'both'}
+                    onChange={(e) => setNotificationChannel(id, e.target.value as NotificationChannel)}
+                    disabled={notificationSaving}
+                    className="shrink-0 w-full sm:w-40 rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 disabled:opacity-50"
+                    data-testid={`notification-pref-${id}`}
+                  >
+                    <option value="slack">Slack</option>
+                    <option value="email">Email</option>
+                    <option value="both">Both</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          )}
+          {notificationMessage && (
+            <p className={`mt-3 text-sm ${notificationMessage.startsWith('Saved') ? 'text-accent' : 'text-red-400'}`}>
+              {notificationMessage}
+            </p>
+          )}
+        </section>
+      )}
+
+      {profileTab === 'profile' && (
+        <>
       {/* Account (read-only) */}
       <section className="mb-8">
         <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Account</h2>
@@ -187,6 +306,8 @@ export default function Profile() {
           </form>
         </div>
       </section>
+        </>
+      )}
     </div>
   )
 }

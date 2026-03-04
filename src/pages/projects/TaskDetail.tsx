@@ -297,24 +297,11 @@ export default function TaskDetail() {
     }
     const content = commentText.trim() + (fileUrl && fileName ? `\n\n📎 [${fileName}](${fileUrl})` : '')
     if (!content.trim()) return
-    const contentPreview = commentText.trim().slice(0, 200) + (fileName ? ' [attachment]' : '')
-    const authorDisplay = orgUsers.find(u => u.user_id === user?.id)?.display_name ?? user?.email ?? 'Someone'
     const { data: newComment } = await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content }).select('id').single()
     setCommentText('')
     setCommentFile(null)
     await fetchAll()
-    if (newComment && projectId) {
-      try {
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session?.access_token) {
-          await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/notify-task-comment`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-            body: JSON.stringify({ taskId, projectId, commentId: (newComment as { id: string }).id, contentPreview, authorName: authorDisplay }),
-          })
-        }
-      } catch (_) { /* ignore */ }
-    }
+    // Slack alert is sent by DB trigger (notify_slack_on_task_comment) on insert
   }
 
   const handleEditComment = (c: TaskComment) => {

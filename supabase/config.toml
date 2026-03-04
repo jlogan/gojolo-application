@@ -73,6 +73,10 @@ verify_jwt = false
 [functions.slack-users]
 verify_jwt = false
 
+# process-user-notification: invoked by DB trigger (pg_net) with x-internal-secret; processes notification_queue and sends Slack DM + Resend email.
+[functions.process-user-notification]
+verify_jwt = false
+
 # sync-profile-avatar: sync OAuth avatar image into Supabase Storage.
 [functions.sync-profile-avatar]
 verify_jwt = false

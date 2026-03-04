@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
@@ -149,40 +149,52 @@ export default function Admin() {
   const [slackUsers, setSlackUsers] = useState<{ id: string; label: string; name: string; email: string | null }[]>([])
   const [userSlackMappings, setUserSlackMappings] = useState<{ user_id: string; slack_user_id: string }[]>([])
   const [slackMappingLoading, setSlackMappingLoading] = useState(false)
+  const [slackMappingError, setSlackMappingError] = useState<string | null>(null)
+  const [orgTimezone, setOrgTimezone] = useState<string>('America/New_York')
+  const [orgTimezoneSaving, setOrgTimezoneSaving] = useState(false)
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
   useEffect(() => {
     if (section === 'imap') setImapView('list')
   }, [section])
 
+  const loadSlackUsersAndMappings = useCallback(async () => {
+    if (!currentOrg?.id) return
+    setSlackMappingLoading(true)
+    setSlackMappingError(null)
+    try {
+      const [usersRes, mapRes] = await Promise.all([
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-users`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+          body: JSON.stringify({ orgId: currentOrg.id }),
+        }),
+        supabase.from('user_slack_mappings').select('user_id, slack_user_id').eq('org_id', currentOrg.id),
+      ])
+      const usersData = await usersRes.json().catch(() => ({})) as { users?: { id: string; label: string; name: string; email: string | null }[]; error?: string }
+      const maps = (mapRes.data ?? []) as { user_id: string; slack_user_id: string }[]
+      setUserSlackMappings(maps)
+      if (!usersRes.ok || usersData.error) {
+        setSlackUsers([])
+        setSlackMappingError(usersData.error ?? `Request failed (${usersRes.status}). Deploy the slack-users Edge Function and ensure Bot Configuration is saved.`)
+      } else {
+        const list = usersData.users ?? []
+        setSlackUsers(list)
+        setSlackMappingError(list.length === 0 ? 'Slack returned no users. Add the users:read scope to your Slack app at api.slack.com.' : null)
+      }
+    } catch (e) {
+      setSlackUsers([])
+      setSlackMappingError((e as Error).message || 'Failed to load Slack users.')
+    } finally {
+      setSlackMappingLoading(false)
+    }
+  }, [currentOrg?.id])
+
   useEffect(() => {
     if (slackTab !== 'mapping' || !currentOrg?.id) return
-    let cancelled = false
-    setSlackMappingLoading(true)
-    ;(async () => {
-      try {
-        const [usersRes, mapRes] = await Promise.all([
-          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-users`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-            body: JSON.stringify({ orgId: currentOrg!.id }),
-          }),
-          supabase.from('user_slack_mappings').select('user_id, slack_user_id').eq('org_id', currentOrg!.id),
-        ])
-        if (cancelled) return
-        const usersData = await usersRes.json().catch(() => ({})) as { users?: { id: string; label: string; name: string; email: string | null }[] }
-        setSlackUsers(usersData.users ?? [])
-        const maps = (mapRes.data ?? []) as { user_id: string; slack_user_id: string }[]
-        setUserSlackMappings(maps)
-      } catch (_) {
-        if (!cancelled) setSlackUsers([])
-        if (!cancelled) setUserSlackMappings([])
-      } finally {
-        if (!cancelled) setSlackMappingLoading(false)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [slackTab, currentOrg?.id])
+    loadSlackUsersAndMappings()
+  }, [slackTab, currentOrg?.id, loadSlackUsersAndMappings])
 
   useEffect(() => {
     if (!currentOrg?.id || (!isOrgAdmin && !isPlatformAdmin)) {
@@ -241,6 +253,8 @@ export default function Admin() {
       }
       const { data: rpData } = await supabase.from('role_permissions').select('id, role_id, permission').order('permission')
       setRolePermissions((rpData as RolePermission[]) ?? [])
+      const { data: orgRow } = await supabase.from('organizations').select('timezone').eq('id', currentOrg.id).single()
+      setOrgTimezone(orgRow?.timezone && typeof orgRow.timezone === 'string' ? orgRow.timezone : 'America/New_York')
       setLoading(false)
     }
     load()
@@ -1298,7 +1312,7 @@ export default function Admin() {
                   </div>
                   <div className="rounded-lg border border-border bg-surface-muted/40 p-3 text-xs text-gray-400 space-y-1">
                     <p className="font-medium text-gray-300">Required Slack app bot scopes</p>
-                    <p>chat:write, conversations:read, app_mentions:read, channels:history, groups:history</p>
+                    <p>chat:write, conversations:read, users:read, app_mentions:read, channels:history, groups:history</p>
                   </div>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" checked={slackForm.is_active} onChange={e => setSlackForm(f => ({ ...f, is_active: e.target.checked }))}
@@ -1361,8 +1375,18 @@ export default function Admin() {
 
               {slackTab === 'mapping' && (
                 <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-4">
-                  <h3 className="text-sm font-medium text-white">Map users to Slack</h3>
-                  <p className="text-xs text-gray-500">Link workspace members to their Slack profiles. Used for @mentions and notifications. Only admins can edit.</p>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-medium text-white">Map users to Slack</h3>
+                      <p className="text-xs text-gray-500">Link workspace members to their Slack profiles. Used for @mentions and notifications. Only admins can edit.</p>
+                    </div>
+                    <button type="button" onClick={loadSlackUsersAndMappings} disabled={slackMappingLoading || !currentOrg?.id}
+                      className="px-3 py-1.5 rounded-lg border border-border bg-surface-muted text-gray-200 text-xs font-medium hover:bg-surface-muted/80 disabled:opacity-50 flex items-center gap-1">
+                      <RefreshCw className={`w-3.5 h-3.5 ${slackMappingLoading ? 'animate-spin' : ''}`} />
+                      {slackMappingLoading ? 'Loading…' : 'Refresh Slack users'}
+                    </button>
+                  </div>
+                  {slackMappingError && <p className="text-xs text-amber-500">{slackMappingError}</p>}
                   {slackMappingLoading ? (
                     <p className="text-sm text-gray-500">Loading…</p>
                   ) : (
@@ -1420,9 +1444,6 @@ export default function Admin() {
                             </tbody>
                           </table>
                         </div>
-                      )}
-                      {members.length > 0 && slackUsers.length === 0 && !slackMappingLoading && (
-                        <p className="text-xs text-amber-500">Slack not configured or users.list failed. Complete Bot Configuration and try again.</p>
                       )}
                     </div>
                   )}
@@ -1520,11 +1541,38 @@ export default function Admin() {
             <>
               <h2 className="text-xl font-semibold text-white mb-2">Organization settings</h2>
               <p className="text-gray-400 text-sm mb-6">
-                Workspace-level diagnostics and integration checks.
+                Workspace timezone is used for Slack notification timestamps and other dates.
               </p>
-              <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
-                <Settings className="w-10 h-10 text-gray-500 mx-auto mb-3" />
-                <p className="text-gray-400 text-sm">Organization settings (name, slug, etc.) are coming soon.</p>
+              <div className="rounded-lg border border-border bg-surface-elevated p-6 max-w-md">
+                <label className="block text-xs font-medium text-gray-500 mb-2">Workspace timezone</label>
+                <select value={orgTimezone} onChange={e => setOrgTimezone(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50">
+                  <option value="America/New_York">Eastern (EST/EDT)</option>
+                  <option value="America/Chicago">Central (CST/CDT)</option>
+                  <option value="America/Denver">Mountain (MST/MDT)</option>
+                  <option value="America/Los_Angeles">Pacific (PST/PDT)</option>
+                  <option value="America/Phoenix">Arizona (MST)</option>
+                  <option value="UTC">UTC</option>
+                  <option value="Europe/London">London (GMT/BST)</option>
+                  <option value="Europe/Paris">Central European (CET/CEST)</option>
+                  <option value="Asia/Tokyo">Tokyo (JST)</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-2">Used for times shown in Slack alerts (e.g. task comments, new emails).</p>
+                <button type="button" disabled={!currentOrg?.id || orgTimezoneSaving}
+                  onClick={async () => {
+                    if (!currentOrg?.id) return
+                    setOrgTimezoneSaving(true)
+                    setSettingsMessage(null)
+                    const { error } = await supabase.from('organizations').update({ timezone: orgTimezone }).eq('id', currentOrg.id)
+                    setOrgTimezoneSaving(false)
+                    if (error) setSettingsMessage(error.message)
+                    else setSettingsMessage('Timezone saved.')
+                    setTimeout(() => setSettingsMessage(null), 3000)
+                  }}
+                  className="mt-4 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                  {orgTimezoneSaving ? 'Saving…' : 'Save timezone'}
+                </button>
+                {settingsMessage && <p className={`mt-2 text-sm ${settingsMessage.includes('saved') ? 'text-accent' : 'text-red-400'}`}>{settingsMessage}</p>}
               </div>
             </>
           )}
