@@ -1150,7 +1150,7 @@ export default function Inbox() {
                             return (
                               <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
                                 <iframe title="Email" srcDoc={srcDoc}
-                                  className="w-full border-0 rounded-b" sandbox="allow-same-origin"
+                                  className="w-full border-0 rounded-b" sandbox="allow-same-origin allow-popups allow-top-navigation-by-user-activation"
                                   onLoad={e => { const f = e.target as HTMLIFrameElement; if (f.contentDocument?.body) { f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px' } }}
                                   style={{ minHeight: '80px', background: isDark ? '#0f0f0f' : '#fff' }} />
                               </div>
