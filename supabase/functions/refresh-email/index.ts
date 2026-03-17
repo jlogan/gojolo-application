@@ -1,6 +1,6 @@
 // Public endpoint: for a given IMAP account email, fetches new messages after last_fetched_uid
 // and stores them in inbox_threads + inbox_messages (same logic as imap-sync, inlined).
-// No user auth. Security: optional REFRESH_EMAIL_SECRET (Bearer or x-refresh-secret), per-email rate limit.
+// No user auth. Security: optional REFRESH_EMAIL_SECRET (Bearer or x-refresh-secret).
 // Requires: ENCRYPTION_KEY, SUPABASE_SERVICE_ROLE_KEY.
 // Optional: REFRESH_EMAIL_SECRET — if set, requests must send Authorization: Bearer <secret> or x-refresh-secret: <secret>.
 // Deploy with: supabase functions deploy refresh-email --no-verify-jwt
@@ -14,10 +14,6 @@ const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const encryptionKeyHex = Deno.env.get('ENCRYPTION_KEY')
 const refreshSecret = Deno.env.get('REFRESH_EMAIL_SECRET') ?? ''
-
-// Per-email rate limit: 1 request per 60 seconds (in-memory, resets on cold start).
-const RATE_LIMIT_MS = 60_000
-const lastRequestByEmail = new Map<string, number>()
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -117,15 +113,6 @@ Deno.serve(async (req: Request) => {
     console.log('[refresh-email] invalid or missing email')
     return jsonRes({ status: 'error' }, 400)
   }
-
-  // Per-email rate limit.
-  const now = Date.now()
-  const last = lastRequestByEmail.get(email) ?? 0
-  if (now - last < RATE_LIMIT_MS) {
-    console.log('[refresh-email] rate limited for email')
-    return jsonRes({ status: 'error' }, 429)
-  }
-  lastRequestByEmail.set(email, now)
 
   console.log('[refresh-email] checking email for', email)
 
