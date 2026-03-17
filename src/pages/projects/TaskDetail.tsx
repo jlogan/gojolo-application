@@ -297,7 +297,7 @@ export default function TaskDetail() {
     }
     const content = commentText.trim() + (fileUrl && fileName ? `\n\n📎 [${fileName}](${fileUrl})` : '')
     if (!content.trim()) return
-    const { data: newComment } = await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content }).select('id').single()
+    await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content }).select('id').single()
     setCommentText('')
     setCommentFile(null)
     await fetchAll()
