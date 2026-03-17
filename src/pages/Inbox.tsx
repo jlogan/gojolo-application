@@ -694,6 +694,39 @@ export default function Inbox() {
     return selectedAccountId
   }
 
+  // Collect all unique addresses in the thread (from, to, cc) excluding our own; for Reply All
+  const getThreadRecipientsForReplyAll = (anchorMessage: InboxMessage | null): { to: string; cc: string } => {
+    const ourEmails = new Set<string>()
+    const acc = imapAccounts.find((a) => a.id === selectedAccountId)
+    if (acc) {
+      ourEmails.add(acc.email.trim().toLowerCase())
+      for (const a of acc.addresses ?? []) {
+        ourEmails.add(a.trim().toLowerCase())
+      }
+    }
+    const parseAddresses = (s: string | null): string[] => {
+      if (!s?.trim()) return []
+      return s
+        .split(/[,;]/)
+        .map((e) => e.replace(/^.*<([^>]+)>$/, '$1').trim().toLowerCase())
+        .filter(Boolean)
+    }
+    const set = new Set<string>()
+    for (const m of messages) {
+      const from = parseAddresses(m.from_identifier)[0]
+      if (from) set.add(from)
+      for (const a of parseAddresses(m.to_identifier)) set.add(a)
+      for (const a of parseAddresses(m.cc)) set.add(a)
+    }
+    ourEmails.forEach((e) => set.delete(e))
+    const lastInbound = messages.filter((m) => m.direction === 'inbound').pop()
+    const primary = anchorMessage
+      ? (parseAddresses(anchorMessage.from_identifier)[0] ?? '')
+      : (lastInbound && parseAddresses(lastInbound.from_identifier)[0]) ?? ''
+    const rest = [...set].filter((e) => e && e !== primary)
+    return { to: primary, cc: rest.join(', ') }
+  }
+
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
     setReplyAnchorMsgId(null)
     if (mode === 'compose') {
@@ -701,10 +734,18 @@ export default function Inbox() {
     } else if (selectedThread && messages.length > 0) {
       const last = messages.filter(m => m.direction === 'inbound').pop() ?? messages[messages.length - 1]
       setSelectedAccountId(findFromAccount(last.to_identifier, last.cc))
-      setReplyTo(mode === 'forward' ? '' : last.from_identifier)
-      setReplyCc(mode === 'reply_all' ? (last.cc ?? '') : '')
+      if (mode === 'reply_all') {
+        const { to, cc } = getThreadRecipientsForReplyAll(null)
+        setReplyTo(to)
+        setReplyCc(cc)
+        setShowCcBcc(!!cc.trim())
+      } else {
+        setReplyTo(mode === 'forward' ? '' : last.from_identifier)
+        setReplyCc('')
+        setReplyBcc('')
+        setShowCcBcc(false)
+      }
       setReplyBcc('')
-      setShowCcBcc(mode === 'reply_all' && !!(last.cc))
       const prefix = mode === 'forward' ? 'Fwd: ' : 'Re: '
       const subj = selectedThread.subject ?? ''
       setReplySubject(subj.startsWith(prefix) ? subj : prefix + subj)
@@ -1201,10 +1242,11 @@ export default function Inbox() {
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Reply All" onClick={(e) => { e.stopPropagation()
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
-                                setReplyTo(m.from_identifier)
-                                setReplyCc(m.cc ?? '')
+                                const { to, cc } = getThreadRecipientsForReplyAll(m)
+                                setReplyTo(to)
+                                setReplyCc(cc)
                                 setReplyBcc('')
-                                setShowCcBcc(!!(m.cc))
+                                setShowCcBcc(!!cc.trim())
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
                                 setReplyHtml(''); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>

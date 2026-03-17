@@ -137,22 +137,43 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
   }
 
   const service = createClient(supabaseUrl, serviceKey)
-  console.log('[refresh-email] querying imap_accounts for email (is_active=true)')
+  const emailNorm = email.trim().toLowerCase()
+  console.log('[refresh-email] querying imap_accounts for email (is_active=true)', { email: emailNorm })
 
-  const { data: accounts, error: accountsError } = await service
-    .from('imap_accounts')
-    .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid')
-    .eq('is_active', true)
-    .ilike('email', email)
-    .limit(1)
+  const cols = 'id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid'
+  const base = () => service.from('imap_accounts').select(cols).eq('is_active', true)
+
+  // 1) Match by primary email, then by imap_username
+  let { data: accounts, error: accountsError } = await base().ilike('email', emailNorm).limit(1)
+  if (!accounts?.length && !accountsError) {
+    const byUsername = await base().ilike('imap_username', emailNorm).limit(1)
+    accounts = byUsername.data ?? []
+    accountsError = byUsername.error ?? accountsError
+  }
 
   if (accountsError) {
     console.log('[refresh-email] imap_accounts query error:', accountsError.message)
     console.log('[refresh-email] found 0 emails')
     return jsonRes({ status: 'error' }, 200)
   }
+
+  // 2) If not found, check if the requested email is an alias (addresses array) of any account
   if (!accounts?.length) {
-    console.log('[refresh-email] no active imap_account found for this email')
+    console.log('[refresh-email] no account by email/imap_username, checking aliases (addresses)')
+    const aliasRes = await base().contains('addresses', [emailNorm]).limit(1)
+    if (aliasRes.error) {
+      console.log('[refresh-email] imap_accounts alias query error:', aliasRes.error.message)
+      console.log('[refresh-email] found 0 emails')
+      return jsonRes({ status: 'error' }, 200)
+    }
+    accounts = aliasRes.data ?? []
+    if (accounts.length) {
+      console.log('[refresh-email] found account by alias:', emailNorm)
+    }
+  }
+
+  if (!accounts?.length) {
+    console.log('[refresh-email] no active imap_account found for this email or alias')
     console.log('[refresh-email] found 0 emails')
     return jsonRes({ status: 'error' }, 200)
   }
@@ -179,6 +200,11 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
     port,
     secure,
     auth: { user: acc.imap_username, pass: password },
+  })
+
+  // Prevent ECONNRESET / connection errors from becoming uncaught exceptions
+  client.on('error', (err: Error) => {
+    console.log('[refresh-email] IMAP client error (connection/reset):', err?.message ?? String(err))
   })
 
   try {
