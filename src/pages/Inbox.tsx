@@ -90,6 +90,11 @@ export default function Inbox() {
   const [threads, setThreads] = useState<InboxThread[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(urlThreadId ?? null)
 
+  // Keep selectedThreadId in sync with URL (direct load, back/forward, link navigation)
+  useEffect(() => {
+    setSelectedThreadId(urlThreadId ?? null)
+  }, [urlThreadId])
+
   // If opened via direct URL, use "all" filter so the thread is always visible
   const [filter_init] = useState(() => urlThreadId ? 'all' as InboxFilter : 'inbox' as InboxFilter)
   useEffect(() => { if (urlThreadId) setFilter(filter_init) }, [])
@@ -164,7 +169,7 @@ export default function Inbox() {
   const cleanMessageBody = (msg: InboxMessage): { html: boolean; content: string } => {
     if (msg.html_body) return { html: true, content: msg.html_body }
     const body = msg.body
-    if (!body?.trim()) return { html: false, content: '—' }
+    if (!body?.trim()) return { html: false, content: 'Downloading message...' }
     const raw = body.trim()
     const bm = raw.match(/boundary="?([^"\s;]+)"?/i)
     if (bm?.[1]) {
@@ -226,12 +231,55 @@ export default function Inbox() {
     setLoading(false)
   }, [currentOrg?.id, filter, userId])
 
+  const fetchAttachments = useCallback(async (tid: string) => {
+    const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
+    setAttachments((data as Attachment[]) ?? [])
+  }, [])
+
   const fetchMessages = useCallback(async (tid: string) => {
     setMessagesLoading(true)
-    const { data } = await supabase.from('inbox_messages')
+    let msgs: InboxMessage[] = []
+    const { data, error: queryError } = await supabase.from('inbox_messages')
       .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
       .eq('thread_id', tid).order('received_at', { ascending: true })
-    const msgs = (data as InboxMessage[]) ?? []
+    msgs = (data as InboxMessage[]) ?? []
+    if (queryError) {
+      console.error('[Inbox] inbox_messages query failed:', queryError.message, queryError)
+    }
+
+    // If thread has no messages, trigger sync for this thread's IMAP account then re-fetch
+    if (msgs.length === 0) {
+      const { data: threadRow } = await supabase.from('inbox_threads')
+        .select('org_id, imap_account_id')
+        .eq('id', tid)
+        .single()
+      const thread = threadRow as { org_id: string; imap_account_id: string | null } | null
+      if (thread?.imap_account_id && thread?.org_id) {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session?.access_token) {
+          try {
+            const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-sync`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${session.access_token}`,
+                apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+              },
+              body: JSON.stringify({ orgId: thread.org_id, accountId: thread.imap_account_id, backfillForThread: tid }),
+            })
+            if (res.ok) {
+              const { data: dataAfter } = await supabase.from('inbox_messages')
+                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
+                .eq('thread_id', tid).order('received_at', { ascending: true })
+              msgs = (dataAfter as InboxMessage[]) ?? []
+            }
+          } catch {
+            // ignore sync failure, keep msgs empty
+          }
+        }
+      }
+    }
+
     setMessages(msgs)
     setMessagesLoading(false)
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
@@ -241,30 +289,57 @@ export default function Inbox() {
       await supabase.from('inbox_thread_reads').upsert({ thread_id: tid, user_id: userId, last_read_at: new Date().toISOString() }, { onConflict: 'thread_id,user_id' })
     }
 
-    // Lazy-load bodies for messages that haven't been fetched yet
-    const needBody = msgs.filter(m => m.body === null && m.html_body === null && m.direction === 'inbound')
-    if (needBody.length > 0) {
-      console.log(`[Inbox] Lazy-loading body for ${needBody.length} message(s)`)
+    // Fetch bodies for all messages in thread (returns from DB when present, else fetches from IMAP)
+    if (msgs.length > 0) {
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) return
-
-      for (const m of needBody) {
+      if (session?.access_token) {
         try {
-          const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-fetch-body`, {
+          const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-thread-bodies`
+          console.log('[Inbox] Calling fetch-thread-bodies', { threadId: tid, messageCount: msgs.length })
+          const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-            body: JSON.stringify({ messageId: m.id }),
+            body: JSON.stringify({ threadId: tid }),
           })
           const result = await res.json().catch(() => ({}))
-          if (result.body || result.htmlBody) {
-            setMessages(prev => prev.map(pm => pm.id === m.id ? { ...pm, body: result.body ?? pm.body, html_body: result.htmlBody ?? pm.html_body } : pm))
+          console.log('[Inbox] fetch-thread-bodies response', { status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
+          if (result.messages?.length) {
+            if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
+            const bodyMap = new Map(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
+            setMessages(prev => {
+              const merged = prev.map(pm => {
+                const b = bodyMap.get(pm.id)
+                return b ? { ...pm, body: b.body ?? pm.body, html_body: b.html_body ?? pm.html_body } : pm
+              })
+              return merged.sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
+            })
+            fetchAttachments(tid)
+            if (result.hasMore) {
+              const retry = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }, body: JSON.stringify({ threadId: tid }) })
+                .then(r => r.json().catch(() => ({})))
+                .then(r => {
+                  if (selectedThreadIdRef.current !== tid) return // user switched thread, cancel retries
+                  if (r.messages?.length) {
+                    const m = new Map(r.messages.map((x: { id: string; body: string | null; htmlBody: string | null }) => [x.id, { body: x.body, html_body: x.htmlBody }]))
+                    setMessages(prev2 => prev2.map(p => m.has(p.id) ? { ...p, body: m.get(p.id)!.body ?? p.body, html_body: m.get(p.id)!.html_body ?? p.html_body } : p).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
+                    fetchAttachments(tid)
+                    if (r.hasMore) setTimeout(retry, 800)
+                  }
+                })
+                .catch(() => {})
+              setTimeout(retry, 800)
+            }
           }
         } catch (err) {
-          console.error(`[Inbox] Failed to lazy-load body for ${m.id}:`, err)
+          console.error('[Inbox] Failed to fetch thread bodies:', err)
         }
+      } else {
+        console.log('[Inbox] Skipping fetch-thread-bodies: no session/access_token')
       }
+    } else {
+      console.log('[Inbox] Skipping fetch-thread-bodies: no messages', { threadId: tid })
     }
-  }, [userId])
+  }, [userId, fetchAttachments])
 
   const fetchComments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
@@ -285,11 +360,6 @@ export default function Inbox() {
       const c = Array.isArray(r.contacts) ? r.contacts[0] : r.contacts
       return { contact_id: r.contact_id, name: c?.name ?? '', email: c?.email ?? null }
     }))
-  }, [])
-
-  const fetchAttachments = useCallback(async (tid: string) => {
-    const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
-    setAttachments((data as Attachment[]) ?? [])
   }, [])
 
   // Load inbox users, accounts, all contacts, read statuses
@@ -364,7 +434,6 @@ export default function Inbox() {
         event: '*', schema: 'public', table: 'inbox_threads',
         filter: `org_id=eq.${currentOrg.id}`,
       }, (payload) => {
-        console.log('[Inbox RT] Thread change:', payload.eventType)
         fetchThreadsRef.current()
         const changedId = (payload.new as { id?: string })?.id
         if (changedId && changedId === selectedThreadIdRef.current) {
@@ -375,7 +444,6 @@ export default function Inbox() {
         event: 'INSERT', schema: 'public', table: 'inbox_messages',
       }, (payload) => {
         const tid = (payload.new as { thread_id: string }).thread_id
-        console.log('[Inbox RT] New message in thread:', tid)
         if (tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current)
         }
@@ -389,7 +457,6 @@ export default function Inbox() {
         }
       })
       .subscribe((status) => {
-        console.log('[Inbox RT] Status:', status)
         setRealtimeConnected(status === 'SUBSCRIBED')
       })
 
@@ -408,7 +475,9 @@ export default function Inbox() {
   }, [fetchThreads, realtimeConnected])
 
   useEffect(() => {
-    if (!selectedThreadId) { setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); setExpandedMsgs(new Set()); return }
+    if (!selectedThreadId) {
+      setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); setExpandedMsgs(new Set()); return
+    }
     setExpandedMsgs(new Set()) // Reset accordion on thread change
     fetchMessages(selectedThreadId); fetchComments(selectedThreadId); fetchThreadContacts(selectedThreadId); fetchAttachments(selectedThreadId)
     supabase.rpc('match_thread_contacts', { p_thread_id: selectedThreadId }).then(() => fetchThreadContacts(selectedThreadId))

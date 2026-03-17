@@ -88,7 +88,7 @@ try {
     root.render(
       <StrictMode>
         <AppErrorBoundary>
-          <BrowserRouter>
+          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
             <AuthProvider>
               <OrgProvider>
                 <App />

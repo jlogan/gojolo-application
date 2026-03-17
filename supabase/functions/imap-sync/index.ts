@@ -39,6 +39,8 @@ interface SyncBody {
   accountId?: string
   /** When true, re-fetch recent messages and update their bodies (proper MIME parsing). Use with accountId. */
   resync?: boolean
+  /** When set, fetch older messages from IMAP to backfill a thread that has 0 messages. Use with orgId + accountId or ensure accountId matches the thread's account. */
+  backfillForThread?: string
 }
 
 interface ImapAccountRow {
@@ -123,11 +125,14 @@ function normalizeMessageId(id: string | null): string | null {
 }
 
 serve(async (req) => {
+  console.log('[imap-sync] request method:', req.method)
+
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: cors() })
   }
 
   if (req.method !== 'POST') {
+    console.log('[imap-sync] rejected: method not allowed')
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
       status: 200,
       headers: { ...cors(), 'Content-Type': 'application/json' },
@@ -142,12 +147,14 @@ serve(async (req) => {
   } catch {
     // empty body for cron is ok
   }
+  console.log('[imap-sync] body:', { orgId: body.orgId ?? null, accountId: body.accountId ?? null, resync: body.resync ?? false }, 'isCron:', isCron)
 
   const service = createClient(supabaseUrl, serviceKey)
 
   if (!isCron) {
     const auth = req.headers.get('Authorization')
     if (!auth) {
+      console.log('[imap-sync] no Authorization header — Unauthorized')
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 200,
         headers: { ...cors(), 'Content-Type': 'application/json' },
@@ -159,11 +166,13 @@ serve(async (req) => {
       })
       const { data: isAdmin } = await userClient.rpc('is_org_admin', { p_org_id: body.orgId })
       if (!isAdmin) {
+        console.log('[imap-sync] caller is not org admin for org', body.orgId, '— Forbidden')
         return new Response(JSON.stringify({ error: 'Forbidden: not an org admin' }), {
           status: 200,
           headers: { ...cors(), 'Content-Type': 'application/json' },
         })
       }
+      console.log('[imap-sync] auth ok, org admin for', body.orgId)
     }
   }
 
@@ -179,19 +188,34 @@ serve(async (req) => {
 
   const { data: accounts, error: accountsError } = await accountsQuery
 
-  if (accountsError || !accounts?.length) {
+  if (accountsError) {
+    console.log('[imap-sync] accounts query error:', accountsError.message)
     return new Response(
       JSON.stringify({
         synced: 0,
         threadsCreated: 0,
         messagesInserted: 0,
-        errors: accountsError ? [accountsError.message] : ['No active accounts to sync'],
+        errors: [accountsError.message],
       }),
       { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
     )
   }
+  if (!accounts?.length) {
+    console.log('[imap-sync] no active accounts to sync (filter: orgId=%s accountId=%s)', body.orgId ?? 'all', body.accountId ?? 'all')
+    return new Response(
+      JSON.stringify({
+        synced: 0,
+        threadsCreated: 0,
+        messagesInserted: 0,
+        errors: ['No active accounts to sync'],
+      }),
+      { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
+    )
+  }
+  console.log('[imap-sync] syncing', accounts.length, 'account(s):', (accounts as ImapAccountRow[]).map(a => ({ id: a.id, host: a.host })))
 
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
+    console.log('[imap-sync] ENCRYPTION_KEY missing or too short')
     return new Response(
       JSON.stringify({ error: 'ENCRYPTION_KEY not configured', synced: 0, threadsCreated: 0, messagesInserted: 0 }),
       { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
@@ -204,10 +228,12 @@ serve(async (req) => {
   const errors: string[] = []
 
   for (const acc of accounts as ImapAccountRow[]) {
+    console.log('[imap-sync] account', acc.id, 'host=', acc.host, 'last_fetched_uid=', acc.last_fetched_uid)
     let password: string
     try {
       password = await decrypt(acc.credentials_encrypted, encryptionKeyHex.slice(0, 64))
     } catch {
+      console.log('[imap-sync] account', acc.id, 'decrypt failed')
       errors.push(`${acc.imap_username}: failed to decrypt credentials`)
       await service
         .from('imap_accounts')
@@ -227,19 +253,126 @@ serve(async (req) => {
 
     try {
       await client.connect()
+      console.log('[imap-sync] account', acc.id, 'IMAP connected')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      console.log('[imap-sync] account', acc.id, 'IMAP connect failed:', msg)
       errors.push(`${acc.imap_username}: ${msg}`)
       await service.from('imap_accounts').update({ last_error: msg }).eq('id', acc.id)
       continue
     }
 
     const mailboxPath = getMailboxPath(acc.host)
+    console.log('[imap-sync] account', acc.id, 'mailbox path:', mailboxPath)
     let lock: { release: () => Promise<void> } | null = null
 
     try {
       lock = await client.getMailboxLock(mailboxPath)
       const lastUid = acc.last_fetched_uid ?? 0
+      console.log('[imap-sync] account', acc.id, 'lastUid=', lastUid)
+
+      // Backfill for empty thread: fetch older messages that might belong to the thread
+      const backfillThreadId = body.backfillForThread
+      if (backfillThreadId) {
+        const { data: threadRow } = await service.from('inbox_threads')
+          .select('id, subject, from_address, imap_account_id')
+          .eq('id', backfillThreadId)
+          .single()
+        const bt = threadRow as { id: string; subject: string | null; from_address: string | null; imap_account_id: string | null } | null
+        if (bt?.imap_account_id === acc.id) {
+          const { count } = await service.from('inbox_messages').select('id', { count: 'exact', head: true }).eq('thread_id', backfillThreadId)
+          if ((count ?? 0) === 0) {
+            const threadSubjectNorm = (bt.subject ?? '').replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+            const threadFromNorm = (bt.from_address ?? '').trim().toLowerCase()
+            const hasSubject = threadSubjectNorm && threadSubjectNorm !== '(no subject)'
+            const hasFrom = !!threadFromNorm
+
+            // Extract distinctive tokens for fuzzy match (e.g. room_xxx@email.upwork.com, long hex IDs)
+            const tokens: string[] = []
+            if (threadFromNorm) tokens.push(threadFromNorm)
+            const roomMatch = (threadSubjectNorm + ' ' + threadFromNorm).match(/room_[a-f0-9]{20,}[^\s]*/gi)
+            if (roomMatch) tokens.push(...roomMatch.map((t) => t.toLowerCase().replace(/@$/, '')))
+            const longIdMatch = (threadSubjectNorm + ' ' + threadFromNorm).match(/[a-f0-9]{24,}/g)
+            if (longIdMatch) tokens.push(...longIdMatch.map((t) => t.toLowerCase()))
+            const uniqueTokens = [...new Set(tokens)].filter((t) => t.length >= 20)
+
+            let backfillStart: number
+            let backfillEnd: number
+            if (lastUid >= 1) {
+              backfillStart = Math.max(1, lastUid - 2000)
+              backfillEnd = lastUid
+            } else {
+              const status = await client.status(mailboxPath, { uidNext: true })
+              const uidNext = (status?.uidNext as number) ?? 1
+              backfillStart = 1
+              backfillEnd = Math.max(1, Math.min(500, uidNext - 1))
+            }
+            const backfillRange = `${backfillStart}:${backfillEnd}`
+            console.log('[imap-sync] backfill for thread', backfillThreadId, 'subject:', threadSubjectNorm || '(empty)', 'from:', threadFromNorm || '(empty)', 'tokens:', uniqueTokens.slice(0, 5), 'range', backfillRange)
+            try {
+              const backfillEnvelopes = await client.fetchAll(backfillRange, { envelope: true, headers: ['message-id', 'in-reply-to', 'references'], uid: true }, { uid: true })
+              const existingUids = new Set<number>()
+              const { data: existingRows } = await service.from('inbox_messages').select('external_uid').eq('imap_account_id', acc.id).in('external_uid', backfillEnvelopes.map((e) => e.uid as number))
+              for (const r of (existingRows ?? []) as { external_uid: number }[]) existingUids.add(r.external_uid)
+
+              const insertRows: Record<string, unknown>[] = []
+              const maxFromOnly = 30
+              const maxTokenOnly = 50 // when matching by token only (e.g. room_xxx)
+              for (const envMsg of backfillEnvelopes) {
+                const uid = envMsg.uid as number
+                if (existingUids.has(uid)) continue
+                const envelope = envMsg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
+                const fromAddr = envelope?.from?.[0]?.address ?? ''
+                const fromNorm = fromAddr.trim().toLowerCase()
+                const msgSubject = envelope?.subject ?? ''
+                const msgSubjectNorm = msgSubject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+                const msgText = (msgSubjectNorm + ' ' + fromNorm).toLowerCase()
+
+                const matchesSubject = hasSubject && msgSubjectNorm && (msgSubjectNorm === threadSubjectNorm || msgSubjectNorm.includes(threadSubjectNorm) || threadSubjectNorm.includes(msgSubjectNorm))
+                const matchesFromExact = hasFrom && fromNorm === threadFromNorm
+                const matchesToken = uniqueTokens.length > 0 && uniqueTokens.some((tok) => msgText.includes(tok))
+                const matchesFromOnly = !matchesSubject && !matchesToken && matchesFromExact
+                const matchesTokenOnly = !matchesSubject && !matchesFromExact && matchesToken
+                if (matchesFromOnly && insertRows.length >= maxFromOnly) continue
+                if (matchesTokenOnly && insertRows.length >= maxTokenOnly) continue
+                const matchesFrom = matchesSubject || matchesFromOnly || matchesToken
+
+                if (!matchesFrom) continue
+
+                const toAddr = envelope?.to?.[0]?.address ?? ''
+                const date = envelope?.date ? new Date(envelope.date) : new Date()
+                insertRows.push({
+                  thread_id: backfillThreadId, channel: 'email', direction: 'inbound',
+                  from_identifier: fromAddr, to_identifier: toAddr, cc: null, bcc: null,
+                  body: null, html_body: null, external_id: `uid-${acc.id}-${uid}`, external_uid: uid,
+                  imap_account_id: acc.id, received_at: date.toISOString(),
+                })
+                existingUids.add(uid)
+              }
+              if (insertRows.length > 0) {
+                const { error: insErr, count: insCount } = await service.from('inbox_messages').insert(insertRows, { count: 'exact' })
+                if (!insErr) {
+                  totalMessages += insCount ?? insertRows.length
+                  console.log('[imap-sync] backfill inserted', insCount ?? insertRows.length, 'messages for thread', backfillThreadId)
+                  // Use latest message's received_at, not now() — preserves thread order in list
+                  const latestReceived = insertRows.reduce((max, r) => {
+                    const t = new Date((r.received_at as string) ?? 0).getTime()
+                    return t > max ? t : max
+                  }, 0)
+                  const lastMsgAt = latestReceived > 0 ? new Date(latestReceived).toISOString() : new Date().toISOString()
+                  await service.from('inbox_threads').update({ last_message_at: lastMsgAt, updated_at: lastMsgAt }).eq('id', backfillThreadId)
+                }
+              } else {
+                console.log('[imap-sync] backfill found no matching messages in range', backfillRange)
+              }
+            } catch (backfillErr) {
+              const msg = backfillErr instanceof Error ? backfillErr.message : String(backfillErr)
+              console.log('[imap-sync] backfill error:', msg)
+              errors.push(`backfill ${backfillThreadId}: ${msg}`)
+            }
+          }
+        }
+      }
 
       // Resync: re-fetch recent messages and update bodies with proper MIME parsing (PostalMime).
       const doResync = body.resync === true && body.accountId === acc.id && lastUid >= 1
@@ -286,22 +419,47 @@ serve(async (req) => {
 
       let range: string
       if (lastUid > 0) {
-        range = `${lastUid + 1}:*`
+        // Use lastUid:* (inclusive) so Gmail/IMAP edge cases don't miss messages at the boundary
+        range = `${lastUid}:*`
       } else {
         const status = await client.status(mailboxPath, { uidNext: true })
         const uidNext = (status?.uidNext as number) ?? 1
         const start = Math.max(1, uidNext - 199)
         range = `${start}:*`
       }
+      console.log('[imap-sync] account', acc.id, 'fetch range:', range)
 
       // Fetch headers only — no body/source download
       const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc'], uid: true }, { uid: true })
 
-      const newMsgs = envelopes
-        .filter((m) => (m.uid as number) > lastUid)
+      let newMsgs = envelopes
+        .filter((m) => {
+          const uid = Number(m.uid)
+          if (Number.isNaN(uid)) return false
+          return uid > lastUid
+        })
         .sort((a, b) => (a.uid as number) - (b.uid as number))
 
+      // Boundary recovery: if we fetched uid=lastUid but excluded it, check if it's actually in DB; if not, include it
+      if (envelopes.length > 0 && newMsgs.length === 0 && lastUid >= 1) {
+        const atBoundary = envelopes.filter((m) => (m.uid as number) === lastUid)
+        if (atBoundary.length > 0) {
+          const { data: existing } = await service.from('inbox_messages').select('id').eq('imap_account_id', acc.id).eq('external_uid', lastUid).limit(1)
+          if (!existing?.length) {
+            newMsgs = atBoundary.sort((a, b) => (a.uid as number) - (b.uid as number))
+            console.log('[imap-sync] account', acc.id, 'boundary recovery: uid', lastUid, 'not in DB, including')
+          } else {
+            console.log('[imap-sync] account', acc.id, 'envelope UIDs:', envelopes.map(m => m.uid), 'lastUid=', lastUid)
+          }
+        } else {
+          console.log('[imap-sync] account', acc.id, 'envelope UIDs:', envelopes.map(m => m.uid), 'lastUid=', lastUid)
+        }
+      }
+
+      console.log('[imap-sync] account', acc.id, 'envelopes=', envelopes.length, 'newMsgs=', newMsgs.length)
+
       if (newMsgs.length === 0) {
+        console.log('[imap-sync] account', acc.id, 'no new messages — updating last_fetch_at only')
         // Nothing new — skip all processing
         await service.from('imap_accounts').update({ last_fetch_at: new Date().toISOString(), last_error: null }).eq('id', acc.id)
         if (lock) await lock.release()
@@ -413,8 +571,13 @@ serve(async (req) => {
       if (insertRows.length > 0) {
         const { error: batchErr, count } = await service.from('inbox_messages')
           .insert(insertRows, { count: 'exact' })
-        if (batchErr) errors.push(`${acc.imap_username}: batch insert: ${batchErr.message}`)
-        else messagesInserted = count ?? insertRows.length
+        if (batchErr) {
+          console.log('[imap-sync] account', acc.id, 'batch insert error:', batchErr.message)
+          errors.push(`${acc.imap_username}: batch insert: ${batchErr.message}`)
+        } else {
+          messagesInserted = count ?? insertRows.length
+          console.log('[imap-sync] account', acc.id, 'inserted threads=', threadsCreated, 'messages=', messagesInserted)
+        }
       }
 
       await service
@@ -425,6 +588,7 @@ serve(async (req) => {
           last_error: null,
         })
         .eq('id', acc.id)
+      console.log('[imap-sync] account', acc.id, 'updated last_fetched_uid=', highestUid)
 
       totalThreads += threadsCreated
       totalMessages += messagesInserted
@@ -545,6 +709,7 @@ serve(async (req) => {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      console.log('[imap-sync] account', acc.id, 'error:', msg)
       errors.push(`${acc.imap_username}: ${msg}`)
       await service.from('imap_accounts').update({ last_error: msg }).eq('id', acc.id)
     } finally {
@@ -557,14 +722,16 @@ serve(async (req) => {
     }
   }
 
+  const result = {
+    synced: (accounts as ImapAccountRow[]).length,
+    threadsCreated: totalThreads,
+    messagesInserted: totalMessages,
+    messagesUpdated: totalMessagesUpdated,
+    errors: errors.length ? errors : undefined,
+  }
+  console.log('[imap-sync] done:', result)
   return new Response(
-    JSON.stringify({
-      synced: (accounts as ImapAccountRow[]).length,
-      threadsCreated: totalThreads,
-      messagesInserted: totalMessages,
-      messagesUpdated: totalMessagesUpdated,
-      errors: errors.length ? errors : undefined,
-    }),
+    JSON.stringify(result),
     { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
   )
 })
