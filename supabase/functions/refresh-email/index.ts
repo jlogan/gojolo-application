@@ -4,7 +4,6 @@
 // Requires: ENCRYPTION_KEY, SUPABASE_SERVICE_ROLE_KEY.
 // Optional: REFRESH_EMAIL_SECRET — if set, requests must send Authorization: Bearer <secret> or x-refresh-secret: <secret>.
 // Deploy with: supabase functions deploy refresh-email --no-verify-jwt
-// Project ref: apqtjqcezkupjkkhlwxy (https://supabase.com/dashboard/project/apqtjqcezkupjkkhlwxy)
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
@@ -198,7 +197,8 @@ Deno.serve(async (req: Request) => {
 
     let range: string
     if (lastUid > 0) {
-      range = `${lastUid + 1}:*`
+      // Use lastUid:* (inclusive) so Gmail/IMAP edge cases don't miss messages at the boundary
+      range = `${lastUid}:*`
       console.log('[refresh-email] range (after last uid):', range)
     } else {
       const status = await client.status(mailboxPath, { uidNext: true })
@@ -215,9 +215,22 @@ Deno.serve(async (req: Request) => {
     }, { uid: true })
     console.log('[refresh-email] fetchAll returned', envelopes.length, 'envelope(s)')
 
-    const newMsgs = envelopes
+    let newMsgs = envelopes
       .filter((m) => (m.uid as number) > lastUid)
       .sort((a, b) => (a.uid as number) - (b.uid as number))
+
+    // Boundary recovery: if we fetched uid=lastUid but excluded it, check if it's actually in DB; if not, include it
+    if (envelopes.length > 0 && newMsgs.length === 0 && lastUid >= 1) {
+      const atBoundary = envelopes.filter((m) => (m.uid as number) === lastUid)
+      if (atBoundary.length > 0) {
+        const { data: existing } = await service.from('inbox_messages').select('id').eq('imap_account_id', acc.id).eq('external_uid', lastUid).limit(1)
+        if (!existing?.length) {
+          newMsgs = atBoundary.sort((a, b) => (a.uid as number) - (b.uid as number))
+          console.log('[refresh-email] boundary recovery: uid', lastUid, 'not in DB, including')
+        }
+      }
+    }
+
     n = newMsgs.length
     console.log('[refresh-email] new messages (uid >', lastUid, '):', n)
 

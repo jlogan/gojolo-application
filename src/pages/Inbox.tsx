@@ -304,6 +304,7 @@ export default function Inbox() {
           const result = await res.json().catch(() => ({}))
           console.log('[Inbox] fetch-thread-bodies response', { status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
           if (result.messages?.length) {
+            if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
             const bodyMap = new Map(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
             setMessages(prev => {
               const merged = prev.map(pm => {
@@ -317,6 +318,7 @@ export default function Inbox() {
               const retry = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }, body: JSON.stringify({ threadId: tid }) })
                 .then(r => r.json().catch(() => ({})))
                 .then(r => {
+                  if (selectedThreadIdRef.current !== tid) return // user switched thread, cancel retries
                   if (r.messages?.length) {
                     const m = new Map(r.messages.map((x: { id: string; body: string | null; htmlBody: string | null }) => [x.id, { body: x.body, html_body: x.htmlBody }]))
                     setMessages(prev2 => prev2.map(p => m.has(p.id) ? { ...p, body: m.get(p.id)!.body ?? p.body, html_body: m.get(p.id)!.html_body ?? p.html_body } : p).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))

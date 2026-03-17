@@ -590,25 +590,6 @@ serve(async (req) => {
         .eq('id', acc.id)
       console.log('[imap-sync] account', acc.id, 'updated last_fetched_uid=', highestUid)
 
-      // Log body for threads we touched: from DB if present, else note newly inserted (body null)
-      const touchedThreadIds = [...new Set((insertRows as { thread_id: string }[]).map((r) => r.thread_id))]
-      for (const tid of touchedThreadIds) {
-        const { data: threadMsgs } = await service.from('inbox_messages')
-          .select('id, from_identifier, received_at, body, html_body')
-          .eq('thread_id', tid)
-          .order('received_at', { ascending: true })
-        for (const msg of (threadMsgs ?? []) as { id: string; from_identifier: string; received_at: string; body: string | null; html_body: string | null }[]) {
-          const hasBody = msg.body != null && msg.body.trim().length > 0
-          const hasHtml = msg.html_body != null && msg.html_body.trim().length > 0
-          if (hasBody || hasHtml) {
-            const preview = (hasHtml ? msg.html_body! : msg.body!).replace(/\s+/g, ' ').trim().slice(0, 300)
-            console.log('[imap-sync] thread', tid, 'message', msg.id, 'from', msg.from_identifier, '— body from DB:', preview + (preview.length >= 300 ? '...' : ''))
-          } else {
-            console.log('[imap-sync] thread', tid, 'message', msg.id, 'from', msg.from_identifier, '— newly inserted, body null (will load on open)')
-          }
-        }
-      }
-
       totalThreads += threadsCreated
       totalMessages += messagesInserted
 
