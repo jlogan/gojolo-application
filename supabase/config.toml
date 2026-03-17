@@ -60,3 +60,39 @@ verify_jwt = false
 # refresh-email: public endpoint to trigger magic-link email for an address; no auth, generic JSON response only.
 [functions.refresh-email]
 verify_jwt = false
+
+# slack-channels: list channels for project/Admin; requires JWT so gateway accepts request.
+[functions.slack-channels]
+verify_jwt = false
+
+# slack-events: Slack Events API endpoint (signature verified in function).
+[functions.slack-events]
+verify_jwt = false
+
+# notify-task-comment: post new task comment to project's Slack channel (called from client with JWT).
+[functions.notify-task-comment]
+verify_jwt = true
+
+# slack-test-project-channel: send test message to project's linked Slack channel (system uses bot token, no user JWT).
+[functions.slack-test-project-channel]
+verify_jwt = false
+
+# slack-users: list workspace users for Admin > Slack > User mapping (org scoped via orgId in body).
+[functions.slack-users]
+verify_jwt = false
+
+# process-user-notification: invoked by DB trigger (pg_net) with x-internal-secret; processes notification_queue and sends Slack DM + Resend email.
+[functions.process-user-notification]
+verify_jwt = false
+
+# slack-test-dm: send test DM to a Slack user from Admin > User mapping (verify bot can message users).
+[functions.slack-test-dm]
+verify_jwt = false
+
+# sync-profile-avatar: sync OAuth avatar image into Supabase Storage.
+[functions.sync-profile-avatar]
+verify_jwt = false
+
+# process-pending-notifications: org admin triggers processing of queued notifications (e.g. after setting app_config).
+[functions.process-pending-notifications]
+verify_jwt = true

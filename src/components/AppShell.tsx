@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
+import { Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import {
@@ -15,6 +15,7 @@ import {
   Shield,
   FolderKanban,
   Plus,
+  Clock,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -24,7 +25,6 @@ import OrganizationsList from '@/pages/OrganizationsList'
 import ContactsList from '@/pages/contacts/ContactsList'
 import ContactDetail from '@/pages/contacts/ContactDetail'
 import ContactForm from '@/pages/contacts/ContactForm'
-import CompaniesList from '@/pages/companies/CompaniesList'
 import CompanyDetail from '@/pages/companies/CompanyDetail'
 import CompanyForm from '@/pages/companies/CompanyForm'
 import { supabase } from '@/lib/supabase'
@@ -35,6 +35,7 @@ import ProjectsList from '@/pages/projects/ProjectsList'
 import ProjectDetail from '@/pages/projects/ProjectDetail'
 import ProjectForm from '@/pages/projects/ProjectForm'
 import TaskDetail from '@/pages/projects/TaskDetail'
+import Timesheets from '@/pages/Timesheets'
 
 type AppMode = 'software' | 'chat'
 
@@ -42,8 +43,8 @@ const NAV = [
   { to: '/', label: 'Home', icon: LayoutGrid, testId: 'nav-home' },
   { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
+  { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
-  { to: '/companies', label: 'Companies', icon: Building2, testId: 'nav-companies' },
 ]
 
 export default function AppShell() {
@@ -67,6 +68,11 @@ export default function AppShell() {
     supabase.from('chat_sessions').select('id, title, project_id, updated_at').eq('org_id', currentOrg.id).order('updated_at', { ascending: false }).limit(20)
       .then(({ data }) => setChatSessions((data ?? []) as { id: string; title: string | null; project_id: string | null; updated_at: string }[]))
   }, [currentOrg?.id, mode])
+
+  useEffect(() => {
+    // Ensure mobile drawer closes after navigation.
+    setSidebarOpen(false)
+  }, [location.pathname])
 
   const setModeAndStore = (m: AppMode) => {
     setMode(m)
@@ -274,8 +280,8 @@ export default function AppShell() {
           <ChatView />
         </main>
       ) : (
-        <>
-          <header className="md:hidden flex items-center h-14 px-4 border-b border-border shrink-0">
+        <div className="flex-1 min-w-0 flex flex-col relative">
+          <header className="md:hidden sticky top-0 z-20 bg-surface/95 backdrop-blur flex items-center h-14 px-4 border-b border-border shrink-0">
             <button
               type="button"
               className="p-2 rounded-lg hover:bg-surface-muted"
@@ -290,7 +296,7 @@ export default function AppShell() {
             </span>
             <NotificationBell />
           </header>
-          <main className="flex-1 overflow-y-auto min-w-0" data-testid="main-content">
+          <main className="flex-1 overflow-y-auto min-w-0 pb-16 md:pb-0" data-testid="main-content">
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/contacts" element={<ContactsList />} />
@@ -302,7 +308,8 @@ export default function AppShell() {
               <Route path="/projects/:id" element={<ProjectDetail />} />
               <Route path="/projects/:id/edit" element={<ProjectForm />} />
               <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetail />} />
-              <Route path="/companies" element={<CompaniesList />} />
+              <Route path="/timesheets" element={<Timesheets />} />
+              <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
               <Route path="/companies/:id/edit" element={<CompanyForm />} />
@@ -314,7 +321,30 @@ export default function AppShell() {
               <Route path="/admin" element={<Admin />} />
             </Routes>
           </main>
-        </>
+
+          {/* Mobile bottom nav */}
+          <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 border-t border-border bg-surface-elevated/95 backdrop-blur" aria-label="Mobile navigation">
+            <ul className="grid h-16" style={{ gridTemplateColumns: `repeat(${NAV.length}, minmax(0, 1fr))` }}>
+              {NAV.map(({ to, label, icon: Icon, testId }) => {
+                const active = location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
+                return (
+                  <li key={`mobile-${to}`}>
+                    <Link
+                      to={to}
+                      data-testid={`${testId}-mobile`}
+                      className={`h-full w-full flex flex-col items-center justify-center gap-1 text-[11px] transition-colors ${
+                        active ? 'text-accent' : 'text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate max-w-[70px]">{label}</span>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </nav>
+        </div>
       )}
     </div>
   )

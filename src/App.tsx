@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import Login from '@/pages/Login'
 import WorkspacePicker from '@/pages/WorkspacePicker'
 import AppShell from '@/components/AppShell'
+import UpdateNotificationBar from '@/components/UpdateNotificationBar'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -75,26 +76,29 @@ function RequireOrg({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route
-        path="/workspace"
-        element={
-          <RequireAuth>
-            <WorkspacePicker />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/*"
-        element={
-          <RequireAuth>
-            <RequireOrg>
-              <AppShell />
-            </RequireOrg>
-          </RequireAuth>
-        }
-      />
-    </Routes>
+    <>
+      <UpdateNotificationBar />
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/workspace"
+          element={
+            <RequireAuth>
+              <WorkspacePicker />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/*"
+          element={
+            <RequireAuth>
+              <RequireOrg>
+                <AppShell />
+              </RequireOrg>
+            </RequireAuth>
+          }
+        />
+      </Routes>
+    </>
   )
 }

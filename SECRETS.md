@@ -16,6 +16,29 @@ supabase secrets set RESEND_API_KEY=re_xxxx
 supabase secrets set RESEND_FROM="jolo <notifications@gojolo.io>"
 ```
 
+**User notifications (Profile → Notifications: Task assigned, Thread assigned, Mentioned in thread)**
+
+The `process-user-notification` Edge Function sends Slack DMs and/or Resend emails based on each user’s preference. It is **invoked by database triggers** when you assign a thread, assign a task, or @mention someone. **If the steps below are not done, those notifications are queued but never sent** (no DM, no email). Admin > Slack > User mapping shows "Notification delivery: Configured" when this is set up.
+
+1. Set a secret (e.g. `openssl rand -hex 24`) and store it in Supabase and in the DB:
+
+```bash
+# Same value must be in Supabase secrets AND in app_config (see below)
+supabase secrets set NOTIFICATION_INTERNAL_SECRET=your_random_secret_here
+```
+
+2. In the database, insert/update `app_config` so triggers can call the function (run in SQL Editor or a migration):
+
+```sql
+-- Use your project URL from Dashboard → Project Settings → API
+INSERT INTO public.app_config (key, value) VALUES
+  ('supabase_url', 'https://YOUR_PROJECT_REF.supabase.co'),
+  ('notification_internal_secret', 'your_random_secret_here')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+```
+
+Without these, notifications are still enqueued but not sent until the config is set.
+
 **IMAP account test/save (`imap-test-and-save`):**
 
 ```bash

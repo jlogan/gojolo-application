@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
@@ -67,6 +67,7 @@ type SlackConfig = {
   bot_user_id: string | null; team_id: string | null; team_name: string | null; scopes: string | null
   inbox_channel: string | null; notify_on_new_email: boolean; notify_on_assignment: boolean
   notify_on_mention: boolean; notify_on_thread_close: boolean
+  notify_on_task_created?: boolean; notify_on_task_status_change?: boolean; notify_on_task_comment?: boolean
 }
 type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'settings'
 
@@ -83,6 +84,7 @@ const ALL_PERMISSIONS = [
   { module: 'Contacts', perms: ['contacts.view', 'contacts.create', 'contacts.update', 'contacts.delete'] },
   { module: 'Companies', perms: ['companies.view', 'companies.create', 'companies.update', 'companies.delete'] },
   { module: 'Inbox', perms: ['inbox.view', 'inbox.message', 'inbox.delete'] },
+  { module: 'Timesheets', perms: ['timesheets.view', 'timesheets.billable_status'] },
 ]
 
 export default function Admin() {
@@ -131,19 +133,81 @@ export default function Admin() {
   // Slack
   const [slackConfig, setSlackConfig] = useState<SlackConfig | null>(null)
   const [slackForm, setSlackForm] = useState({
-    webhook_url: '', bot_token: '', default_channel: '', inbox_channel: '',
+    bot_token: '', default_channel: '', inbox_channel: '',
     app_id: '', client_id: '', client_secret: '', signing_secret: '',
-    bot_user_id: '', team_id: '', team_name: '', scopes: '',
+    bot_user_id: '',
     is_active: false, notify_on_new_email: true, notify_on_assignment: true,
     notify_on_mention: true, notify_on_thread_close: false,
+    notify_on_task_created: true, notify_on_task_status_change: true, notify_on_task_comment: true,
   })
   const [slackSaving, setSlackSaving] = useState(false)
   const [slackMessage, setSlackMessage] = useState<string | null>(null)
-  const [slackTab, setSlackTab] = useState<'connection' | 'notifications'>('connection')
+  const [slackTestLoading, setSlackTestLoading] = useState(false)
+  const [slackTestMessage, setSlackTestMessage] = useState<string | null>(null)
+  const [slackTestChannels, setSlackTestChannels] = useState<{ id: string; name: string; is_private: boolean; is_member: boolean }[]>([])
+  const [slackTab, setSlackTab] = useState<'connection' | 'notifications' | 'test' | 'mapping'>('connection')
+  const [slackUsers, setSlackUsers] = useState<{ id: string; label: string; name: string; email: string | null }[]>([])
+  const [userSlackMappings, setUserSlackMappings] = useState<{ user_id: string; slack_user_id: string }[]>([])
+  const [slackMappingLoading, setSlackMappingLoading] = useState(false)
+  const [slackMappingError, setSlackMappingError] = useState<string | null>(null)
+  const [slackDmTestUserId, setSlackDmTestUserId] = useState<string | null>(null)
+  const [slackDmTestMessage, setSlackDmTestMessage] = useState<string | null>(null)
+  const [notificationProcessorConfigured, setNotificationProcessorConfigured] = useState<boolean | null>(null)
+  const [processPendingLoading, setProcessPendingLoading] = useState(false)
+  const [processPendingMessage, setProcessPendingMessage] = useState<string | null>(null)
+  const [orgTimezone, setOrgTimezone] = useState<string>('America/New_York')
+  const [orgTimezoneSaving, setOrgTimezoneSaving] = useState(false)
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
   useEffect(() => {
     if (section === 'imap') setImapView('list')
+  }, [section])
+
+  const loadSlackUsersAndMappings = useCallback(async () => {
+    if (!currentOrg?.id) return
+    setSlackMappingLoading(true)
+    setSlackMappingError(null)
+    try {
+      const [usersRes, mapRes] = await Promise.all([
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-users`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+          body: JSON.stringify({ orgId: currentOrg.id }),
+        }),
+        supabase.from('user_slack_mappings').select('user_id, slack_user_id').eq('org_id', currentOrg.id),
+      ])
+      const usersData = await usersRes.json().catch(() => ({})) as { users?: { id: string; label: string; name: string; email: string | null }[]; error?: string }
+      const maps = (mapRes.data ?? []) as { user_id: string; slack_user_id: string }[]
+      setUserSlackMappings(maps)
+      if (!usersRes.ok || usersData.error) {
+        setSlackUsers([])
+        setSlackMappingError(usersData.error ?? `Request failed (${usersRes.status}). Deploy the slack-users Edge Function and ensure Bot Configuration is saved.`)
+      } else {
+        const list = usersData.users ?? []
+        setSlackUsers(list)
+        setSlackMappingError(list.length === 0 ? 'Slack returned no users. Add the users:read scope to your Slack app at api.slack.com.' : null)
+      }
+    } catch (e) {
+      setSlackUsers([])
+      setSlackMappingError((e as Error).message || 'Failed to load Slack users.')
+    } finally {
+      setSlackMappingLoading(false)
+    }
+  }, [currentOrg?.id])
+
+  useEffect(() => {
+    if (slackTab !== 'mapping' || !currentOrg?.id) return
+    loadSlackUsersAndMappings()
+  }, [slackTab, currentOrg?.id, loadSlackUsersAndMappings])
+
+  useEffect(() => {
+    if (section !== 'slack') return
+    let cancelled = false
+    supabase.rpc('get_notification_processor_configured').then(({ data, error }) => {
+      if (!cancelled && !error) setNotificationProcessorConfigured(!!data)
+    })
+    return () => { cancelled = true }
   }, [section])
 
   useEffect(() => {
@@ -188,19 +252,23 @@ export default function Admin() {
         const sc = slackData[0] as SlackConfig
         setSlackConfig(sc)
         setSlackForm({
-          webhook_url: sc.webhook_url ?? '', bot_token: sc.bot_token ?? '',
+          bot_token: sc.bot_token ?? '',
           default_channel: sc.default_channel ?? '', inbox_channel: sc.inbox_channel ?? '',
           app_id: sc.app_id ?? '', client_id: sc.client_id ?? '',
           client_secret: sc.client_secret ?? '', signing_secret: sc.signing_secret ?? '',
-          bot_user_id: sc.bot_user_id ?? '', team_id: sc.team_id ?? '',
-          team_name: sc.team_name ?? '', scopes: sc.scopes ?? '',
+          bot_user_id: sc.bot_user_id ?? '',
           is_active: sc.is_active, notify_on_new_email: sc.notify_on_new_email,
           notify_on_assignment: sc.notify_on_assignment, notify_on_mention: sc.notify_on_mention,
           notify_on_thread_close: sc.notify_on_thread_close,
+          notify_on_task_created: sc.notify_on_task_created !== false,
+          notify_on_task_status_change: sc.notify_on_task_status_change !== false,
+          notify_on_task_comment: sc.notify_on_task_comment !== false,
         })
       }
       const { data: rpData } = await supabase.from('role_permissions').select('id, role_id, permission').order('permission')
       setRolePermissions((rpData as RolePermission[]) ?? [])
+      const { data: orgRow } = await supabase.from('organizations').select('timezone').eq('id', currentOrg.id).single()
+      setOrgTimezone(orgRow?.timezone && typeof orgRow.timezone === 'string' ? orgRow.timezone : 'America/New_York')
       setLoading(false)
     }
     load()
@@ -480,6 +548,62 @@ export default function Admin() {
       setSmtpTestMessage('SMTP connection successful.')
     }
     setSmtpTestLoading(false)
+  }
+
+  const handleTestSlackChannels = async () => {
+    if (!currentOrg?.id) return
+    setSlackTestLoading(true)
+    setSlackTestMessage(null)
+    setSlackTestChannels([])
+    try {
+      const { data: { session }, error: sessionError } = await supabase.auth.refreshSession()
+      const token = session?.access_token
+      if (sessionError || !token) {
+        setSlackTestMessage('You must be signed in to test Slack channel access. Try signing out and back in.')
+        setSlackTestLoading(false)
+        return
+      }
+      const callSlackChannels = async () => {
+        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-channels`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ orgId: currentOrg.id }),
+        })
+        const raw = await res.text()
+        const data = (JSON.parse(raw || '{}')) as {
+          error?: string
+          channels?: { id: string; name: string; is_private: boolean; is_member: boolean }[]
+          isActive?: boolean
+        }
+        return { res, raw, data }
+      }
+
+      let { res, raw, data } = await callSlackChannels()
+
+      if (!res.ok || data.error) {
+        const fallback = raw?.slice(0, 240) || `HTTP ${res.status}`
+        let msg = data.error || `Could not retrieve channels from Slack (${fallback}).`
+        if (res.status === 401 && (raw.includes('Invalid JWT') || raw.includes('invalid') || raw.includes('JWT'))) {
+          msg = 'Session expired or invalid. Sign out and sign back in, then try again. If it persists, deploy the function with: supabase functions deploy slack-channels --no-verify-jwt'
+        }
+        setSlackTestMessage(msg)
+        return
+      }
+      const channels = data.channels ?? []
+      setSlackTestChannels(channels)
+      const memberCount = channels.filter((c) => c.is_member).length
+      const privateCount = channels.filter((c) => c.is_private).length
+      const publicCount = channels.length - privateCount
+      setSlackTestMessage(`Retrieved ${channels.length} total channel(s): ${publicCount} public, ${privateCount} private. Bot is in ${memberCount} channel(s).${data.isActive ? '' : ' (Config is currently disabled)'}`)
+    } catch (err) {
+      setSlackTestMessage((err as Error).message || 'Could not retrieve channels from Slack.')
+    } finally {
+      setSlackTestLoading(false)
+    }
   }
 
   const startEditImap = (acc: ImapAccount) => {
@@ -1147,7 +1271,7 @@ export default function Admin() {
               <p className="text-gray-400 text-sm mb-4">Connect a custom Slack bot for real-time notifications and team collaboration.</p>
 
               <div className="flex gap-1 mb-6 border-b border-border">
-                {([['connection', 'Bot Configuration'], ['notifications', 'Notification Settings']] as const).map(([id, label]) => (
+                {([['connection', 'Bot Configuration'], ['notifications', 'Notification Settings'], ['mapping', 'User mapping'], ['test', 'Channel Access Test']] as const).map(([id, label]) => (
                   <button key={id} type="button" onClick={() => setSlackTab(id)}
                     className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${slackTab === id ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
                     {label}
@@ -1166,7 +1290,7 @@ export default function Admin() {
                       <p className="text-gray-500 text-xs mt-1">Bot User OAuth Token from OAuth & Permissions page.</p>
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Signing Secret</label>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Signing Secret <span className="text-accent">*</span></label>
                       <input type="password" value={slackForm.signing_secret} onChange={e => setSlackForm(f => ({ ...f, signing_secret: e.target.value }))}
                         placeholder="abc123..."
                         className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
@@ -1181,7 +1305,7 @@ export default function Admin() {
                         className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Bot User ID</label>
+                      <label className="block text-xs font-medium text-gray-500 mb-1">Bot User ID <span className="text-accent">*</span></label>
                       <input type="text" value={slackForm.bot_user_id} onChange={e => setSlackForm(f => ({ ...f, bot_user_id: e.target.value }))}
                         placeholder="U0XXXXXXX"
                         className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
@@ -1200,33 +1324,9 @@ export default function Admin() {
                         className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Team ID</label>
-                      <input type="text" value={slackForm.team_id} onChange={e => setSlackForm(f => ({ ...f, team_id: e.target.value }))}
-                        placeholder="T0XXXXXXX"
-                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Team Name</label>
-                      <input type="text" value={slackForm.team_name} onChange={e => setSlackForm(f => ({ ...f, team_name: e.target.value }))}
-                        placeholder="My Workspace"
-                        className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Webhook URL (fallback)</label>
-                    <input type="url" value={slackForm.webhook_url} onChange={e => setSlackForm(f => ({ ...f, webhook_url: e.target.value }))}
-                      placeholder="https://hooks.slack.com/services/T.../B.../..."
-                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
-                    <p className="text-gray-500 text-xs mt-1">Used only if Bot Token is not set. Bot Token is preferred for full functionality.</p>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">OAuth Scopes</label>
-                    <input type="text" value={slackForm.scopes} onChange={e => setSlackForm(f => ({ ...f, scopes: e.target.value }))}
-                      placeholder="chat:write,channels:read,channels:join,users:read,files:write,reactions:write"
-                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50" />
-                    <p className="text-gray-500 text-xs mt-1">Comma-separated. Required: chat:write, channels:read. Recommended: channels:join, users:read, files:write, reactions:write.</p>
+                  <div className="rounded-lg border border-border bg-surface-muted/40 p-3 text-xs text-gray-400 space-y-1">
+                    <p className="font-medium text-gray-300">Required Slack app bot scopes</p>
+                    <p>chat:write, conversations:read, users:read, im:write (for DMs), app_mentions:read, channels:history, groups:history</p>
                   </div>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" checked={slackForm.is_active} onChange={e => setSlackForm(f => ({ ...f, is_active: e.target.checked }))}
@@ -1261,6 +1361,9 @@ export default function Admin() {
                       { key: 'notify_on_assignment' as const, label: 'Thread assignments', desc: 'Post when a thread is assigned to a team member' },
                       { key: 'notify_on_mention' as const, label: 'Internal comment mentions', desc: 'Post when someone is @mentioned in an internal comment' },
                       { key: 'notify_on_thread_close' as const, label: 'Thread closed', desc: 'Post when a thread is closed or resolved' },
+                      { key: 'notify_on_task_created' as const, label: 'Task created', desc: 'Post when a new task is added to a project' },
+                      { key: 'notify_on_task_status_change' as const, label: 'Task status change', desc: 'Post when a task\'s status is updated' },
+                      { key: 'notify_on_task_comment' as const, label: 'Task comment', desc: 'Post when a comment is added to a task' },
                     ].map(ev => (
                       <label key={ev.key} className="flex items-start gap-3 cursor-pointer p-2 rounded-lg hover:bg-surface-muted/50">
                         <input type="checkbox" checked={slackForm[ev.key]} onChange={e => setSlackForm(f => ({ ...f, [ev.key]: e.target.checked }))}
@@ -1284,13 +1387,231 @@ export default function Admin() {
                 </div>
               )}
 
+              {slackTab === 'mapping' && (
+                <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-medium text-white">Map users to Slack</h3>
+                      <p className="text-xs text-gray-500">Link workspace members to their Slack profiles. Used for @mentions and notifications. Only admins can edit.</p>
+                    </div>
+                    <button type="button" onClick={loadSlackUsersAndMappings} disabled={slackMappingLoading || !currentOrg?.id}
+                      className="px-3 py-1.5 rounded-lg border border-border bg-surface-muted text-gray-200 text-xs font-medium hover:bg-surface-muted/80 disabled:opacity-50 flex items-center gap-1">
+                      <RefreshCw className={`w-3.5 h-3.5 ${slackMappingLoading ? 'animate-spin' : ''}`} />
+                      {slackMappingLoading ? 'Loading…' : 'Refresh Slack users'}
+                    </button>
+                  </div>
+                  <div className="rounded-lg border border-border bg-surface-muted/50 p-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="text-gray-400">Notification delivery (Slack DM / email): </span>
+                        {notificationProcessorConfigured === null && <span className="text-gray-500">Checking…</span>}
+                        {notificationProcessorConfigured === true && <span className="text-emerald-400">Configured</span>}
+                        {notificationProcessorConfigured === false && (
+                          <span className="text-amber-500">Not configured — assignment and mention DMs/emails will not be sent until you set app_config and NOTIFICATION_INTERNAL_SECRET. See SECRETS.md.</span>
+                        )}
+                      </div>
+                      {currentOrg?.id && (
+                        <button
+                          type="button"
+                          disabled={processPendingLoading || notificationProcessorConfigured !== true}
+                          onClick={async () => {
+                            setProcessPendingMessage(null)
+                            setProcessPendingLoading(true)
+                            try {
+                              const { data: { session } } = await supabase.auth.getSession()
+                              if (!session?.access_token) {
+                                setProcessPendingMessage('Please sign in again.')
+                                return
+                              }
+                              const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-pending-notifications`, {
+                                method: 'POST',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  'Authorization': `Bearer ${session.access_token}`,
+                                  'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+                                },
+                                body: JSON.stringify({ orgId: currentOrg.id }),
+                              })
+                              const json = await res.json().catch(() => ({})) as { processed?: number; total?: number; error?: string }
+                              if (res.ok && json.processed !== undefined) {
+                                setProcessPendingMessage(`Processed ${json.processed} of ${json.total ?? 0} pending.`)
+                              } else {
+                                setProcessPendingMessage(json.error ?? `Request failed (${res.status}).`)
+                              }
+                            } catch (e) {
+                              setProcessPendingMessage((e as Error).message)
+                            } finally {
+                              setProcessPendingLoading(false)
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-lg border border-border bg-surface-muted text-gray-200 text-xs font-medium hover:bg-surface-muted/80 disabled:opacity-50"
+                        >
+                          {processPendingLoading ? 'Processing…' : 'Process pending notifications'}
+                        </button>
+                      )}
+                    </div>
+                    {processPendingMessage && <p className="mt-2 text-gray-400">{processPendingMessage}</p>}
+                  </div>
+                  {slackMappingError && <p className="text-xs text-amber-500">{slackMappingError}</p>}
+                  {slackMappingLoading ? (
+                    <p className="text-sm text-gray-500">Loading…</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {members.length === 0 ? (
+                        <p className="text-sm text-gray-500">No workspace members. Add members in Users &amp; Roles.</p>
+                      ) : (
+                        <div className="rounded-lg border border-border overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-border text-left text-xs text-gray-500">
+                                <th className="px-3 py-2 font-medium">Member</th>
+                                <th className="px-3 py-2 font-medium">Slack user</th>
+                                <th className="px-3 py-2 font-medium w-24">Test</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border">
+                              {members.map((m) => {
+                                const prof = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles
+                                const name = (prof as { display_name?: string | null; email?: string | null })?.display_name ?? (prof as { email?: string | null })?.email ?? m.user_id.slice(0, 8)
+                                const current = userSlackMappings.find((x) => x.user_id === m.user_id)?.slack_user_id ?? ''
+                                const isTesting = slackDmTestUserId === m.user_id
+                                return (
+                                  <tr key={m.user_id}>
+                                    <td className="px-3 py-2 text-gray-200">{name}</td>
+                                    <td className="px-3 py-2">
+                                      <select
+                                        value={current}
+                                        onChange={async (e) => {
+                                          const slackUserId = e.target.value
+                                          if (!currentOrg?.id) return
+                                          setSlackDmTestMessage(null)
+                                          if (slackUserId === '') {
+                                            await supabase.from('user_slack_mappings').delete().eq('org_id', currentOrg.id).eq('user_id', m.user_id)
+                                          } else {
+                                            await supabase.from('user_slack_mappings').upsert(
+                                              { org_id: currentOrg.id, user_id: m.user_id, slack_user_id: slackUserId },
+                                              { onConflict: 'org_id,user_id' }
+                                            )
+                                          }
+                                          setUserSlackMappings((prev) => {
+                                            const rest = prev.filter((x) => x.user_id !== m.user_id)
+                                            if (slackUserId === '') return rest
+                                            return [...rest, { user_id: m.user_id, slack_user_id: slackUserId }]
+                                          })
+                                        }}
+                                        className="w-full max-w-xs rounded border border-border bg-surface-muted px-2 py-1.5 text-gray-200 text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+                                      >
+                                        <option value="">— Not linked</option>
+                                        {slackUsers.map((u) => (
+                                          <option key={u.id} value={u.id}>{u.label}</option>
+                                        ))}
+                                      </select>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {current ? (
+                                        <button
+                                          type="button"
+                                          disabled={isTesting || !currentOrg?.id}
+                                          onClick={async () => {
+                                            if (!currentOrg?.id) return
+                                            setSlackDmTestUserId(m.user_id)
+                                            setSlackDmTestMessage(null)
+                                            try {
+                                              const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/slack-test-dm`, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json', 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+                                                body: JSON.stringify({ orgId: currentOrg.id, slackUserId: current }),
+                                              })
+                                              const data = await res.json().catch(() => ({})) as { error?: string; message?: string }
+                                              if (!res.ok) {
+                                                setSlackDmTestMessage(data.error ?? `Request failed (${res.status})`)
+                                              } else {
+                                                setSlackDmTestMessage(data.message ?? 'Test DM sent. Check Slack.')
+                                              }
+                                            } catch (e) {
+                                              setSlackDmTestMessage((e as Error).message ?? 'Request failed')
+                                            } finally {
+                                              setSlackDmTestUserId(null)
+                                            }
+                                          }}
+                                          className="text-xs font-medium text-accent hover:underline disabled:opacity-50 disabled:no-underline"
+                                        >
+                                          {isTesting ? 'Sending…' : 'Test DM'}
+                                        </button>
+                                      ) : (
+                                        <span className="text-xs text-gray-500">—</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                          {slackDmTestMessage && (
+                            <p className={`px-3 py-2 text-xs border-t border-border ${slackDmTestMessage.startsWith('Test') || slackDmTestMessage.includes('sent') ? 'text-accent' : 'text-amber-500'}`}>
+                              {slackDmTestMessage}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {slackTab === 'test' && (
+                <div className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
+                  <h3 className="text-sm font-medium text-white">Slack channel access test</h3>
+                  <p className="text-xs text-gray-500">Confirm jolo can retrieve all Slack channels (public and private) for this workspace bot.</p>
+                  <button
+                    type="button"
+                    onClick={handleTestSlackChannels}
+                    disabled={slackTestLoading || !currentOrg?.id}
+                    className="px-3 py-2 rounded-lg border border-border bg-surface-muted text-gray-200 text-sm font-medium hover:bg-surface-muted/80 disabled:opacity-50"
+                  >
+                    {slackTestLoading ? 'Testing…' : 'Test Slack Channel Access'}
+                  </button>
+                  {slackTestMessage && (
+                    <p className={`text-sm ${slackTestMessage.startsWith('Retrieved') ? 'text-accent' : 'text-red-400'}`}>{slackTestMessage}</p>
+                  )}
+                  {slackTestChannels.length > 0 && (
+                    <div className="rounded-lg border border-border overflow-hidden">
+                      <div className="max-h-64 overflow-y-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-500 border-b border-border">
+                              <th className="text-left px-3 py-2 font-medium">Channel</th>
+                              <th className="text-left px-3 py-2 font-medium">Type</th>
+                              <th className="text-left px-3 py-2 font-medium">Bot Access</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {slackTestChannels.map((c) => (
+                              <tr key={c.id}>
+                                <td className="px-3 py-2 text-gray-200">#{c.name}</td>
+                                <td className="px-3 py-2 text-gray-400">{c.is_private ? 'Private' : 'Public'}</td>
+                                <td className={`px-3 py-2 ${c.is_member ? 'text-accent' : 'text-yellow-400'}`}>{c.is_member ? 'Joined' : 'Not joined'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {slackMessage && <p className={`text-sm mt-4 ${slackMessage.includes('Saved') ? 'text-accent' : 'text-red-400'}`}>{slackMessage}</p>}
-              <button type="button" onClick={async () => {
+              {slackTab !== 'test' && slackTab !== 'mapping' && (
+                <button type="button" onClick={async () => {
                 if (!currentOrg?.id) return
+                if (!slackForm.bot_token.trim() || !slackForm.signing_secret.trim() || !slackForm.app_id.trim() || !slackForm.bot_user_id.trim() || !slackForm.client_id.trim() || !slackForm.client_secret.trim()) {
+                  setSlackMessage('Please fill all required Slack fields.')
+                  return
+                }
                 setSlackSaving(true); setSlackMessage(null)
                 const payload = {
                   org_id: currentOrg.id,
-                  webhook_url: slackForm.webhook_url.trim() || null,
                   bot_token: slackForm.bot_token.trim() || null,
                   default_channel: slackForm.default_channel.trim() || null,
                   inbox_channel: slackForm.inbox_channel.trim() || null,
@@ -1299,14 +1620,14 @@ export default function Admin() {
                   client_secret: slackForm.client_secret.trim() || null,
                   signing_secret: slackForm.signing_secret.trim() || null,
                   bot_user_id: slackForm.bot_user_id.trim() || null,
-                  team_id: slackForm.team_id.trim() || null,
-                  team_name: slackForm.team_name.trim() || null,
-                  scopes: slackForm.scopes.trim() || null,
                   is_active: slackForm.is_active,
                   notify_on_new_email: slackForm.notify_on_new_email,
                   notify_on_assignment: slackForm.notify_on_assignment,
                   notify_on_mention: slackForm.notify_on_mention,
                   notify_on_thread_close: slackForm.notify_on_thread_close,
+                  notify_on_task_created: slackForm.notify_on_task_created,
+                  notify_on_task_status_change: slackForm.notify_on_task_status_change,
+                  notify_on_task_comment: slackForm.notify_on_task_comment,
                   updated_at: new Date().toISOString(),
                 }
                 if (slackConfig) {
@@ -1320,7 +1641,8 @@ export default function Admin() {
               }} disabled={slackSaving}
                 className="mt-4 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
                 {slackSaving ? 'Saving…' : 'Save Slack Configuration'}
-              </button>
+                </button>
+              )}
             </>
           )}
 
@@ -1328,11 +1650,38 @@ export default function Admin() {
             <>
               <h2 className="text-xl font-semibold text-white mb-2">Organization settings</h2>
               <p className="text-gray-400 text-sm mb-6">
-                Workspace name and preferences. More options coming soon.
+                Workspace timezone is used for Slack notification timestamps and other dates.
               </p>
-              <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center">
-                <Settings className="w-10 h-10 text-gray-500 mx-auto mb-3" />
-                <p className="text-gray-400 text-sm">Organization settings (name, slug, etc.) are coming soon.</p>
+              <div className="rounded-lg border border-border bg-surface-elevated p-6 max-w-md">
+                <label className="block text-xs font-medium text-gray-500 mb-2">Workspace timezone</label>
+                <select value={orgTimezone} onChange={e => setOrgTimezone(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50">
+                  <option value="America/New_York">Eastern (EST/EDT)</option>
+                  <option value="America/Chicago">Central (CST/CDT)</option>
+                  <option value="America/Denver">Mountain (MST/MDT)</option>
+                  <option value="America/Los_Angeles">Pacific (PST/PDT)</option>
+                  <option value="America/Phoenix">Arizona (MST)</option>
+                  <option value="UTC">UTC</option>
+                  <option value="Europe/London">London (GMT/BST)</option>
+                  <option value="Europe/Paris">Central European (CET/CEST)</option>
+                  <option value="Asia/Tokyo">Tokyo (JST)</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-2">Used for times shown in Slack alerts (e.g. task comments, new emails).</p>
+                <button type="button" disabled={!currentOrg?.id || orgTimezoneSaving}
+                  onClick={async () => {
+                    if (!currentOrg?.id) return
+                    setOrgTimezoneSaving(true)
+                    setSettingsMessage(null)
+                    const { error } = await supabase.from('organizations').update({ timezone: orgTimezone }).eq('id', currentOrg.id)
+                    setOrgTimezoneSaving(false)
+                    if (error) setSettingsMessage(error.message)
+                    else setSettingsMessage('Timezone saved.')
+                    setTimeout(() => setSettingsMessage(null), 3000)
+                  }}
+                  className="mt-4 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                  {orgTimezoneSaving ? 'Saving…' : 'Save timezone'}
+                </button>
+                {settingsMessage && <p className={`mt-2 text-sm ${settingsMessage.includes('saved') ? 'text-accent' : 'text-red-400'}`}>{settingsMessage}</p>}
               </div>
             </>
           )}

@@ -4,6 +4,7 @@ import { corsHeaders } from '../_shared/cors.ts'
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+const INTERNAL_AI_CHAT_KEY = Deno.env.get('INTERNAL_AI_CHAT_KEY') ?? ''
 
 const TOOLS = [
   {
@@ -259,6 +260,30 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_task_context',
+      description: 'Get comprehensive context about a task: description, status history, comments, time logs, artifacts, linked emails, Slack messages. Use this to answer detailed questions about tasks.',
+      parameters: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'add_task_comment',
+      description: 'Add a comment to a task (as the AI assistant)',
+      parameters: { type: 'object', properties: { task_id: { type: 'string' }, content: { type: 'string' } }, required: ['task_id', 'content'] },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_project_summary',
+      description: 'Get a project summary: task counts by status, total time logged, team members, recent activity',
+      parameters: { type: 'object', properties: { project_id: { type: 'string' } }, required: ['project_id'] },
+    },
+  },
 ]
 
 async function executeTool(name: string, args: Record<string, string>, orgId: string, userId: string) {
@@ -422,6 +447,41 @@ async function executeTool(name: string, args: Record<string, string>, orgId: st
       const { error } = await admin.from('inbox_notes').insert({ thread_id: args.thread_id, user_id: userId, content: args.content })
       return error ? { error: error.message } : { success: true }
     }
+    case 'get_task_context': {
+      const { data: task } = await admin.from('tasks').select('*').eq('id', args.task_id).single()
+      if (!task) return { error: 'Task not found' }
+      const [cmtRes, tlRes, shRes, artRes] = await Promise.all([
+        admin.from('task_comments').select('content, created_at').eq('task_id', args.task_id).order('created_at').limit(20),
+        admin.from('time_logs').select('hours, minutes, work_date, description, billed').eq('task_id', args.task_id).order('work_date', { ascending: false }).limit(10),
+        admin.from('task_status_history').select('from_status, to_status, created_at').eq('task_id', args.task_id).order('created_at', { ascending: false }).limit(10),
+        admin.from('task_artifacts').select('type, label, url').eq('task_id', args.task_id),
+      ])
+      const totalMin = (tlRes.data ?? []).reduce((s: number, t: { hours: number; minutes: number }) => s + t.hours * 60 + t.minutes, 0)
+      return {
+        task, comments: cmtRes.data ?? [], time_logs: tlRes.data ?? [],
+        total_time: `${Math.floor(totalMin / 60)}h ${totalMin % 60}m`,
+        status_history: shRes.data ?? [], artifacts: artRes.data ?? [],
+      }
+    }
+    case 'add_task_comment': {
+      const { error } = await admin.from('task_comments').insert({ task_id: args.task_id, user_id: userId, content: args.content })
+      return error ? { error: error.message } : { success: true }
+    }
+    case 'get_project_summary': {
+      const { data: project } = await admin.from('projects').select('id, name, description, status').eq('id', args.project_id).single()
+      if (!project) return { error: 'Project not found' }
+      const { data: tasks } = await admin.from('tasks').select('id, status, priority').eq('project_id', args.project_id)
+      const statusCounts: Record<string, number> = {}
+      for (const t of (tasks ?? []) as { status: string }[]) { statusCounts[t.status] = (statusCounts[t.status] ?? 0) + 1 }
+      const { data: timeLogs } = await admin.from('time_logs').select('hours, minutes, billed').eq('project_id', args.project_id)
+      const totalMin = (timeLogs ?? []).reduce((s: number, t: { hours: number; minutes: number }) => s + t.hours * 60 + t.minutes, 0)
+      const billableMin = (timeLogs ?? []).filter((t: { billed: boolean }) => t.billed !== false).reduce((s: number, t: { hours: number; minutes: number }) => s + t.hours * 60 + t.minutes, 0)
+      return {
+        project, task_count: (tasks ?? []).length, status_breakdown: statusCounts,
+        total_time: `${Math.floor(totalMin / 60)}h ${totalMin % 60}m`,
+        billable_time: `${Math.floor(billableMin / 60)}h ${billableMin % 60}m`,
+      }
+    }
     default:
       return { error: `Unknown tool: ${name}` }
   }
@@ -431,23 +491,49 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
 
   try {
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-
-    const supabaseUser = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-    const token = authHeader.replace('Bearer ', '')
-    const { data: { user }, error: authErr } = await supabaseUser.auth.getUser(token)
-    if (authErr || !user) return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-
     const body = await req.json()
-    const { message, orgId, history } = body as { message: string; orgId: string; history?: { role: string; content: string }[] }
+    const { message, orgId, history, userId } = body as {
+      message: string
+      orgId: string
+      history?: { role: string; content: string }[]
+      userId?: string
+    }
 
     if (!orgId) return new Response(JSON.stringify({ error: 'orgId required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     if (!OPENAI_API_KEY) return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not configured. Set it via: supabase secrets set OPENAI_API_KEY=sk-...' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
 
+    const supabaseUser = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    const internalKeyHeader = req.headers.get('x-internal-ai-key')
+    const isInternal = Boolean(INTERNAL_AI_CHAT_KEY && internalKeyHeader && internalKeyHeader === INTERNAL_AI_CHAT_KEY)
+
+    let effectiveUserId = ''
+    if (isInternal) {
+      if (userId) {
+        effectiveUserId = userId
+      } else {
+        const { data: orgUsers } = await supabaseUser
+          .from('organization_users')
+          .select('user_id')
+          .eq('org_id', orgId)
+          .limit(1)
+        const firstUserId = (orgUsers?.[0] as { user_id: string } | undefined)?.user_id
+        if (!firstUserId) {
+          return new Response(JSON.stringify({ error: 'No users found for org.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+        }
+        effectiveUserId = firstUserId
+      }
+    } else {
+      const authHeader = req.headers.get('Authorization')
+      if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      const token = authHeader.replace('Bearer ', '')
+      const { data: { user }, error: authErr } = await supabaseUser.auth.getUser(token)
+      if (authErr || !user) return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      effectiveUserId = user.id
+    }
+
     const systemPrompt = `You are jolo, an AI assistant for business software. You help users manage projects, tasks, contacts, companies, and their team inbox (email). Be concise and helpful. When creating or modifying things, confirm what you did. If the user asks to do something and you need more info, ask for it. Use the available tools to interact with the database.
 
-Capabilities: create/list/update projects and tasks, create/list contacts and companies, link them together, manage team members. For email: search inbox threads, read messages, summarize threads, send emails (new or reply), close/reopen/trash threads, add internal notes. When summarizing emails, include key details and action items. When drafting emails, write professional responses. The current user's ID is ${user.id}.`
+Capabilities: create/list/update projects and tasks, create/list contacts and companies, link them together, manage team members. For email: search inbox threads, read messages, summarize threads, send emails (new or reply), close/reopen/trash threads, add internal notes. When summarizing emails, include key details and action items. When drafting emails, write professional responses. The current user's ID is ${effectiveUserId}.`
 
     const messages: { role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }[] = [
       { role: 'system', content: systemPrompt },
@@ -487,7 +573,7 @@ Capabilities: create/list/update projects and tasks, create/list contacts and co
         for (const tc of msg.tool_calls) {
           const fnName = tc.function.name
           const fnArgs = JSON.parse(tc.function.arguments || '{}')
-          const result = await executeTool(fnName, fnArgs, orgId, user.id)
+          const result = await executeTool(fnName, fnArgs, orgId, effectiveUserId)
           messages.push({ role: 'tool', content: JSON.stringify(result), tool_call_id: tc.id })
         }
         continue
