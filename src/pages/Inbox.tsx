@@ -305,7 +305,8 @@ export default function Inbox() {
           console.log('[Inbox] fetch-thread-bodies response', { status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
           if (result.messages?.length) {
             if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
-            const bodyMap = new Map(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
+            type BodyEntry = { body: string | null; html_body: string | null }
+            const bodyMap = new Map<string, BodyEntry>(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
             setMessages(prev => {
               const merged = prev.map(pm => {
                 const b = bodyMap.get(pm.id)
@@ -320,8 +321,11 @@ export default function Inbox() {
                 .then(r => {
                   if (selectedThreadIdRef.current !== tid) return // user switched thread, cancel retries
                   if (r.messages?.length) {
-                    const m = new Map(r.messages.map((x: { id: string; body: string | null; htmlBody: string | null }) => [x.id, { body: x.body, html_body: x.htmlBody }]))
-                    setMessages(prev2 => prev2.map(p => m.has(p.id) ? { ...p, body: m.get(p.id)!.body ?? p.body, html_body: m.get(p.id)!.html_body ?? p.html_body } : p).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
+                    const m = new Map<string, BodyEntry>(r.messages.map((x: { id: string; body: string | null; htmlBody: string | null }) => [x.id, { body: x.body, html_body: x.htmlBody }]))
+                    setMessages(prev2 => prev2.map(p => {
+                      const entry = m.get(p.id)
+                      return entry ? { ...p, body: entry.body ?? p.body, html_body: entry.html_body ?? p.html_body } : p
+                    }).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
                     fetchAttachments(tid)
                     if (r.hasMore) setTimeout(retry, 800)
                   }
