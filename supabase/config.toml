@@ -52,3 +52,11 @@ verify_jwt = false
 # imap-fetch-body: lazy-load email body on demand when user opens a thread.
 [functions.imap-fetch-body]
 verify_jwt = false
+
+# fetch-thread-bodies: fetches bodies + attachments for all messages in a thread; returns from DB when present, else fetches from IMAP.
+[functions.fetch-thread-bodies]
+verify_jwt = false
+
+# refresh-email: public endpoint to trigger magic-link email for an address; no auth, generic JSON response only.
+[functions.refresh-email]
+verify_jwt = false
