@@ -1,7 +1,8 @@
 // Public endpoint: for a given IMAP account email, fetches new messages after last_fetched_uid
 // and stores them in inbox_threads + inbox_messages (same logic as imap-sync, inlined).
-// No auth. Response is generic JSON only (no info leakage).
+// No user auth. Security: optional REFRESH_EMAIL_SECRET (Bearer or x-refresh-secret), per-email rate limit.
 // Requires: ENCRYPTION_KEY, SUPABASE_SERVICE_ROLE_KEY.
+// Optional: REFRESH_EMAIL_SECRET — if set, requests must send Authorization: Bearer <secret> or x-refresh-secret: <secret>.
 // Deploy with: supabase functions deploy refresh-email --no-verify-jwt
 // Project ref: apqtjqcezkupjkkhlwxy (https://supabase.com/dashboard/project/apqtjqcezkupjkkhlwxy)
 
@@ -12,6 +13,11 @@ import { corsHeaders } from '../_shared/cors.ts'
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const encryptionKeyHex = Deno.env.get('ENCRYPTION_KEY')
+const refreshSecret = Deno.env.get('REFRESH_EMAIL_SECRET') ?? ''
+
+// Per-email rate limit: 1 request per 60 seconds (in-memory, resets on cold start).
+const RATE_LIMIT_MS = 60_000
+const lastRequestByEmail = new Map<string, number>()
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -58,8 +64,14 @@ function jsonRes(payload: { status: string }, status: number) {
   })
 }
 
+function redactSecret(s: string): string {
+  if (!s || s.length === 0) return '(empty)'
+  if (s.length <= 8) return '***'
+  return s.slice(0, 4) + '…' + s.length
+}
+
 Deno.serve(async (req: Request) => {
-  console.log('[refresh-email] request method:', req.method)
+  console.log('[refresh-email] request method:', req.method, 'url:', req.url)
 
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
@@ -70,10 +82,31 @@ Deno.serve(async (req: Request) => {
     return jsonRes({ status: 'error' }, 405)
   }
 
+  // Debug: log request headers (redact secret values).
+  const authHeader = req.headers.get('Authorization')
+  const xSecret = req.headers.get('x-refresh-secret')
+  console.log(
+    '[refresh-email] request headers:',
+    'Authorization:', authHeader ? (authHeader.startsWith('Bearer ') ? 'Bearer ' + redactSecret(authHeader.slice(7)) : redactSecret(authHeader)) : '(missing)',
+    'x-refresh-secret:', xSecret ? redactSecret(xSecret) : '(missing)'
+  )
+
+  // Optional shared secret: require Bearer token or x-refresh-secret header if REFRESH_EMAIL_SECRET is set.
+  if (refreshSecret) {
+    const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
+    const headerSecret = (req.headers.get('x-refresh-secret') ?? '').trim()
+    const provided = (bearer ?? headerSecret).trim()
+    const expected = refreshSecret.trim()
+    if (provided !== expected) {
+      console.log('[refresh-email] rejected: invalid or missing secret')
+      return jsonRes({ status: 'error' }, 401)
+    }
+  }
+
   let body: { email?: string }
   try {
     body = await req.json()
-    console.log('[refresh-email] body parsed, has email:', typeof body?.email === 'string')
+    console.log('[refresh-email] request body:', JSON.stringify(body), '| has email:', typeof body?.email === 'string')
   } catch (e) {
     console.log('[refresh-email] body parse failed:', e instanceof Error ? e.message : String(e))
     return jsonRes({ status: 'error' }, 400)
@@ -84,6 +117,15 @@ Deno.serve(async (req: Request) => {
     console.log('[refresh-email] invalid or missing email')
     return jsonRes({ status: 'error' }, 400)
   }
+
+  // Per-email rate limit.
+  const now = Date.now()
+  const last = lastRequestByEmail.get(email) ?? 0
+  if (now - last < RATE_LIMIT_MS) {
+    console.log('[refresh-email] rate limited for email')
+    return jsonRes({ status: 'error' }, 429)
+  }
+  lastRequestByEmail.set(email, now)
 
   console.log('[refresh-email] checking email for', email)
 
