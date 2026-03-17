@@ -694,14 +694,13 @@ export default function Inbox() {
     return selectedAccountId
   }
 
-  // Collect all unique addresses in the thread (from, to, cc) excluding our own; for Reply All
+  // Collect all unique addresses in the thread (from, to, cc) excluding any address that appears in the From dropdown; for Reply All
   const getThreadRecipientsForReplyAll = (anchorMessage: InboxMessage | null): { to: string; cc: string } => {
-    const ourEmails = new Set<string>()
-    const acc = imapAccounts.find((a) => a.id === selectedAccountId)
-    if (acc) {
-      ourEmails.add(acc.email.trim().toLowerCase())
+    const fromDropdownEmails = new Set<string>()
+    for (const acc of imapAccounts) {
+      fromDropdownEmails.add(acc.email.trim().toLowerCase())
       for (const a of acc.addresses ?? []) {
-        ourEmails.add(a.trim().toLowerCase())
+        fromDropdownEmails.add(a.trim().toLowerCase())
       }
     }
     const parseAddresses = (s: string | null): string[] => {
@@ -718,7 +717,7 @@ export default function Inbox() {
       for (const a of parseAddresses(m.to_identifier)) set.add(a)
       for (const a of parseAddresses(m.cc)) set.add(a)
     }
-    ourEmails.forEach((e) => set.delete(e))
+    fromDropdownEmails.forEach((e) => set.delete(e))
     const lastInbound = messages.filter((m) => m.direction === 'inbound').pop()
     const primary = anchorMessage
       ? (parseAddresses(anchorMessage.from_identifier)[0] ?? '')
