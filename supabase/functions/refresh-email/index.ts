@@ -66,6 +66,16 @@ function redactSecret(s: string): string {
 }
 
 Deno.serve(async (req: Request) => {
+  try {
+    return await handleRefreshEmail(req)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.log('[refresh-email] uncaught error:', msg)
+    return jsonRes({ status: 'error' }, 500)
+  }
+})
+
+async function handleRefreshEmail(req: Request): Promise<Response> {
   console.log('[refresh-email] request method:', req.method, 'url:', req.url)
 
   if (req.method === 'OPTIONS') {
@@ -404,21 +414,35 @@ Deno.serve(async (req: Request) => {
       .eq('id', acc.id)
     console.log('[refresh-email] updated imap_accounts last_fetched_uid:', highestUid)
 
-    await lock.release()
-    console.log('[refresh-email] mailbox lock released')
+    try {
+      await lock.release()
+      console.log('[refresh-email] mailbox lock released')
+    } catch (releaseErr) {
+      console.log('[refresh-email] lock release error (ignored):', releaseErr instanceof Error ? releaseErr.message : String(releaseErr))
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.log('[refresh-email] mailbox/sync error:', msg)
-    await service.from('imap_accounts').update({ last_error: msg }).eq('id', acc.id)
+    try {
+      await service.from('imap_accounts').update({ last_error: msg }).eq('id', acc.id)
+    } catch {
+      // ignore update error
+    }
     n = 0
   } finally {
     console.log('[refresh-email] closing IMAP connection')
-    await client.logout().catch((e) => {
+    try {
+      await client.logout()
+    } catch (e) {
       console.log('[refresh-email] logout error (ignored):', e instanceof Error ? e.message : String(e))
+    }
+    try {
       client.close()
-    })
+    } catch {
+      // ignore
+    }
   }
 
   console.log('[refresh-email] found', n, n === 1 ? 'email' : 'emails', '| stored:', messagesInserted, 'messages,', threadsCreated, 'new threads')
   return jsonRes({ status: 'ok' }, 200)
-})
+}
