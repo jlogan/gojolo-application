@@ -24,6 +24,8 @@ type InboxMessage = {
   id: string; thread_id: string; channel: string; direction: string
   from_identifier: string; to_identifier: string | null; cc: string | null
   body: string | null; html_body: string | null; received_at: string
+  imap_account_id?: string | null
+  external_uid?: number | null
 }
 type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
@@ -158,6 +160,7 @@ export default function Inbox() {
 
   // Drag state
   const [isDragging, setIsDragging] = useState(false)
+  const [imapReloadingId, setImapReloadingId] = useState<string | null>(null)
 
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
@@ -243,7 +246,7 @@ export default function Inbox() {
     setMessagesLoading(true)
     let msgs: InboxMessage[] = []
     const { data, error: queryError } = await supabase.from('inbox_messages')
-      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
+      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid')
       .eq('thread_id', tid).order('received_at', { ascending: true })
     msgs = (data as InboxMessage[]) ?? []
     if (queryError) {
@@ -272,7 +275,7 @@ export default function Inbox() {
             })
             if (res.ok) {
               const { data: dataAfter } = await supabase.from('inbox_messages')
-                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
+                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid')
                 .eq('thread_id', tid).order('received_at', { ascending: true })
               msgs = (dataAfter as InboxMessage[]) ?? []
             }
@@ -889,6 +892,48 @@ export default function Inbox() {
 
   const getDownloadUrl = (path: string) => supabase.storage.from('inbox-attachments').getPublicUrl(path).data.publicUrl
 
+  const handleReloadFromImap = useCallback(async (m: InboxMessage) => {
+    if (!m.imap_account_id || m.external_uid == null) return
+    setImapReloadingId(m.id)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        setToastMsg('Sign in to reload from mail server')
+        setTimeout(() => setToastMsg(null), 3000)
+        return
+      }
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-fetch-body`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ messageId: m.id, forceRefresh: true }),
+      })
+      const data = await res.json().catch(() => ({})) as { error?: string; body?: string | null; htmlBody?: string | null; attachmentCount?: number }
+      if (!res.ok || data.error) {
+        setToastMsg(data.error || `Reload failed (${res.status})`)
+        setTimeout(() => setToastMsg(null), 4000)
+        return
+      }
+      setMessages((prev) =>
+        prev.map((x) =>
+          x.id === m.id ? { ...x, body: data.body ?? null, html_body: data.htmlBody ?? null } : x
+        )
+      )
+      await fetchAttachments(m.thread_id)
+      const ac = typeof data.attachmentCount === 'number' ? `${data.attachmentCount} file(s) from IMAP. ` : ''
+      setToastMsg(`${ac}Reloaded from mail server.`)
+      setTimeout(() => setToastMsg(null), 3500)
+    } catch {
+      setToastMsg('Could not reload from mail server')
+      setTimeout(() => setToastMsg(null), 3000)
+    } finally {
+      setImapReloadingId(null)
+    }
+  }, [fetchAttachments])
+
   const attachmentsByMessageId = useMemo(() => {
     const m = new Map<string, Attachment[]>()
     for (const a of attachments) {
@@ -1270,6 +1315,17 @@ export default function Inbox() {
                               <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                             </div>
                             {isExpanded && <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
+                              {m.imap_account_id && m.external_uid != null && (
+                                <button
+                                  type="button"
+                                  title="Reload body & attachments from mail server (IMAP)"
+                                  disabled={imapReloadingId === m.id}
+                                  onClick={(e) => { e.stopPropagation(); handleReloadFromImap(m) }}
+                                  className="p-1 rounded text-gray-500 hover:text-accent hover:bg-surface-muted disabled:opacity-40 shrink-0"
+                                >
+                                  <RefreshCw className={`w-3.5 h-3.5 ${imapReloadingId === m.id ? 'animate-spin' : ''}`} />
+                                </button>
+                              )}
                               <button type="button" title="Reply" onClick={(e) => { e.stopPropagation()
                                 setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
                                 setReplyTo(m.from_identifier); setReplyCc(''); setReplyBcc('')

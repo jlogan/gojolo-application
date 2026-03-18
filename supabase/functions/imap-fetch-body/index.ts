@@ -1,9 +1,9 @@
 /**
- * Lazy-load email body: fetches the full MIME source for a single message
- * from IMAP, parses it, stores body + attachments, and returns the content.
- *
- * Called when user opens a thread and a message has body = null.
- * POST { messageId } — fetches and stores the body, returns { body, htmlBody }.
+ * Lazy-load email body from IMAP: parses MIME, stores body + file attachments.
+ * POST { messageId, forceRefresh?: boolean }
+ * - Default: if body already in DB, returns cached; else fetches from IMAP.
+ * - forceRefresh: re-fetches full MIME from IMAP, replaces body/html, removes prior
+ *   file attachment rows + storage objects for this message, then re-imports attachments.
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -19,58 +19,102 @@ async function decrypt(ct: string, keyHex: string): Promise<string> {
   const kb = new Uint8Array(32)
   for (let i = 0; i < 32; i++) kb[i] = parseInt(keyHex.slice(i * 2, i * 2 + 2), 16)
   const key = await crypto.subtle.importKey('raw', kb, { name: 'AES-GCM' }, false, ['decrypt'])
-  const combined = Uint8Array.from(atob(ct), c => c.charCodeAt(0))
-  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: combined.slice(0, 12), tagLength: 128 }, key, combined.slice(12)))
+  const combined = Uint8Array.from(atob(ct), (c) => c.charCodeAt(0))
+  return new TextDecoder().decode(
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv: combined.slice(0, 12), tagLength: 128 }, key, combined.slice(12))
+  )
+}
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
 
   const auth = req.headers.get('Authorization')
-  if (!auth) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  if (!auth) return json({ error: 'Unauthorized' }, 401)
 
-  const { messageId } = await req.json().catch(() => ({})) as { messageId?: string }
-  if (!messageId) return new Response(JSON.stringify({ error: 'messageId required' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  const body = await req.json().catch(() => ({})) as { messageId?: string; forceRefresh?: boolean }
+  const { messageId, forceRefresh } = body
+  console.log('[imap-fetch-body] request', { messageId, forceRefresh })
+  if (!messageId) return json({ error: 'messageId required' }, 400)
 
   const service = createClient(supabaseUrl, serviceKey)
 
-  // Get the message record
-  const { data: msg, error: msgErr } = await service.from('inbox_messages')
-    .select('id, external_uid, imap_account_id, thread_id, body, html_body')
-    .eq('id', messageId).single()
+  const token = auth.replace(/^Bearer\s+/i, '')
+  const { data: { user }, error: uErr } = await service.auth.getUser(token)
+  if (uErr || !user?.id) return json({ error: 'Invalid token' }, 401)
 
-  if (msgErr || !msg) return new Response(JSON.stringify({ error: 'Message not found' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  const { data: msg, error: msgErr } = await service
+    .from('inbox_messages')
+    .select('id, external_uid, imap_account_id, thread_id, body, html_body, direction')
+    .eq('id', messageId)
+    .single()
 
-  // Already fetched? Return it.
-  if (msg.body !== null || msg.html_body !== null) {
-    return new Response(JSON.stringify({ body: msg.body, htmlBody: msg.html_body }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  if (msgErr || !msg) return json({ error: 'Message not found' }, 404)
+
+  const { data: thread } = await service.from('inbox_threads').select('org_id').eq('id', msg.thread_id).single()
+  if (!thread?.org_id) return json({ error: 'Thread not found' }, 404)
+
+  const { data: membership } = await service
+    .from('organization_users')
+    .select('user_id')
+    .eq('org_id', thread.org_id)
+    .eq('user_id', user.id)
+    .limit(1)
+  if (!membership?.length) return json({ error: 'Forbidden' }, 403)
+
+  const force = Boolean(forceRefresh)
+
+  if (!force && (msg.body !== null || msg.html_body !== null)) {
+    return json({ body: msg.body, htmlBody: msg.html_body, fromCache: true })
   }
 
-  if (!msg.imap_account_id || !msg.external_uid) {
-    return new Response(JSON.stringify({ error: 'No IMAP reference for this message' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  if (!msg.imap_account_id || msg.external_uid == null) {
+    return json({ error: 'No IMAP reference for this message (cannot reload from server)' }, 400)
   }
 
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
-    return new Response(JSON.stringify({ error: 'ENCRYPTION_KEY not configured' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    return json({ error: 'ENCRYPTION_KEY not configured' }, 500)
   }
 
-  // Get the IMAP account
-  const { data: acc } = await service.from('imap_accounts')
-    .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted')
-    .eq('id', msg.imap_account_id).single()
+  if (force) {
+    const { data: existing } = await service.from('inbox_attachments').select('file_path').eq('message_id', msg.id)
+    const paths = (existing ?? []).map((r: { file_path: string }) => r.file_path).filter(Boolean)
+    if (paths.length > 0) {
+      await service.storage.from('inbox-attachments').remove(paths).catch(() => {})
+    }
+    await service.from('inbox_attachments').delete().eq('message_id', msg.id)
+  }
 
-  if (!acc) return new Response(JSON.stringify({ error: 'IMAP account not found' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  const { data: acc } = await service
+    .from('imap_accounts')
+    .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted')
+    .eq('id', msg.imap_account_id)
+    .single()
+
+  if (!acc) return json({ error: 'IMAP account not found' }, 404)
 
   let password: string
-  try { password = await decrypt(acc.credentials_encrypted as string, encryptionKeyHex.slice(0, 64)) }
-  catch { return new Response(JSON.stringify({ error: 'Decrypt failed' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }) }
+  try {
+    password = await decrypt(acc.credentials_encrypted as string, encryptionKeyHex.slice(0, 64))
+  } catch {
+    return json({ error: 'Decrypt failed' }, 500)
+  }
 
   const secure = (acc.imap_encryption as string) === 'ssl' || (acc.imap_encryption as string) === 'tls'
   const isGmail = (acc.host as string).toLowerCase().includes('gmail.com')
   const mailboxPath = isGmail ? '[Gmail]/All Mail' : 'INBOX'
   const client = new ImapFlow({
-    host: acc.host as string, port: Number(acc.port) || 993, secure,
-    auth: { user: acc.imap_username as string, pass: password }, logger: false,
+    host: acc.host as string,
+    port: Number(acc.port) || 993,
+    secure,
+    auth: { user: acc.imap_username as string, pass: password },
+    logger: false,
   })
 
   try {
@@ -80,62 +124,115 @@ Deno.serve(async (req: Request) => {
       const fetched = await client.fetchAll(String(msg.external_uid), { source: true, uid: true }, { uid: true })
       const source = fetched[0]?.source as Uint8Array | undefined
 
+      console.log('[imap-fetch-body] IMAP fetch', { messageId, uid: msg.external_uid, sourceBytes: source?.byteLength ?? 0, fetchedCount: fetched.length })
+
       if (!source) {
         await lock.release()
         await client.logout().catch(() => client.close())
-        return new Response(JSON.stringify({ error: 'Message source not found on server' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+        return json({ error: 'Message source not found on IMAP server' }, 404)
       }
 
-      // Parse MIME
       const parsed = await PostalMime.parse(source)
+      const rawAttachments = parsed.attachments ?? []
+      console.log('[imap-fetch-body] MIME parsed', {
+        messageId,
+        textLen: (parsed.text ?? '').length,
+        htmlLen: (parsed.html ?? '').length,
+        attachmentsTotal: rawAttachments.length,
+        attachmentDetails: rawAttachments.map((a: { filename?: string; contentId?: string; content?: unknown }) => ({
+          filename: a.filename ?? '(none)',
+          contentId: a.contentId ?? null,
+          contentLength: Array.isArray(a.content) ? a.content.length : (a.content as ArrayBuffer)?.byteLength ?? 0,
+        })),
+      })
+
       let bodyText = parsed.text ?? ''
       let htmlBody = parsed.html ?? null
 
-      // Process inline images (CID)
-      const inlineAtts = (parsed.attachments ?? []).filter((a: { contentId?: string }) => a.contentId)
+      const inlineAtts = rawAttachments.filter((a: { contentId?: string }) => a.contentId)
+      const fileAtts = rawAttachments.filter((a: { contentId?: string }) => !a.contentId)
+      console.log('[imap-fetch-body] attachment split', { messageId, inlineCount: inlineAtts.length, fileCount: fileAtts.length })
+
+      let attachmentCount = 0
       if (htmlBody && inlineAtts.length > 0) {
         for (const att of inlineAtts) {
           const cid = att.contentId!.replace(/^<|>$/g, '')
-          const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${att.filename ?? 'inline'}`
-          const { error: upErr } = await service.storage.from('inbox-attachments').upload(path, new Uint8Array(att.content), { contentType: att.mimeType ?? 'application/octet-stream' })
+          const fname = att.filename ?? `inline-${cid}`
+          const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
+          const raw = att.content
+          const contentBytes = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? new Uint8Array(raw) : new Uint8Array((raw as ArrayBuffer) ?? [])
+          const { error: upErr } = await service.storage
+            .from('inbox-attachments')
+            .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
           if (!upErr) {
             const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
-            htmlBody = htmlBody!.replace(new RegExp(`cid:${cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'), urlData.publicUrl)
+            htmlBody = htmlBody!.replace(
+              new RegExp(`cid:${cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'),
+              urlData.publicUrl
+            )
+            const { error: insErr } = await service.from('inbox_attachments').insert({
+              message_id: msg.id,
+              thread_id: msg.thread_id,
+              file_name: fname,
+              file_path: path,
+              file_size: contentBytes.length,
+              content_type: att.mimeType,
+            })
+            if (!insErr) attachmentCount++
           }
         }
       }
 
-      // Store file attachments
-      const fileAtts = (parsed.attachments ?? []).filter((a: { contentId?: string }) => !a.contentId)
-      for (const att of fileAtts) {
+      for (let i = 0; i < fileAtts.length; i++) {
+        const att = fileAtts[i]
+        const raw = att.content
+        const contentBytes = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? new Uint8Array(raw) : new Uint8Array((raw as ArrayBuffer) ?? [])
         const fname = att.filename ?? `attachment-${Date.now()}`
         const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
-        const { error: upErr } = await service.storage.from('inbox-attachments').upload(path, new Uint8Array(att.content), { contentType: att.mimeType ?? 'application/octet-stream' })
+        const { error: upErr } = await service.storage
+          .from('inbox-attachments')
+          .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
+        console.log('[imap-fetch-body] file attachment', { messageId, index: i, filename: fname, bytes: contentBytes.length, uploadError: upErr?.message ?? null })
         if (!upErr) {
-          await service.from('inbox_attachments').insert({
-            message_id: msg.id, thread_id: msg.thread_id, file_name: fname,
-            file_path: path, file_size: att.content.byteLength, content_type: att.mimeType,
+          const { error: insErr } = await service.from('inbox_attachments').insert({
+            message_id: msg.id,
+            thread_id: msg.thread_id,
+            file_name: fname,
+            file_path: path,
+            file_size: contentBytes.length,
+            content_type: att.mimeType,
           })
+          if (insErr) console.log('[imap-fetch-body] insert attachment error', { messageId, filename: fname, error: insErr.message })
+          else attachmentCount++
         }
       }
+      console.log('[imap-fetch-body] done', { messageId, attachmentCount, fileAttsCount: fileAtts.length })
 
-      // Truncate if too long
       if (bodyText.length > 50000) bodyText = bodyText.slice(0, 50000)
       if (htmlBody && htmlBody.length > 50000) htmlBody = htmlBody.slice(0, 50000)
 
-      // Update the message row with the body
       await service.from('inbox_messages').update({ body: bodyText || null, html_body: htmlBody }).eq('id', msg.id)
 
       await lock.release()
       await client.logout().catch(() => client.close())
 
-      return new Response(JSON.stringify({ body: bodyText, htmlBody }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return json({
+        body: bodyText,
+        htmlBody,
+        fromImap: true,
+        forceRefresh: force,
+        attachmentCount,
+      })
     } catch (err) {
-      await lock.release()
+      await lock.release().catch(() => {})
       throw err
     }
   } catch (err) {
-    try { await client.logout() } catch { client.close() }
-    return new Response(JSON.stringify({ error: (err as Error).message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    try {
+      await client.logout()
+    } catch {
+      client.close()
+    }
+    return json({ error: (err as Error).message }, 500)
   }
 })

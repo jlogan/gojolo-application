@@ -200,41 +200,56 @@ Deno.serve(async (req: Request) => {
           let bodyText = parsed.text ?? ''
           let htmlBody = parsed.html ?? null
 
-          // Inline images (CID)
+          const rawToBytes = (raw: unknown) =>
+            raw instanceof Uint8Array ? raw : Array.isArray(raw) ? new Uint8Array(raw) : new Uint8Array((raw as ArrayBuffer) ?? [])
+
+          // Inline images (CID) — upload, rewrite HTML, and add to inbox_attachments so they show in attachment list
           const inlineAtts = (parsed.attachments ?? []).filter((a: { contentId?: string }) => a.contentId)
+          const newAtts: { file_name: string; file_path: string }[] = []
           if (htmlBody && inlineAtts.length > 0) {
             for (const att of inlineAtts) {
               const cid = att.contentId!.replace(/^<|>$/g, '')
-              const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${att.filename ?? 'inline'}`
+              const fname = att.filename ?? `inline-${cid}`
+              const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
+              const contentBytes = rawToBytes(att.content)
               const { error: upErr } = await service.storage
                 .from('inbox-attachments')
-                .upload(path, new Uint8Array(att.content), { contentType: att.mimeType ?? 'application/octet-stream' })
+                .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
               if (!upErr) {
                 const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
                 htmlBody = htmlBody!.replace(
                   new RegExp(`cid:${cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'),
                   urlData.publicUrl
                 )
+                await service.from('inbox_attachments').insert({
+                  message_id: msg.id,
+                  thread_id: msg.thread_id,
+                  file_name: fname,
+                  file_path: path,
+                  file_size: contentBytes.length,
+                  content_type: att.mimeType,
+                })
+                newAtts.push({ file_name: fname, file_path: path })
               }
             }
           }
 
-          // File attachments
+          // File attachments (no contentId)
           const fileAtts = (parsed.attachments ?? []).filter((a: { contentId?: string }) => !a.contentId)
-          const newAtts: { file_name: string; file_path: string }[] = []
           for (const att of fileAtts) {
             const fname = att.filename ?? `attachment-${Date.now()}`
             const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
+            const contentBytes = rawToBytes(att.content)
             const { error: upErr } = await service.storage
               .from('inbox-attachments')
-              .upload(path, new Uint8Array(att.content), { contentType: att.mimeType ?? 'application/octet-stream' })
+              .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
             if (!upErr) {
               await service.from('inbox_attachments').insert({
                 message_id: msg.id,
                 thread_id: msg.thread_id,
                 file_name: fname,
                 file_path: path,
-                file_size: att.content.byteLength,
+                file_size: contentBytes.length,
                 content_type: att.mimeType,
               })
               newAtts.push({ file_name: fname, file_path: path })
