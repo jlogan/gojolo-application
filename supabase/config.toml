@@ -49,7 +49,7 @@ verify_jwt = false
 [functions.imap-idle]
 verify_jwt = false
 
-# imap-fetch-body: lazy-load email body on demand when user opens a thread.
+# imap-fetch-body: lazy-load or force-reload message body + attachments from IMAP (JWT in body for auth).
 [functions.imap-fetch-body]
 verify_jwt = false
 
