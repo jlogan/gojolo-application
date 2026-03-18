@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react'
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
@@ -233,7 +233,10 @@ export default function Inbox() {
 
   const fetchAttachments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
-    setAttachments((data as Attachment[]) ?? [])
+    setAttachments(prev => {
+      if (selectedThreadIdRef.current !== tid) return prev
+      return (data as Attachment[]) ?? []
+    })
   }, [])
 
   const fetchMessages = useCallback(async (tid: string) => {
@@ -886,6 +889,26 @@ export default function Inbox() {
 
   const getDownloadUrl = (path: string) => supabase.storage.from('inbox-attachments').getPublicUrl(path).data.publicUrl
 
+  const attachmentsByMessageId = useMemo(() => {
+    const m = new Map<string, Attachment[]>()
+    for (const a of attachments) {
+      if (a.message_id) {
+        const list = m.get(a.message_id) ?? []
+        list.push(a)
+        m.set(a.message_id, list)
+      }
+    }
+    for (const [, list] of m) {
+      list.sort((x, y) => new Date(x.created_at).getTime() - new Date(y.created_at).getTime())
+    }
+    return m
+  }, [attachments])
+
+  const threadLevelAttachments = useMemo(
+    () => attachments.filter((a) => !a.message_id),
+    [attachments],
+  )
+
   // Render email address with contact linking
   const renderEmail = (email: string) => {
     const { name, contactId } = resolveEmail(email, threadContacts)
@@ -1182,10 +1205,17 @@ export default function Inbox() {
               <div className="flex-1 overflow-y-auto" onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
                 {isDragging && <div className="mx-4 mt-4 p-4 rounded-lg border-2 border-dashed border-accent bg-accent/5 text-center text-accent text-sm">Drop files to attach</div>}
                 <div className="p-4 space-y-4">
-                  {attachments.length > 0 && (
-                    <div className="flex items-center gap-2 flex-wrap text-xs">
-                      <span className="text-gray-500">Attachments:</span>
-                      {attachments.map(a => <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent"><Download className="w-3 h-3" /> {a.file_name}</a>)}
+                  {threadLevelAttachments.length > 0 && (
+                    <div className="flex items-center gap-2 flex-wrap text-xs rounded-lg border border-border/60 bg-surface-elevated/40 px-3 py-2">
+                      <span className="text-gray-500 shrink-0">Thread attachments:</span>
+                      <span className="text-gray-500 text-[10px]">(not linked to a specific message)</span>
+                      <div className="flex flex-wrap gap-2">
+                        {threadLevelAttachments.map((a) => (
+                          <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent">
+                            <Download className="w-3 h-3 shrink-0" /> {a.file_name}
+                          </a>
+                        ))}
+                      </div>
                     </div>
                   )}
 
@@ -1221,6 +1251,7 @@ export default function Inbox() {
                       const { html, content } = isExpanded ? cleanMessageBody(m) : { html: false, content: '' }
                       const sanitized = html ? sanitizeEmailHtml(content) : content
                       const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
+                      const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
                       return (<React.Fragment key={`msg-${m.id}`}>
                         <article className="rounded-lg border border-border overflow-hidden group/msg">
                           <header onClick={() => setExpandedMsgs(prev => { const n = new Set(prev); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n })}
@@ -1230,6 +1261,12 @@ export default function Inbox() {
                               {isExpanded && m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
                               {isExpanded && m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
                               {!isExpanded && preview && <span className="text-gray-500 truncate ml-2">{preview}</span>}
+                              {msgAttachments.length > 0 && (
+                                <span className="inline-flex items-center gap-1 text-gray-500 shrink-0" title={`${msgAttachments.length} attachment(s)`}>
+                                  <Paperclip className="w-3 h-3 text-accent/80" />
+                                  {msgAttachments.length}
+                                </span>
+                              )}
                               <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                             </div>
                             {isExpanded && <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
@@ -1272,6 +1309,18 @@ export default function Inbox() {
                           })() : (
                             <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
                           ))}
+                          {isExpanded && msgAttachments.length > 0 && (
+                            <div className="border-t border-border px-4 py-2.5 bg-surface-muted/30">
+                              <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">Attachments with this message</div>
+                              <div className="flex flex-wrap gap-2">
+                                {msgAttachments.map((a) => (
+                                  <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-muted border border-border text-gray-200 hover:text-accent text-xs">
+                                    <Download className="w-3.5 h-3.5 shrink-0" /> {a.file_name}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </article>
                         {/* Render reply form directly below the anchored message */}
                         {replyMode && replyMode !== 'compose' && replyAnchorMsgId === m.id && (
