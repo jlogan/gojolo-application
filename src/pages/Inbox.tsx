@@ -31,7 +31,7 @@ type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
   mentions: string[] | null; created_at: string; display_name?: string | null; avatar_url?: string | null
 }
-type Attachment = { id: string; message_id: string | null; thread_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string }
+type Attachment = { id: string; message_id: string | null; thread_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string; signedUrl?: string | null }
 type TimelineItem = { kind: 'message'; data: InboxMessage; ts: string } | { kind: 'comment'; data: InboxComment; ts: string }
 type InboxUser = { user_id: string; display_name: string | null; email: string | null; avatar_url?: string | null }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
@@ -236,9 +236,16 @@ export default function Inbox() {
 
   const fetchAttachments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
+    const rows = (data as Attachment[]) ?? []
+    const withSignedUrls = await Promise.all(
+      rows.map(async (a) => {
+        const { data: signed } = await supabase.storage.from('inbox-attachments').createSignedUrl(a.file_path, 3600)
+        return { ...a, signedUrl: signed?.signedUrl ?? null }
+      })
+    )
     setAttachments(prev => {
       if (selectedThreadIdRef.current !== tid) return prev
-      return (data as Attachment[]) ?? []
+      return withSignedUrls
     })
   }, [])
 
@@ -891,6 +898,7 @@ export default function Inbox() {
   const handleDragLeave = () => setIsDragging(false)
 
   const getDownloadUrl = (path: string) => supabase.storage.from('inbox-attachments').getPublicUrl(path).data.publicUrl
+  const getAttachmentHref = (a: Attachment) => a.signedUrl ?? getDownloadUrl(a.file_path)
 
   const handleReloadFromImap = useCallback(async (m: InboxMessage) => {
     if (!m.imap_account_id || m.external_uid == null) return
@@ -1256,7 +1264,7 @@ export default function Inbox() {
                       <span className="text-gray-500 text-[10px]">(not linked to a specific message)</span>
                       <div className="flex flex-wrap gap-2">
                         {threadLevelAttachments.map((a) => (
-                          <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent">
+                          <a key={a.id} href={getAttachmentHref(a)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-muted text-gray-300 hover:text-accent">
                             <Download className="w-3 h-3 shrink-0" /> {a.file_name}
                           </a>
                         ))}
@@ -1370,7 +1378,7 @@ export default function Inbox() {
                               <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">Attachments with this message</div>
                               <div className="flex flex-wrap gap-2">
                                 {msgAttachments.map((a) => (
-                                  <a key={a.id} href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-muted border border-border text-gray-200 hover:text-accent text-xs">
+                                  <a key={a.id} href={getAttachmentHref(a)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-muted border border-border text-gray-200 hover:text-accent text-xs">
                                     <Download className="w-3.5 h-3.5 shrink-0" /> {a.file_name}
                                   </a>
                                 ))}
