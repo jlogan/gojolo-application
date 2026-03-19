@@ -39,17 +39,27 @@ function jsonRes(data: Record<string, unknown>, status = 200) {
 }
 
 Deno.serve(async (req: Request) => {
+  const reqId = crypto.randomUUID().slice(0, 8)
+  console.log(`[inbox-send-reply] ${reqId} request method=${req.method}`)
+
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
   if (req.method !== 'POST') return jsonRes({ error: 'Method not allowed' })
 
   const auth = req.headers.get('Authorization')
-  if (!auth) return jsonRes({ error: 'Unauthorized' }, 401)
+  if (!auth) {
+    console.log(`[inbox-send-reply] ${reqId} rejected: no Authorization header`)
+    return jsonRes({ error: 'Unauthorized' }, 401)
+  }
 
   let body: ReqBody
-  try { body = await req.json() } catch { return jsonRes({ error: 'Invalid JSON' }) }
+  try { body = await req.json() } catch {
+    console.log(`[inbox-send-reply] ${reqId} rejected: invalid JSON`)
+    return jsonRes({ error: 'Invalid JSON' })
+  }
 
   const { body: bodyContent, subject: reqSubject, to: reqTo, cc, bcc, isHtml, compose, accountId, attachments: attachmentRefs } = body
   const threadId = body.threadId?.trim() || null
+  console.log(`[inbox-send-reply] ${reqId} body: threadId=${threadId ?? 'null'}, compose=${!!compose}, to=${reqTo ?? '(empty)'}, accountId=${accountId ?? 'auto'}, attachments=${attachmentRefs?.length ?? 0}`)
 
   if (!bodyContent?.trim()) return jsonRes({ error: 'body is required' })
   if (compose && !reqTo?.trim()) return jsonRes({ error: 'to is required for compose' })
@@ -64,12 +74,16 @@ Deno.serve(async (req: Request) => {
   let references: string | undefined
 
   if (threadId && !compose) {
+    console.log(`[inbox-send-reply] ${reqId} resolving reply: threadId=${threadId}`)
     const userClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, {
       global: { headers: { Authorization: auth } },
     })
     const { data: thread, error: tErr } = await userClient.from('inbox_threads')
       .select('id, org_id, channel, subject').eq('id', threadId).single()
-    if (tErr || !thread) return jsonRes({ error: 'Thread not found or access denied' })
+    if (tErr || !thread) {
+      console.log(`[inbox-send-reply] ${reqId} thread lookup failed:`, tErr?.message ?? 'not found')
+      return jsonRes({ error: 'Thread not found or access denied' })
+    }
     if (thread.channel !== 'email') return jsonRes({ error: 'Reply only supported for email threads' })
     orgId = thread.org_id as string
     subject = reqSubject?.trim() || (thread.subject as string) || 'Re: (No subject)'
@@ -83,6 +97,7 @@ Deno.serve(async (req: Request) => {
     toAddress = reqTo?.trim() || (last?.from_identifier as string) || ''
     inReplyTo = (last?.external_id as string) ?? undefined
     references = msgs?.slice(0, 10).map(m => m.external_id).filter(Boolean).reverse().join(' ') || undefined
+    console.log(`[inbox-send-reply] ${reqId} reply context: orgId=${orgId}, imapAccountId=${imapAccountId}, toAddress=${toAddress}, subject=${subject?.slice(0, 50)}`)
   } else {
     if (!accountId) {
       const { data: { user }, error: uErr } = await createClient(supabaseUrl, serviceKey).auth.getUser(auth.replace('Bearer ', ''))
@@ -100,15 +115,22 @@ Deno.serve(async (req: Request) => {
     }
     toAddress = reqTo?.trim() || ''
     subject = reqSubject?.trim() || '(No subject)'
+    console.log(`[inbox-send-reply] ${reqId} compose context: orgId=${orgId}, imapAccountId=${imapAccountId}, toAddress=${toAddress}`)
   }
 
-  if (!toAddress || !toAddress.includes('@')) return jsonRes({ error: 'Valid recipient (to) is required' })
+  if (!toAddress || !toAddress.includes('@')) {
+    console.log(`[inbox-send-reply] ${reqId} rejected: invalid to address`)
+    return jsonRes({ error: 'Valid recipient (to) is required' })
+  }
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) return jsonRes({ error: 'ENCRYPTION_KEY not configured' })
 
   const { data: account, error: accErr } = await service.from('imap_accounts')
     .select('id, org_id, email, label, smtp_host, smtp_port, smtp_use_tls, smtp_username, smtp_credentials_encrypted, credentials_encrypted')
     .eq('id', imapAccountId).single()
-  if (accErr || !account) return jsonRes({ error: 'IMAP account not found' })
+  if (accErr || !account) {
+    console.log(`[inbox-send-reply] ${reqId} IMAP account not found:`, accErr?.message ?? 'no data')
+    return jsonRes({ error: 'IMAP account not found' })
+  }
 
   let smtpPass: string
   const encKey = encryptionKeyHex.slice(0, 64)
@@ -156,20 +178,26 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    console.log(`[inbox-send-reply] ${reqId} sending via SMTP: from=${mailOpts.from}, to=${toAddress}, subject=${subject?.slice(0, 50)}`)
     await transporter.sendMail(mailOpts)
+    console.log(`[inbox-send-reply] ${reqId} SMTP send succeeded`)
   } catch (err) {
-    return jsonRes({ error: 'Send failed: ' + (err instanceof Error ? err.message : String(err)) })
+    const msg = err instanceof Error ? err.message : String(err)
+    console.log(`[inbox-send-reply] ${reqId} SMTP send failed:`, msg)
+    return jsonRes({ error: 'Send failed: ' + msg })
   }
 
   const now = new Date().toISOString()
   let saveThreadId = threadId
 
   if (!saveThreadId) {
-    const { data: newThread } = await service.from('inbox_threads').insert({
+    console.log(`[inbox-send-reply] ${reqId} creating new thread for compose`)
+    const { data: newThread, error: threadErr } = await service.from('inbox_threads').insert({
       org_id: orgId, channel: 'email', status: 'closed', subject,
       last_message_at: now, imap_account_id: imapAccountId,
       from_address: account.email as string,
     }).select('id').single()
+    if (threadErr) console.log(`[inbox-send-reply] ${reqId} thread insert error:`, threadErr.message)
     saveThreadId = (newThread as { id: string })?.id ?? null
   }
 
@@ -182,12 +210,17 @@ Deno.serve(async (req: Request) => {
     if (isHtml) { msgPayload.html_body = bodyContent; msgPayload.body = stripHtml(bodyContent) }
     else { msgPayload.body = bodyContent }
 
+    console.log(`[inbox-send-reply] ${reqId} inserting outbound message: threadId=${saveThreadId}, from=${account.email}, to=${toAddress}, received_at=${now}`)
     const { data: insertedMsg, error: msgErr } = await service
       .from('inbox_messages')
       .insert(msgPayload)
       .select('id')
       .single()
-    if (msgErr) return jsonRes({ error: 'Failed to save outbound message' })
+    if (msgErr) {
+      console.log(`[inbox-send-reply] ${reqId} inbox_messages insert failed:`, msgErr.message)
+      return jsonRes({ error: 'Failed to save outbound message' })
+    }
+    console.log(`[inbox-send-reply] ${reqId} inserted message id=${(insertedMsg as { id: string })?.id}`)
 
     if (attachmentRefs?.length) {
       const rows = attachmentRefs.map((att) => ({
@@ -204,5 +237,6 @@ Deno.serve(async (req: Request) => {
     await service.from('inbox_threads').update({ last_message_at: now, updated_at: now }).eq('id', saveThreadId)
   }
 
+  console.log(`[inbox-send-reply] ${reqId} success: threadId=${saveThreadId}`)
   return jsonRes({ ok: true, threadId: saveThreadId })
 })

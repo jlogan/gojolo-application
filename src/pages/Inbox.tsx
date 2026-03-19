@@ -166,6 +166,7 @@ export default function Inbox() {
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
   const replyFileRef = useRef<HTMLInputElement>(null)
+  const sendingReplyRef = useRef(false)
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -795,9 +796,16 @@ export default function Inbox() {
   const handleSendReply = async () => {
     if (!replyTo.trim() && replyMode !== 'compose') { toast('Recipient required'); return }
     if (!replyHtml.trim()) { toast('Message body is empty'); return }
+    if (sendingReplyRef.current) {
+      console.warn('[Inbox] handleSendReply: already sending, ignoring duplicate call')
+      return
+    }
+    sendingReplyRef.current = true
     setSendingReply(true)
+    const sendId = `send-${Date.now()}`
+    console.log('[Inbox] handleSendReply:', sendId, 'threadId=', selectedThreadId, 'to=', replyTo?.slice(0, 50), 'mode=', replyMode)
     const { data: { session } } = await supabase.auth.getSession()
-    if (!session?.access_token) { toast('Please sign in again'); setSendingReply(false); return }
+    if (!session?.access_token) { toast('Please sign in again'); sendingReplyRef.current = false; setSendingReply(false); return }
     let attachmentRefs: { fileName: string; filePath: string; contentType: string }[] = []
     if (replyAttachments.length > 0 && currentOrg?.id) {
       for (const file of replyAttachments) {
@@ -814,15 +822,19 @@ export default function Inbox() {
     }
     if (selectedThreadId && replyMode !== 'compose' && replyMode !== 'forward') payload.threadId = selectedThreadId
     else payload.compose = true
+    console.log('[Inbox] handleSendReply:', sendId, 'calling inbox-send-reply')
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
       body: JSON.stringify(payload),
     })
     const data = await res.json().catch(() => ({}))
+    console.log('[Inbox] handleSendReply:', sendId, 'response status=', res.status, 'ok=', res.ok, 'data=', data?.error ? { error: data.error } : { ok: data.ok, threadId: data.threadId })
+    sendingReplyRef.current = false
     setSendingReply(false)
     if (data?.error) { toast(data.error); return }
     setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
+    console.log('[Inbox] handleSendReply:', sendId, 'success, fetching threads and messages')
     toast('Sent'); fetchThreads()
     if (selectedThreadId) fetchMessages(selectedThreadId)
   }
