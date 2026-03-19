@@ -107,6 +107,7 @@ export default function Admin() {
   const [inviteSendMagicLink, setInviteSendMagicLink] = useState(false)
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteMessage, setInviteMessage] = useState<string | null>(null)
+  const [membersMessage, setMembersMessage] = useState<string | null>(null)
 
   const [imapLabel, setImapLabel] = useState('')
   const [imapAliases, setImapAliases] = useState('')
@@ -306,14 +307,24 @@ export default function Admin() {
 
   const handleChangeUserRole = async (userId: string, newRoleId: string) => {
     if (!currentOrg?.id) return
-    await supabase.from('organization_users').update({ role_id: newRoleId }).eq('org_id', currentOrg.id).eq('user_id', userId)
-    refetchUsers()
+    setMembersMessage(null)
+    const { error } = await supabase.from('organization_users').update({ role_id: newRoleId }).eq('org_id', currentOrg.id).eq('user_id', userId)
+    if (error) {
+      setMembersMessage(`Failed to change role: ${error.message}`)
+      return
+    }
+    await refetchUsers()
   }
 
   const handleRemoveUser = async (userId: string) => {
     if (!currentOrg?.id || !confirm('Remove this user from the workspace?')) return
-    await supabase.from('organization_users').delete().eq('org_id', currentOrg.id).eq('user_id', userId)
-    refetchUsers()
+    setMembersMessage(null)
+    const { error } = await supabase.from('organization_users').delete().eq('org_id', currentOrg.id).eq('user_id', userId)
+    if (error) {
+      setMembersMessage(`Failed to remove user: ${error.message}`)
+      return
+    }
+    await refetchUsers()
   }
 
   const handleCreateRole = async () => {
@@ -811,6 +822,7 @@ export default function Admin() {
                     </button>
                   </form>
 
+                  {membersMessage && <p className={`text-sm mb-4 ${membersMessage.startsWith('Failed') ? 'text-red-400' : 'text-accent'}`}>{membersMessage}</p>}
                   <div className="rounded-lg border border-border bg-surface-elevated">
                     <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                       <h3 className="text-sm font-medium text-white">Members ({members.length})</h3>

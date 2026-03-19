@@ -53,6 +53,8 @@ interface ImapAccountRow {
   credentials_encrypted: string
   last_fetched_uid: number | null
   last_fetched_uid_trash: number | null
+  email?: string
+  addresses?: string[] | null
 }
 
 function getMailboxPath(host: string): string {
@@ -61,6 +63,25 @@ function getMailboxPath(host: string): string {
 
 function getTrashMailboxPath(host: string): string {
   return host && host.toLowerCase().includes('gmail.com') ? '[Gmail]/Trash' : 'Trash'
+}
+
+/** Extract email from "Name <email>" or return trimmed lowercase. */
+function normalizeEmail(addr: string): string {
+  if (!addr?.trim()) return ''
+  const m = addr.trim().match(/<([^>]+)>/)
+  return (m ? m[1] : addr).trim().toLowerCase()
+}
+
+/** Build set of our org addresses (email + aliases) from accounts being synced. */
+function buildOurAddressesSet(accounts: ImapAccountRow[]): Set<string> {
+  const set = new Set<string>()
+  for (const a of accounts) {
+    if (a.email) set.add(normalizeEmail(a.email))
+    for (const alias of a.addresses ?? []) {
+      if (alias?.trim()) set.add(normalizeEmail(alias))
+    }
+  }
+  return set
 }
 
 /** Raw fallback: everything after headers (no MIME parsing). */
@@ -164,21 +185,25 @@ serve(async (req) => {
       const userClient = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, {
         global: { headers: { Authorization: auth } },
       })
-      const { data: isAdmin } = await userClient.rpc('is_org_admin', { p_org_id: body.orgId })
-      if (!isAdmin) {
-        console.log('[imap-sync] caller is not org admin for org', body.orgId, '— Forbidden')
-        return new Response(JSON.stringify({ error: 'Forbidden: not an org admin' }), {
+      const [adminRes, permRes] = await Promise.all([
+        userClient.rpc('is_org_admin', { p_org_id: body.orgId }),
+        userClient.rpc('user_has_permission', { p_org_id: body.orgId, p_permission: 'inbox.view' }),
+      ])
+      const hasAccess = adminRes.data === true || permRes.data === true
+      if (!hasAccess) {
+        console.log('[imap-sync] caller lacks org admin or inbox.view for org', body.orgId, '— Forbidden')
+        return new Response(JSON.stringify({ error: 'Forbidden: org access required' }), {
           status: 200,
           headers: { ...cors(), 'Content-Type': 'application/json' },
         })
       }
-      console.log('[imap-sync] auth ok, org admin for', body.orgId)
+      console.log('[imap-sync] auth ok for', body.orgId)
     }
   }
 
   let accountsQuery = service
     .from('imap_accounts')
-    .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid, last_fetched_uid_trash')
+    .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid, last_fetched_uid_trash, email, addresses')
     .eq('is_active', true)
 
   if (body.orgId) {
@@ -213,6 +238,8 @@ serve(async (req) => {
     )
   }
   console.log('[imap-sync] syncing', accounts.length, 'account(s):', (accounts as ImapAccountRow[]).map(a => ({ id: a.id, host: a.host })))
+
+  const ourAddressesSet = buildOurAddressesSet(accounts as ImapAccountRow[])
 
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
     console.log('[imap-sync] ENCRYPTION_KEY missing or too short')
@@ -341,8 +368,9 @@ serve(async (req) => {
 
                 const toAddr = envelope?.to?.[0]?.address ?? ''
                 const date = envelope?.date ? new Date(envelope.date) : new Date()
+                const backfillDirection = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
                 insertRows.push({
-                  thread_id: backfillThreadId, channel: 'email', direction: 'inbound',
+                  thread_id: backfillThreadId, channel: 'email', direction: backfillDirection,
                   from_identifier: fromAddr, to_identifier: toAddr, cc: null, bcc: null,
                   body: null, html_body: null, external_id: `uid-${acc.id}-${uid}`, external_uid: uid,
                   imap_account_id: acc.id, received_at: date.toISOString(),
@@ -557,8 +585,9 @@ serve(async (req) => {
         // Track for future reference lookups within this batch
         if (p.messageId) refMap.set(p.messageId, threadId)
 
+        const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
         insertRows.push({
-          thread_id: threadId, channel: 'email', direction: 'inbound',
+          thread_id: threadId, channel: 'email', direction,
           from_identifier: p.fromAddr, to_identifier: p.toAddr,
           cc: p.ccAddr ?? null, bcc: p.bccAddr ?? null,
           body: null, html_body: null,
@@ -681,10 +710,11 @@ serve(async (req) => {
               .select('id')
               .single()
             if (threadErr || !newThread) continue
+            const trashDirection = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
             const { error: msgErr } = await service.from('inbox_messages').insert({
               thread_id: newThread.id,
               channel: 'email',
-              direction: 'inbound',
+              direction: trashDirection,
               from_identifier: fromAddr,
               to_identifier: toAddr,
               body: null,

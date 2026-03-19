@@ -88,7 +88,7 @@ export default function Inbox() {
   const { user } = useAuth()
   const { threadId: urlThreadId } = useParams<{ threadId?: string }>()
   const navigate = useNavigate()
-  const [filter, setFilter] = useState<InboxFilter>('inbox')
+  const [filter, setFilter] = useState<InboxFilter>(() => (urlThreadId ? 'all' : 'inbox'))
   const [threads, setThreads] = useState<InboxThread[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(urlThreadId ?? null)
 
@@ -97,9 +97,10 @@ export default function Inbox() {
     setSelectedThreadId(urlThreadId ?? null)
   }, [urlThreadId])
 
-  // If opened via direct URL, use "all" filter so the thread is always visible
-  const [filter_init] = useState(() => urlThreadId ? 'all' as InboxFilter : 'inbox' as InboxFilter)
-  useEffect(() => { if (urlThreadId) setFilter(filter_init) }, [])
+  // When navigating to a thread via URL, switch to "all" filter so the thread is visible
+  useEffect(() => {
+    if (urlThreadId) setFilter('all')
+  }, [urlThreadId])
 
   // Update browser URL when thread selection changes
   useEffect(() => {
@@ -694,14 +695,32 @@ export default function Inbox() {
     return addrs
   }
 
-  // Find which IMAP account received this message (match to_identifier against accounts + aliases)
-  const findFromAccount = (toAddr: string | null, ccAddr: string | null): string => {
-    if (!toAddr && !ccAddr) return selectedAccountId
-    const allRecipients = [toAddr, ...(ccAddr?.split(',') ?? [])].filter(Boolean).map(e => e!.trim().toLowerCase())
-    for (const acc of imapAccounts) {
-      const accEmails = [acc.email.toLowerCase(), ...(acc.addresses ?? []).map(a => a.toLowerCase())]
-      for (const recipient of allRecipients) {
-        if (accEmails.includes(recipient)) return acc.id
+  // Parse "Name <email>" or plain email into lowercase email
+  const parseEmail = (s: string | null): string | null => {
+    if (!s?.trim()) return null
+    const m = s.trim().match(/<([^>]+)>/)
+    return m ? m[1].trim().toLowerCase() : s.trim().toLowerCase()
+  }
+
+  // Find which IMAP account to use based on our address in the last message
+  // Inbound: we're in to_identifier or cc. Outbound: we're in from_identifier
+  const findFromAccountForReply = (lastMsg: InboxMessage): string => {
+    const ourAddresses: string[] = []
+    if (lastMsg.direction === 'inbound') {
+      const to = parseEmail(lastMsg.to_identifier)
+      if (to) ourAddresses.push(to)
+      for (const part of (lastMsg.cc ?? '').split(/[,;]/)) {
+        const e = parseEmail(part)
+        if (e) ourAddresses.push(e)
+      }
+    } else {
+      const from = parseEmail(lastMsg.from_identifier)
+      if (from) ourAddresses.push(from)
+    }
+    for (const addr of ourAddresses) {
+      for (const acc of imapAccounts) {
+        const accEmails = [acc.email.toLowerCase(), ...(acc.addresses ?? []).map(a => a.toLowerCase())]
+        if (accEmails.includes(addr)) return acc.id
       }
     }
     return selectedAccountId
@@ -744,15 +763,17 @@ export default function Inbox() {
     if (mode === 'compose') {
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
     } else if (selectedThread && messages.length > 0) {
-      const last = messages.filter(m => m.direction === 'inbound').pop() ?? messages[messages.length - 1]
-      setSelectedAccountId(findFromAccount(last.to_identifier, last.cc))
+      const last = messages[messages.length - 1]
+      setSelectedAccountId(findFromAccountForReply(last))
       if (mode === 'reply_all') {
         const { to, cc } = getThreadRecipientsForReplyAll(null)
         setReplyTo(to)
         setReplyCc(cc)
         setShowCcBcc(!!cc.trim())
       } else {
-        setReplyTo(mode === 'forward' ? '' : last.from_identifier)
+        // Reply: inbound → reply to sender (from); outbound → reply to recipient (to)
+        const replyToAddr = mode === 'forward' ? '' : (last.direction === 'inbound' ? last.from_identifier : last.to_identifier)
+        setReplyTo(replyToAddr ?? '')
         setReplyCc('')
         setReplyBcc('')
         setShowCcBcc(false)
@@ -1335,13 +1356,13 @@ export default function Inbox() {
                                 </button>
                               )}
                               <button type="button" title="Reply" onClick={(e) => { e.stopPropagation()
-                                setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
+                                setSelectedAccountId(findFromAccountForReply(m))
                                 setReplyTo(m.from_identifier); setReplyCc(''); setReplyBcc('')
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
                                 setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Reply All" onClick={(e) => { e.stopPropagation()
-                                setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
+                                setSelectedAccountId(findFromAccountForReply(m))
                                 const { to, cc } = getThreadRecipientsForReplyAll(m)
                                 setReplyTo(to)
                                 setReplyCc(cc)
@@ -1351,7 +1372,7 @@ export default function Inbox() {
                                 setReplyHtml(''); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Forward" onClick={(e) => { e.stopPropagation()
-                                setSelectedAccountId(findFromAccount(m.to_identifier, m.cc))
+                                setSelectedAccountId(findFromAccountForReply(m))
                                 setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
                                 const { content: fwdContent } = cleanMessageBody(m)
