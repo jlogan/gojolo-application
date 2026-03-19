@@ -436,9 +436,12 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
     }
 
     if (insertRows.length > 0) {
+      const inboundCount = insertRows.filter((r) => r.direction === 'inbound').length
+      const outboundCount = insertRows.filter((r) => r.direction === 'outbound').length
+      console.log('[refresh-email] batch insert: rows=', insertRows.length, 'inbound=', inboundCount, 'outbound=', outboundCount)
       const { error: batchErr, count } = await service.from('inbox_messages').insert(insertRows, { count: 'exact' })
       if (batchErr) {
-        console.log('[refresh-email] batch insert error:', batchErr.message)
+        console.log('[refresh-email] batch insert error:', batchErr.message, 'code=', batchErr.code)
       } else {
         messagesInserted = count ?? insertRows.length
         console.log('[refresh-email] inserted', messagesInserted, 'message(s),', threadsCreated, 'new thread(s)')

@@ -146,7 +146,8 @@ function normalizeMessageId(id: string | null): string | null {
 }
 
 serve(async (req) => {
-  console.log('[imap-sync] request method:', req.method)
+  const syncId = crypto.randomUUID().slice(0, 8)
+  console.log('[imap-sync]', syncId, 'request method:', req.method)
 
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: cors() })
@@ -168,7 +169,7 @@ serve(async (req) => {
   } catch {
     // empty body for cron is ok
   }
-  console.log('[imap-sync] body:', { orgId: body.orgId ?? null, accountId: body.accountId ?? null, resync: body.resync ?? false }, 'isCron:', isCron)
+  console.log('[imap-sync]', syncId, 'body:', { orgId: body.orgId ?? null, accountId: body.accountId ?? null, resync: body.resync ?? false, backfillForThread: body.backfillForThread ?? null }, 'isCron:', isCron)
 
   const service = createClient(supabaseUrl, serviceKey)
 
@@ -237,9 +238,10 @@ serve(async (req) => {
       { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
     )
   }
-  console.log('[imap-sync] syncing', accounts.length, 'account(s):', (accounts as ImapAccountRow[]).map(a => ({ id: a.id, host: a.host })))
+  console.log('[imap-sync]', syncId, 'syncing', accounts.length, 'account(s):', (accounts as ImapAccountRow[]).map(a => ({ id: a.id, host: a.host, email: a.email })))
 
   const ourAddressesSet = buildOurAddressesSet(accounts as ImapAccountRow[])
+  console.log('[imap-sync] ourAddressesSet size=', ourAddressesSet.size, 'addresses=', [...ourAddressesSet].slice(0, 5).join(', '))
 
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
     console.log('[imap-sync] ENCRYPTION_KEY missing or too short')
@@ -378,10 +380,12 @@ serve(async (req) => {
                 existingUids.add(uid)
               }
               if (insertRows.length > 0) {
+                const backfillInbound = insertRows.filter((r) => r.direction === 'inbound').length
+                const backfillOutbound = insertRows.filter((r) => r.direction === 'outbound').length
                 const { error: insErr, count: insCount } = await service.from('inbox_messages').insert(insertRows, { count: 'exact' })
                 if (!insErr) {
                   totalMessages += insCount ?? insertRows.length
-                  console.log('[imap-sync] backfill inserted', insCount ?? insertRows.length, 'messages for thread', backfillThreadId)
+                  console.log('[imap-sync] backfill inserted', insCount ?? insertRows.length, 'messages for thread', backfillThreadId, 'inbound=', backfillInbound, 'outbound=', backfillOutbound)
                   // Use latest message's received_at, not now() — preserves thread order in list
                   const latestReceived = insertRows.reduce((max, r) => {
                     const t = new Date((r.received_at as string) ?? 0).getTime()
@@ -484,7 +488,7 @@ serve(async (req) => {
         }
       }
 
-      console.log('[imap-sync] account', acc.id, 'envelopes=', envelopes.length, 'newMsgs=', newMsgs.length)
+      console.log('[imap-sync] account', acc.id, 'envelopes=', envelopes.length, 'newMsgs=', newMsgs.length, 'lastUid=', lastUid)
 
       if (newMsgs.length === 0) {
         console.log('[imap-sync] account', acc.id, 'no new messages — updating last_fetch_at only')
@@ -586,6 +590,26 @@ serve(async (req) => {
         if (p.messageId) refMap.set(p.messageId, threadId)
 
         const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+        // Skip outbound if we already have it from inbox-send-reply (app insert has no external_uid)
+        if (direction === 'outbound' && threadId) {
+          const cutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
+          const { data: existing } = await service.from('inbox_messages')
+            .select('id')
+            .eq('thread_id', threadId)
+            .eq('imap_account_id', acc.id)
+            .eq('direction', 'outbound')
+            .is('external_uid', null)
+            .gte('received_at', cutoff)
+            .limit(1)
+          if (existing?.length) {
+            const existingId = (existing[0] as { id: string }).id
+            console.log('[imap-sync] account', acc.id, 'outbound dedup: updating existing msg', existingId, 'threadId=', threadId, 'uid=', p.uid, 'from=', p.fromAddr?.slice(0, 40), 'to=', p.toAddr?.slice(0, 40))
+            await service.from('inbox_messages')
+              .update({ external_id: p.externalId, external_uid: p.uid })
+              .eq('id', existingId)
+            continue
+          }
+        }
         insertRows.push({
           thread_id: threadId, channel: 'email', direction,
           from_identifier: p.fromAddr, to_identifier: p.toAddr,
@@ -597,11 +621,14 @@ serve(async (req) => {
       }
 
       // Batch insert all messages (unique index on imap_account_id+external_uid handles dedup)
+      const inboundCount = insertRows.filter((r) => r.direction === 'inbound').length
+      const outboundCount = insertRows.filter((r) => r.direction === 'outbound').length
       if (insertRows.length > 0) {
+        console.log('[imap-sync] account', acc.id, 'batch insert: rows=', insertRows.length, 'inbound=', inboundCount, 'outbound=', outboundCount)
         const { error: batchErr, count } = await service.from('inbox_messages')
           .insert(insertRows, { count: 'exact' })
         if (batchErr) {
-          console.log('[imap-sync] account', acc.id, 'batch insert error:', batchErr.message)
+          console.log('[imap-sync] account', acc.id, 'batch insert error:', batchErr.message, 'code=', batchErr.code)
           errors.push(`${acc.imap_username}: batch insert: ${batchErr.message}`)
         } else {
           messagesInserted = count ?? insertRows.length
@@ -711,6 +738,7 @@ serve(async (req) => {
               .single()
             if (threadErr || !newThread) continue
             const trashDirection = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
+            console.log('[imap-sync] account', acc.id, 'trash insert: direction=', trashDirection, 'from=', fromAddr?.slice(0, 30), 'to=', toAddr?.slice(0, 30))
             const { error: msgErr } = await service.from('inbox_messages').insert({
               thread_id: newThread.id,
               channel: 'email',
@@ -759,7 +787,7 @@ serve(async (req) => {
     messagesUpdated: totalMessagesUpdated,
     errors: errors.length ? errors : undefined,
   }
-  console.log('[imap-sync] done:', result)
+  console.log('[imap-sync]', syncId, 'done:', result)
   return new Response(
     JSON.stringify(result),
     { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
