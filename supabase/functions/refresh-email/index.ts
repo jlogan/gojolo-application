@@ -140,7 +140,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
   const emailNorm = email.trim().toLowerCase()
   console.log('[refresh-email] querying imap_accounts for email (is_active=true)', { email: emailNorm })
 
-  const cols = 'id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid'
+  const cols = 'id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid, email, addresses'
   const base = () => service.from('imap_accounts').select(cols).eq('is_active', true)
 
   // 1) Match by primary email, then by imap_username
@@ -180,6 +180,20 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
   const acc = accounts[0] as ImapAccountRow
   console.log('[refresh-email] account id:', acc.id, 'host:', acc.host, 'last_fetched_uid:', acc.last_fetched_uid)
+
+  const { data: orgAccounts } = await service.from('imap_accounts').select('email, addresses').eq('org_id', acc.org_id).eq('is_active', true)
+  const ourAddressesSet = new Set<string>()
+  const normalizeEmail = (addr: string) => {
+    if (!addr?.trim()) return ''
+    const m = addr.trim().match(/<([^>]+)>/)
+    return (m ? m[1] : addr).trim().toLowerCase()
+  }
+  for (const a of (orgAccounts ?? []) as { email?: string; addresses?: string[] }[]) {
+    if (a.email) ourAddressesSet.add(normalizeEmail(a.email))
+    for (const alias of a.addresses ?? []) {
+      if (alias?.trim()) ourAddressesSet.add(normalizeEmail(alias))
+    }
+  }
 
   let password: string
   try {
@@ -403,10 +417,11 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       const tid = threadId as string
       if (p.messageId) refMap.set(p.messageId, tid)
 
+      const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
       insertRows.push({
         thread_id: tid,
         channel: 'email',
-        direction: 'inbound',
+        direction,
         from_identifier: p.fromAddr,
         to_identifier: p.toAddr,
         cc: p.ccAddr ?? null,
