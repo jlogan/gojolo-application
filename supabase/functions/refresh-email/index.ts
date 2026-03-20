@@ -260,7 +260,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
     const envelopes = await client.fetchAll(range, {
       envelope: true,
-      headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc'],
+      headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'],
       uid: true,
     }, { uid: true })
     console.log('[refresh-email] fetchAll returned', envelopes.length, 'envelope(s)')
@@ -322,12 +322,14 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map((r) => normalizeMessageId(r)).filter(Boolean) as string[]) : []
       const ccRaw = getHdr('cc') ?? getHdr('Cc')
       const bccRaw = getHdr('bcc') ?? getHdr('Bcc')
+      const fromHeader = (getHdr('from') ?? getHdr('From') ?? '').trim()
+      const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
       return {
         uid,
         messageId,
         inReplyTo,
         refsList,
-        fromAddr: envelope?.from?.[0]?.address ?? '',
+        fromAddr,
         toAddr: (envelope?.to?.[0]?.address as string) ?? '',
         ccAddr: ccRaw?.trim() || null,
         bccAddr: bccRaw?.trim() || null,
@@ -418,6 +420,28 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       if (p.messageId) refMap.set(p.messageId, tid)
 
       const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+      // Skip outbound insert if we already have it from inbox-send-reply (app insert has no external_uid)
+      if (direction === 'outbound') {
+        const cutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
+        const { data: existing } = await service
+          .from('inbox_messages')
+          .select('id')
+          .eq('thread_id', tid)
+          .eq('imap_account_id', acc.id)
+          .eq('direction', 'outbound')
+          .is('external_uid', null)
+          .gte('received_at', cutoff)
+          .limit(1)
+        if (existing?.length) {
+          const existingId = (existing[0] as { id: string }).id
+          console.log('[refresh-email] outbound dedup: updating existing msg', existingId, 'threadId=', tid, 'uid=', p.uid)
+          await service
+            .from('inbox_messages')
+            .update({ external_id: p.externalId, external_uid: p.uid })
+            .eq('id', existingId)
+          continue
+        }
+      }
       insertRows.push({
         thread_id: tid,
         channel: 'email',
