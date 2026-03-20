@@ -144,7 +144,8 @@ Deno.serve(async (req: Request) => {
           if (uid > highestUid) highestUid = uid
 
           const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
-          const fromAddr = envelope?.from?.[0]?.address ?? ''
+          const fromHeader = source ? getHeader(source, 'From')?.trim() : null
+          const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
           const toAddr = envelope?.to?.[0]?.address ?? ''
           const subject = envelope?.subject ?? ''
           const date = envelope?.date ? new Date(envelope.date) : new Date()

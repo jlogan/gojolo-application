@@ -420,10 +420,11 @@ serve(async (req) => {
             if (!msg) continue
             const uid = msg.uid as number
             const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; date?: Date }
-            const fromAddr = envelope?.from?.[0]?.address ?? ''
+            const source = msg.source as Uint8Array | Buffer | undefined
+            const fromHeader = source ? getHeader(source, 'From')?.trim() : null
+            const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
             const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
             const date = envelope?.date ? new Date(envelope.date) : new Date()
-            const source = msg.source as Uint8Array | Buffer | undefined
             const parsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
             const bodyText = parsed.body
             const ccStr = source ? getHeader(source, 'Cc') : null
@@ -462,7 +463,7 @@ serve(async (req) => {
       console.log('[imap-sync] account', acc.id, 'fetch range:', range)
 
       // Fetch headers only — no body/source download
-      const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc'], uid: true }, { uid: true })
+      const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }, { uid: true })
 
       let newMsgs = envelopes
         .filter((m) => {
@@ -517,9 +518,11 @@ serve(async (req) => {
         const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map(r => normalizeMessageId(r)).filter(Boolean) as string[]) : []
         const ccRaw = getHdr('cc') ?? getHdr('Cc')
         const bccRaw = getHdr('bcc') ?? getHdr('Bcc')
+        const fromHeader = (getHdr('from') ?? getHdr('From') ?? '').trim()
+        const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
         return {
           uid, messageId, inReplyTo, refsList,
-          fromAddr: envelope?.from?.[0]?.address ?? '',
+          fromAddr,
           toAddr: envelope?.to?.[0]?.address ?? '',
           ccAddr: ccRaw?.trim() || null,
           bccAddr: bccRaw?.trim() || null,
