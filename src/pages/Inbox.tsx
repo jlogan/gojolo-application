@@ -807,48 +807,6 @@ export default function Inbox() {
     fetchThreads()
   }
 
-  const handleAssignTo = async (uid: string) => {
-    if (!selectedThreadId || !currentOrg?.id) return
-    setActionLoading(true)
-    const selectedThread = threads.find(t => t.id === selectedThreadId)
-    const subject = selectedThread?.subject ?? '(No subject)'
-    const assignerName = user?.id ? getUserName(user.id) : 'Someone'
-
-    // Add assignee (multi-assign — doesn't replace existing)
-    const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert({ thread_id: selectedThreadId, user_id: uid })
-    if (assignErr) {
-      console.warn('[Inbox] Assign error:', assignErr.message)
-      setActionLoading(false)
-      return
-    }
-
-    // Send DM (and/or email) to assignee per their Profile → Notifications preference (same as Test DM, no app_config)
-    const { data: { session } } = await supabase.auth.getSession()
-    if (session?.access_token) {
-      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-user-notification`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({
-          event_type: 'thread_assigned',
-          user_id: uid,
-          org_id: currentOrg.id,
-          payload: { thread_id: selectedThreadId, subject, assigner_name: assignerName },
-        }),
-      }).catch(() => {})
-      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-        body: JSON.stringify({ threadId: selectedThreadId, action: 'archive' }),
-      }).catch(() => {})
-    }
-
-    await fetchThreads(); setActionLoading(false); toast(`Assigned to ${getUserName(uid)}`)
-  }
-
   const handleUnassign = async (uid: string) => {
     if (!selectedThreadId) return
     setActionLoading(true)
