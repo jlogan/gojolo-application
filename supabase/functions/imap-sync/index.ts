@@ -96,6 +96,9 @@ function parseBodyFromSourceRaw(source: Uint8Array | Buffer): string {
 
 const MAX_BODY_LENGTH = 50000
 
+/** Max message bodies to fetch per sync to stay under Gmail IMAP quota (~2.5GB/day). Only new messages get body fetch. */
+const MAX_BODY_FETCH_PER_SYNC = 10
+
 type ParsedEmail = {
   body: string
   htmlBody: string | null
@@ -626,16 +629,88 @@ serve(async (req) => {
       // Batch insert all messages (unique index on imap_account_id+external_uid handles dedup)
       const inboundCount = insertRows.filter((r) => r.direction === 'inbound').length
       const outboundCount = insertRows.filter((r) => r.direction === 'outbound').length
+      let insertedRows: { id: string; external_uid: number; thread_id: string }[] = []
       if (insertRows.length > 0) {
         console.log('[imap-sync] account', acc.id, 'batch insert: rows=', insertRows.length, 'inbound=', inboundCount, 'outbound=', outboundCount)
-        const { error: batchErr, count } = await service.from('inbox_messages')
+        const { data: insertedData, error: batchErr, count } = await service.from('inbox_messages')
           .insert(insertRows, { count: 'exact' })
+          .select('id, external_uid, thread_id')
         if (batchErr) {
           console.log('[imap-sync] account', acc.id, 'batch insert error:', batchErr.message, 'code=', batchErr.code)
           errors.push(`${acc.imap_username}: batch insert: ${batchErr.message}`)
         } else {
           messagesInserted = count ?? insertRows.length
+          insertedRows = (insertedData ?? []) as { id: string; external_uid: number; thread_id: string }[]
           console.log('[imap-sync] account', acc.id, 'inserted threads=', threadsCreated, 'messages=', messagesInserted)
+
+          // Fetch bodies for new messages only (headers already confirmed new). Limit to avoid Gmail IMAP quota.
+          const toFetch = insertedRows.slice(0, MAX_BODY_FETCH_PER_SYNC)
+          if (toFetch.length > 0) {
+            console.log('[imap-sync] account', acc.id, 'fetching bodies for', toFetch.length, 'new messages (limit', MAX_BODY_FETCH_PER_SYNC, ')')
+            for (const row of toFetch) {
+              try {
+                const fetched = await client.fetchAll(String(row.external_uid), { source: true, uid: true }, { uid: true })
+                const source = fetched[0]?.source as Uint8Array | undefined
+                if (!source) continue
+                const parsed = await parseBodyFromSource(source)
+                let bodyText = parsed.body.slice(0, MAX_BODY_LENGTH)
+                let htmlBody = parsed.htmlBody?.slice(0, MAX_BODY_LENGTH) ?? null
+
+                // Inline images (CID)
+                if (htmlBody && parsed.attachments.length > 0) {
+                  const inlineAtts = parsed.attachments.filter((a) => a.cid)
+                  for (const att of inlineAtts) {
+                    const path = `${acc.org_id}/${row.thread_id}/${Date.now()}-${att.filename}`
+                    const { error: upErr } = await service.storage
+                      .from('inbox-attachments')
+                      .upload(path, att.content, { contentType: att.contentType })
+                    if (!upErr) {
+                      const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
+                      htmlBody = htmlBody!.replace(
+                        new RegExp(`cid:${att.cid!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'),
+                        urlData.publicUrl
+                      )
+                      await service.from('inbox_attachments').insert({
+                        message_id: row.id,
+                        thread_id: row.thread_id,
+                        file_name: att.filename,
+                        file_path: path,
+                        file_size: att.content.length,
+                        content_type: att.contentType,
+                      })
+                    }
+                  }
+                }
+
+                // File attachments (no CID)
+                const fileAtts = parsed.attachments.filter((a) => !a.cid)
+                for (const att of fileAtts) {
+                  const path = `${acc.org_id}/${row.thread_id}/${Date.now()}-${att.filename}`
+                  const { error: upErr } = await service.storage
+                    .from('inbox-attachments')
+                    .upload(path, att.content, { contentType: att.contentType })
+                  if (!upErr) {
+                    await service.from('inbox_attachments').insert({
+                      message_id: row.id,
+                      thread_id: row.thread_id,
+                      file_name: att.filename,
+                      file_path: path,
+                      file_size: att.content.length,
+                      content_type: att.contentType,
+                    })
+                  }
+                }
+
+                await service
+                  .from('inbox_messages')
+                  .update({ body: bodyText || null, html_body: htmlBody })
+                  .eq('id', row.id)
+                console.log('[imap-sync] account', acc.id, 'body fetched', { msgId: row.id, bodyLen: bodyText.length, htmlLen: htmlBody?.length ?? 0 })
+              } catch (bodyErr) {
+                console.log('[imap-sync] account', acc.id, 'body fetch failed for', row.id, (bodyErr as Error).message)
+              }
+            }
+          }
         }
       }
 

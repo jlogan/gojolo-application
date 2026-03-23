@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Link, useParams, useNavigate } from 'react-router-dom'
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -88,25 +88,92 @@ export default function Inbox() {
   const { user } = useAuth()
   const { threadId: urlThreadId } = useParams<{ threadId?: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const inboxDebug = searchParams.get('debug') === '1'
+  const debugEnabledRef = useRef(inboxDebug)
+  debugEnabledRef.current = inboxDebug
+  const debugLog = useCallback((tag: string, payload: Record<string, unknown>, threadId?: string | null) => {
+    if (!debugEnabledRef.current) return
+    console.log(`[Inbox:${tag}]`, payload)
+    const uid = user?.id ?? null
+    if (uid && currentOrg?.id) {
+      supabase.from('inbox_debug_log').insert({
+        user_id: uid,
+        org_id: currentOrg.id,
+        thread_id: threadId ?? null,
+        tag,
+        payload,
+      }).then(({ error }) => { if (error) console.warn('[Inbox:debugLog] supabase insert failed', error) })
+    }
+  }, [user?.id, currentOrg?.id])
+  const debugLogRef = useRef(debugLog)
+  debugLogRef.current = debugLog
   const [filter, setFilter] = useState<InboxFilter>(() => (urlThreadId ? 'all' : 'inbox'))
+
+  // Log all Inbox route entries (direct load, sidebar click, external link)
+  useEffect(() => {
+    console.log('[Inbox:nav] Inbox page mounted/entered', { urlThreadId, pathname: window.location.pathname })
+  }, [])
   const [threads, setThreads] = useState<InboxThread[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(urlThreadId ?? null)
+  const [selectedThreadFallback, setSelectedThreadFallback] = useState<InboxThread | null>(null)
 
   // Keep selectedThreadId in sync with URL (direct load, back/forward, link navigation)
   useEffect(() => {
+    console.log('[Inbox:nav] URL sync → selectedThreadId', { urlThreadId, from: 'useEffect(urlThreadId)' })
     setSelectedThreadId(urlThreadId ?? null)
   }, [urlThreadId])
 
-  // When navigating to a thread via URL, switch to "all" filter so the thread is visible
+  // Fallback: when thread is selected via URL but not in list (e.g. trashed, or paginated out), fetch it so we can display it
   useEffect(() => {
-    if (urlThreadId) setFilter('all')
-  }, [urlThreadId])
+    if (!selectedThreadId || !currentOrg?.id) {
+      setSelectedThreadFallback(null)
+      return
+    }
+    const inList = threads.some(t => t.id === selectedThreadId)
+    if (inList) {
+      setSelectedThreadFallback(null)
+      return
+    }
+    supabase.from('inbox_threads')
+      .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
+      .eq('id', selectedThreadId).eq('org_id', currentOrg.id).single()
+      .then(({ data }) => setSelectedThreadFallback((data as InboxThread) ?? null))
+      .catch(() => setSelectedThreadFallback(null))
+  }, [selectedThreadId, threads, currentOrg?.id])
+
+  // When navigating to a thread via URL, switch filter only if the thread isn't already in the list
+  // (avoids replacing threads and losing the selected one when clicking from Inbox/Mine/etc.)
+  // "All" excludes trash, so we must pick the right filter (trash vs all) based on thread status
+  const urlThreadFilterSwitchedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!urlThreadId || !currentOrg?.id) return
+    if (urlThreadFilterSwitchedRef.current && urlThreadFilterSwitchedRef.current !== urlThreadId) {
+      urlThreadFilterSwitchedRef.current = null
+    }
+    const alreadyInList = threads.some(t => t.id === urlThreadId)
+    if (alreadyInList) {
+      urlThreadFilterSwitchedRef.current = urlThreadId
+      return
+    }
+    if (urlThreadFilterSwitchedRef.current === urlThreadId) return
+    urlThreadFilterSwitchedRef.current = urlThreadId
+    supabase.from('inbox_threads').select('status').eq('id', urlThreadId).eq('org_id', currentOrg.id).single()
+      .then(({ data }) => {
+        const status = (data as { status?: string } | null)?.status
+        const targetFilter: InboxFilter = status === 'archived' ? 'trash' : 'all'
+        console.log('[Inbox:nav] URL has threadId → switch filter', { urlThreadId, status, targetFilter })
+        setFilter(targetFilter)
+      })
+      .catch(() => setFilter('all'))
+  }, [urlThreadId, threads, currentOrg?.id])
 
   // Update browser URL when thread selection changes
   useEffect(() => {
     const currentPath = window.location.pathname
     const targetPath = selectedThreadId ? `/inbox/${selectedThreadId}` : '/inbox'
     if (currentPath !== targetPath) {
+      console.log('[Inbox:nav] navigate()', { from: currentPath, to: targetPath, selectedThreadId })
       navigate(targetPath, { replace: true })
     }
   }, [selectedThreadId, navigate])
@@ -167,6 +234,7 @@ export default function Inbox() {
   const timelineEndRef = useRef<HTMLDivElement>(null)
   const replyFileRef = useRef<HTMLInputElement>(null)
   const sendingReplyRef = useRef(false)
+  const outboundEmptyWarnedKeyRef = useRef<string | null>(null)
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -174,7 +242,22 @@ export default function Inbox() {
   const cleanMessageBody = (msg: InboxMessage): { html: boolean; content: string } => {
     if (msg.html_body) return { html: true, content: msg.html_body }
     const body = msg.body
-    if (!body?.trim()) return { html: false, content: 'Downloading message...' }
+    if (!body?.trim()) {
+      debugLog(
+        'cleanMessageBody',
+        {
+          event: 'EMPTY_body_placeholder',
+          messageId: msg.id,
+          threadId: msg.thread_id,
+          direction: msg.direction,
+          external_uid: msg.external_uid,
+          imap_account_id: msg.imap_account_id ?? null,
+          hasHtmlBody: !!(msg.html_body?.trim()),
+        },
+        msg.thread_id,
+      )
+      return { html: false, content: 'Downloading message...' }
+    }
     const raw = body.trim()
     const bm = raw.match(/boundary="?([^"\s;]+)"?/i)
     if (bm?.[1]) {
@@ -201,40 +284,71 @@ export default function Inbox() {
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
 
   const initialLoadDone = useRef(false)
+  const fetchFilterRef = useRef<InboxFilter>(filter)
 
   // Data fetching — on re-fetch, merge new threads on top instead of clearing + "Loading"
   const fetchThreads = useCallback(async () => {
-    if (!currentOrg?.id || !userId) return
+    fetchFilterRef.current = filter
+    if (!currentOrg?.id || !userId) {
+      debugLog('fetchThreads', { event: 'SKIP', orgId: currentOrg?.id, userId })
+      return
+    }
     if (!initialLoadDone.current) setLoading(true)
     try {
+      debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, pageSize })
       let query = supabase.from('inbox_threads')
         .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
         .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
       if (filter === 'inbox') {
-        // Inbox = open threads assigned to me OR unassigned
         query = query.eq('status', 'open')
       } else if (filter === 'assigned') {
-        // Mine = all threads assigned to me (any status)
-        const { data: assigned } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
+        const { data: assigned, error: assignErr } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
+        debugLog('fetchThreads', { event: 'assigned_query', userId, count: (assigned ?? []).length, tids: (assigned ?? []).map((a: { thread_id: string }) => a.thread_id), error: assignErr?.message })
         const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
         if (!tids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
         query = query.in('id', tids)
       } else if (filter === 'closed') query = query.eq('status', 'closed')
       else if (filter === 'trash') query = query.eq('status', 'archived')
-      const { data } = await query
+      else if (filter === 'all') query = query.neq('status', 'archived')
+      const { data, error: threadsErr } = await query
       let result = (data as InboxThread[]) ?? []
+      debugLog('fetchThreads', { event: 'threads_raw', count: result.length, error: threadsErr?.message, threads: result.map(t => ({ id: t.id, subject: t.subject?.slice(0, 30), status: t.status, assigns: (t.inbox_thread_assignments ?? []).map((a: { user_id: string }) => a.user_id) })) })
       // For inbox filter: only show threads assigned to me or unassigned
       if (filter === 'inbox') {
+        const before = result.length
         result = result.filter(t => {
           const assigns = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []
-          return assigns.length === 0 || assigns.some(a => a.user_id === userId)
+          const show = assigns.length === 0 || assigns.some(a => a.user_id === userId)
+          if (!show) debugLog('fetchThreads', { event: 'HIDDEN_inbox_filter', threadId: t.id, subject: t.subject, assigns, userId })
+          return show
         })
+        if (before !== result.length) debugLog('fetchThreads', { event: 'inbox_filter_applied', before, after: result.length })
+      }
+      // Ensure selected thread is always in list (may be missing when filter='all' returns top 50 and our thread is older)
+      const sid = selectedThreadIdRef.current
+      if (sid && !result.some(t => t.id === sid)) {
+        const { data: single } = await supabase.from('inbox_threads')
+          .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
+          .eq('id', sid).eq('org_id', currentOrg!.id).single()
+        const thread = single as InboxThread | null
+        if (thread && (filter !== 'all' || thread.status !== 'archived')) {
+          result = [thread, ...result]
+          debugLog('fetchThreads', { event: 'prepended_selected_thread', threadId: sid })
+        }
+      }
+      debugLog('fetchThreads', { event: 'DONE', count: result.length, threadIds: result.map(t => t.id) })
+      if (fetchFilterRef.current !== filter) {
+        debugLog('fetchThreads', { event: 'SKIP_stale', fetchedFilter: fetchFilterRef.current, currentFilter: filter })
+        return
       }
       setThreads(result)
       initialLoadDone.current = true
-    } catch { if (!initialLoadDone.current) setThreads([]) }
+    } catch (e) {
+      debugLog('fetchThreads', { event: 'ERROR', error: String(e) })
+      if (fetchFilterRef.current === filter && !initialLoadDone.current) setThreads([])
+    }
     setLoading(false)
-  }, [currentOrg?.id, filter, userId])
+  }, [currentOrg?.id, filter, userId, debugLog])
 
   const fetchAttachments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
@@ -252,18 +366,21 @@ export default function Inbox() {
   }, [])
 
   const fetchMessages = useCallback(async (tid: string) => {
+    debugLog('fetchMessages', { event: 'START', threadId: tid }, tid)
     setMessagesLoading(true)
     let msgs: InboxMessage[] = []
     const { data, error: queryError } = await supabase.from('inbox_messages')
       .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid')
       .eq('thread_id', tid).order('received_at', { ascending: true })
     msgs = (data as InboxMessage[]) ?? []
+    debugLog('fetchMessages', { event: 'messages_query', threadId: tid, count: msgs.length, error: queryError?.message, messages: msgs.map(m => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.html_body?.trim()), external_uid: m.external_uid, direction: m.direction })) }, tid)
     if (queryError) {
       console.error('[Inbox] inbox_messages query failed:', queryError.message, queryError)
     }
 
     // If thread has no messages, trigger sync for this thread's IMAP account then re-fetch
     if (msgs.length === 0) {
+      debugLog('fetchMessages', { event: 'backfill_trigger', threadId: tid }, tid)
       const { data: threadRow } = await supabase.from('inbox_threads')
         .select('org_id, imap_account_id')
         .eq('id', tid)
@@ -287,6 +404,7 @@ export default function Inbox() {
                 .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid')
                 .eq('thread_id', tid).order('received_at', { ascending: true })
               msgs = (dataAfter as InboxMessage[]) ?? []
+              debugLog('fetchMessages', { event: 'after_backfill', threadId: tid, count: msgs.length }, tid)
             }
           } catch {
             // ignore sync failure, keep msgs empty
@@ -306,22 +424,47 @@ export default function Inbox() {
 
     // Fetch bodies for all messages in thread (returns from DB when present, else fetches from IMAP)
     if (msgs.length > 0) {
+      const emptyBeforeBodies = msgs.filter(m => !m.body?.trim() && !m.html_body?.trim())
+      if (emptyBeforeBodies.length > 0) debugLog('fetchMessages', { event: 'empty_bodies_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), count: emptyBeforeBodies.length }, tid)
       const { data: { session } } = await supabase.auth.getSession()
       if (session?.access_token) {
         try {
           const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-thread-bodies`
-          console.log('[Inbox] Calling fetch-thread-bodies', { threadId: tid, messageCount: msgs.length })
+          const t0 = performance.now()
+          console.log('[Inbox:fetch-thread-bodies] calling', { threadId: tid, messageCount: msgs.length, emptyCount: emptyBeforeBodies.length })
           const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
             body: JSON.stringify({ threadId: tid }),
           })
+          const elapsed = Math.round(performance.now() - t0)
           const result = await res.json().catch(() => ({}))
-          console.log('[Inbox] fetch-thread-bodies response', { status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
+          console.log('[Inbox:fetch-thread-bodies] response', { threadId: tid, elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
+          debugLog('fetchMessages', { event: 'fetch_thread_bodies_response', elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error, bodies: (result.messages ?? []).map((m: { id: string; body?: string | null; htmlBody?: string | null }) => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.htmlBody?.trim()) })) }, tid)
+          if (!res.ok) {
+            console.warn('[Inbox] fetch-thread-bodies HTTP error', { threadId: tid, status: res.status, error: (result as { error?: string }).error })
+            debugLog('fetchMessages', { event: 'fetch_thread_bodies_http_error', status: res.status, error: (result as { error?: string }).error }, tid)
+          }
           if (result.messages?.length) {
             if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
             type BodyEntry = { body: string | null; html_body: string | null }
             const bodyMap = new Map<string, BodyEntry>(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
+            const stillEmptyAfter = msgs.filter((pm) => {
+              const b = bodyMap.get(pm.id)
+              const bodyVal = b ? (b.body ?? pm.body) : pm.body
+              const htmlVal = b ? (b.html_body ?? pm.html_body) : pm.html_body
+              return !(bodyVal && String(bodyVal).trim()) && !(htmlVal && String(htmlVal).trim())
+            })
+            if (stillEmptyAfter.length > 0 && !result.hasMore) {
+              const details = stillEmptyAfter.map((m) => ({
+                id: m.id,
+                direction: m.direction,
+                external_uid: m.external_uid,
+                imap_account_id: m.imap_account_id,
+              }))
+              console.warn('[Inbox] After fetch-thread-bodies, some messages still have no body (see Edge Function logs / IMAP UID)', { threadId: tid, count: stillEmptyAfter.length, details })
+              debugLog('fetchMessages', { event: 'bodies_still_empty_after_fetch', threadId: tid, count: stillEmptyAfter.length, details }, tid)
+            }
             setMessages(prev => {
               const merged = prev.map(pm => {
                 const b = bodyMap.get(pm.id)
@@ -354,11 +497,13 @@ export default function Inbox() {
         }
       } else {
         console.log('[Inbox] Skipping fetch-thread-bodies: no session/access_token')
+        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_session' }, tid)
       }
     } else {
       console.log('[Inbox] Skipping fetch-thread-bodies: no messages', { threadId: tid })
+      debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_messages', threadId: tid }, tid)
     }
-  }, [userId, fetchAttachments])
+  }, [userId, fetchAttachments, debugLog])
 
   const fetchComments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
@@ -385,8 +530,9 @@ export default function Inbox() {
   useEffect(() => {
     if (!currentOrg?.id) return
     supabase.rpc('org_users_with_permission', { p_org_id: currentOrg.id, p_permission: 'inbox.view' })
-      .then(async ({ data }) => {
+      .then(async ({ data, error }) => {
         const users = (data ?? []) as InboxUser[]
+        debugLog('org_users_with_permission', { permission: 'inbox.view', orgId: currentOrg.id, count: users.length, userIds: users.map(u => u.user_id), error: error?.message })
         if (users.length > 0) {
           const { data: profiles } = await supabase.from('profiles').select('id, avatar_url').in('id', users.map(u => u.user_id))
           const avatarMap = new Map((profiles ?? []).map((p: { id: string; avatar_url: string | null }) => [p.id, p.avatar_url]))
@@ -453,6 +599,7 @@ export default function Inbox() {
         event: '*', schema: 'public', table: 'inbox_threads',
         filter: `org_id=eq.${currentOrg.id}`,
       }, (payload) => {
+        debugLogRef.current('realtime', { event: 'inbox_threads', payload })
         fetchThreadsRef.current()
         const changedId = (payload.new as { id?: string })?.id
         if (changedId && changedId === selectedThreadIdRef.current) {
@@ -463,6 +610,7 @@ export default function Inbox() {
         event: 'INSERT', schema: 'public', table: 'inbox_messages',
       }, (payload) => {
         const tid = (payload.new as { thread_id: string }).thread_id
+        debugLogRef.current('realtime', { event: 'inbox_messages_INSERT', threadId: tid, payload }, tid)
         if (tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current)
         }
@@ -497,12 +645,41 @@ export default function Inbox() {
     if (!selectedThreadId) {
       setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); setExpandedMsgs(new Set()); return
     }
+    debugLog('selectThread', { selectedThreadId, filter }, selectedThreadId ?? undefined)
     setExpandedMsgs(new Set()) // Reset accordion on thread change
     fetchMessages(selectedThreadId); fetchComments(selectedThreadId); fetchThreadContacts(selectedThreadId); fetchAttachments(selectedThreadId)
     supabase.rpc('match_thread_contacts', { p_thread_id: selectedThreadId }).then(() => fetchThreadContacts(selectedThreadId))
-  }, [selectedThreadId, fetchMessages, fetchComments, fetchThreadContacts, fetchAttachments])
+  }, [selectedThreadId, fetchMessages, fetchComments, fetchThreadContacts, fetchAttachments, debugLog])
 
-  const selectedThread = threads.find(t => t.id === selectedThreadId)
+  /** Outbound rows from imap-sync often have null bodies until lazy IMAP fetch; helps spot stuck rows (no external_uid = cannot fetch). */
+  useEffect(() => {
+    if (!selectedThreadId || messagesLoading) return
+    const emptyOutbound = messages.filter(
+      (m) => m.direction === 'outbound' && !(m.body?.trim()) && !(m.html_body?.trim()),
+    )
+    if (emptyOutbound.length === 0) return
+    const warnKey = `${selectedThreadId}:${emptyOutbound.map((m) => m.id).sort().join(',')}`
+    if (outboundEmptyWarnedKeyRef.current === warnKey) return
+    outboundEmptyWarnedKeyRef.current = warnKey
+    const items = emptyOutbound.map((m) => ({
+      id: m.id,
+      external_uid: m.external_uid,
+      imap_account_id: m.imap_account_id,
+    }))
+    console.warn('[Inbox] Outbound message(s) with empty body/html_body', {
+      threadId: selectedThreadId,
+      hint: 'If external_uid is set, fetch-thread-bodies loads from IMAP (including sent copies in All Mail/INBOX). If null, body should come from inbox-send-reply insert.',
+      count: emptyOutbound.length,
+      items,
+    })
+    debugLog('emptyOutboundBodies', { threadId: selectedThreadId, count: emptyOutbound.length, items }, selectedThreadId)
+  }, [selectedThreadId, messages, messagesLoading, debugLog])
+
+  useEffect(() => {
+    outboundEmptyWarnedKeyRef.current = null
+  }, [selectedThreadId])
+
+  const selectedThread = threads.find(t => t.id === selectedThreadId) ?? selectedThreadFallback
   const getUserName = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
   const getUserAvatar = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.avatar_url ?? null
   const currentAssignees = (selectedThread?.inbox_thread_assignments ?? []) as { user_id: string }[]
@@ -514,10 +691,28 @@ export default function Inbox() {
     return new Date(t.last_message_at) > new Date(readStatus.last_read_at)
   }
 
-  // Filtered threads by search
-  const filteredThreads = searchQuery.trim()
-    ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
-    : threads
+  // Filter by current tab so we never show trash in All or non-trash in Trash (handles stale threads during filter switch)
+  const threadMatchesFilter = (t: InboxThread) => {
+    if (filter === 'trash') return t.status === 'archived'
+    if (filter === 'all') return t.status !== 'archived'
+    if (filter === 'closed') return t.status === 'closed'
+    if (filter === 'inbox') return t.status === 'open'
+    return true // assigned - fetchThreads already filtered
+  }
+
+  // Filtered threads by search; include selectedThreadFallback when not in list so it can be highlighted in sidebar
+  const filteredThreads = (() => {
+    let base = searchQuery.trim()
+      ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
+      : threads
+    base = base.filter(threadMatchesFilter)
+    const fallbackMatches = selectedThreadFallback && threadMatchesFilter(selectedThreadFallback)
+    const fallbackMissing = selectedThreadFallback && !base.some(t => t.id === selectedThreadFallback.id)
+    if (fallbackMatches && fallbackMissing) {
+      return [selectedThreadFallback, ...base]
+    }
+    return base
+  })()
 
   // Sync — all accounts in parallel with timeout
   const handleSync = async () => {
@@ -656,6 +851,36 @@ export default function Inbox() {
     await fetchThreads(); setActionLoading(false); toast('Unassigned')
   }
 
+  const handleBulkAssignTo = async (uid: string) => {
+    if (!currentOrg?.id || selectedIds.size === 0) return
+    setActionLoading(true)
+    const assignerName = user?.id ? getUserName(user.id) : 'Someone'
+    const { data: { session } } = await supabase.auth.getSession()
+    const rows = [...selectedIds].map(thread_id => ({ thread_id, user_id: uid }))
+    const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert(rows)
+    if (assignErr) {
+      console.warn('[Inbox] Bulk assign error:', assignErr.message)
+      setActionLoading(false)
+      toast(assignErr.message)
+      return
+    }
+    if (session?.access_token) {
+      for (const tid of selectedIds) {
+        const t = threads.find(x => x.id === tid)
+        const subject = t?.subject ?? '(No subject)'
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-user-notification`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+          body: JSON.stringify({ event_type: 'thread_assigned', user_id: uid, org_id: currentOrg.id, payload: { thread_id: tid, subject, assigner_name: assignerName } }),
+        }).catch(() => {})
+      }
+    }
+    setSelectedIds(new Set())
+    await fetchThreads()
+    setActionLoading(false)
+    toast(`Assigned ${rows.length} thread(s) to ${getUserName(uid)}`)
+  }
+
   const handleUpdateStatus = async (status: string) => {
     if (!selectedThreadId) return
     setActionLoading(true)
@@ -677,7 +902,9 @@ export default function Inbox() {
       // Auto-load next thread
       const currentIdx = threads.findIndex(t => t.id === selectedThreadId)
       const nextThread = threads[currentIdx + 1] ?? threads[currentIdx - 1]
-      setSelectedThreadId(nextThread?.id ?? null)
+      const nextId = nextThread?.id ?? null
+      console.log('[Inbox:nav] handleUpdateStatus auto-advance', { status, fromThreadId: selectedThreadId, toThreadId: nextId, currentIdx })
+      setSelectedThreadId(nextId)
       toast(status === 'archived' ? 'Moved to trash' : 'Thread closed')
     } else {
       toast('Thread re-opened')
@@ -1084,31 +1311,71 @@ export default function Inbox() {
           <Paperclip className="w-4 h-4" />
         </button>
         <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
-        <button type="button" onClick={() => setReplyMode(null)} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
+        <button type="button" onClick={() => {
+          console.log('[Inbox:nav] Reply form Cancel click')
+          setReplyMode(null)
+        }} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
       </div>
     </div>
   )
 
+  // Debug: log when URL thread is not in list (explains "thread missing for this user")
+  useEffect(() => {
+    if (inboxDebug && urlThreadId && threads.length > 0) {
+      const inList = threads.some(t => t.id === urlThreadId)
+      if (!inList) debugLog('visibility', { event: 'URL_thread_NOT_in_list', urlThreadId, threadIds: threads.map(t => t.id), filter, userId })
+    }
+  }, [inboxDebug, urlThreadId, threads, filter, userId])
+
   return (
     <div className="flex flex-col h-full min-h-0" data-testid="inbox-page">
       {toastMsg && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-accent text-white text-sm shadow-lg">{toastMsg}</div>}
+      {inboxDebug && (
+        <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2 text-xs text-amber-200 font-mono">
+          Debug mode: Console (F12, filter by &quot;Inbox&quot;) + Supabase table <code className="bg-amber-500/30 px-1 rounded">inbox_debug_log</code> — logs queries, thread visibility, and empty message bodies.
+        </div>
+      )}
 
       {/* Header */}
       <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 overflow-x-auto">
           {FILTERS.map(f => (
-            <button key={f.id} type="button" onClick={() => { setFilter(f.id); setSelectedThreadId(null); initialLoadDone.current = false }}
+            <button key={f.id} type="button" onClick={() => {
+              console.log('[Inbox:nav] filter tab click', { filterId: f.id, label: f.label })
+              setFilter(f.id); setSelectedThreadId(null); initialLoadDone.current = false
+            }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
                 filter === f.id ? 'bg-accent text-white' : 'bg-surface-muted text-gray-300 hover:bg-surface-muted/80'}`}>
               <f.icon className="w-3.5 h-3.5" /> {f.label}
             </button>
           ))}
+          {selectedIds.size > 0 && (
+            <div className="inline-flex items-center gap-1.5 pl-1 border-l border-border">
+              <User className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+              <select
+                value=""
+                onChange={e => { const uid = e.target.value; if (uid) handleBulkAssignTo(uid) }}
+                disabled={actionLoading}
+                className="rounded border border-border bg-surface-muted px-2 py-1.5 text-xs font-medium text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+              >
+                <option value="">Assign…</option>
+                {inboxUsers.map(u => (
+                  <option key={u.user_id} value={u.user_id}>
+                    {u.display_name ?? u.email ?? u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button type="button" onClick={handleSync} disabled={syncing} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50" title="Sync emails">
             <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
           </button>
-          <button type="button" onClick={() => { setSelectedThreadId(null); openReply('compose') }}
+          <button type="button" onClick={() => {
+            console.log('[Inbox:nav] Compose button click')
+            setSelectedThreadId(null); openReply('compose')
+          }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:opacity-90">
             <Plus className="w-3.5 h-3.5" /> Compose
           </button>
@@ -1165,6 +1432,7 @@ export default function Inbox() {
                       onClick={e => e.stopPropagation()} />
                     <button type="button" onClick={() => {
                       if (selectedIds.size > 0) { const next = new Set(selectedIds); if (isSelected) next.delete(t.id); else next.add(t.id); setSelectedIds(next); return }
+                      console.log('[Inbox:nav] thread list click', { threadId: t.id, subject: t.subject?.slice(0, 40) })
                       setSelectedThreadId(t.id); setReplyMode(null)
                       if (userId) {
                         setReadStatuses(prev => {
@@ -1226,7 +1494,10 @@ export default function Inbox() {
           ) : replyMode === 'compose' && !selectedThread ? (
             <div className="flex-1 flex flex-col min-h-0">
               <div className="border-b border-border px-4 py-2.5 shrink-0 flex items-center gap-2">
-                <button type="button" onClick={() => setReplyMode(null)} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
+                <button type="button" onClick={() => {
+                  console.log('[Inbox:nav] Compose back button (mobile)')
+                  setReplyMode(null)
+                }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                 <h2 className="text-white font-medium text-sm">New message</h2>
               </div>
               <div className="flex-1 overflow-y-auto p-4">{renderReplyForm(true)}</div>
@@ -1236,7 +1507,10 @@ export default function Inbox() {
               {/* Thread header */}
               <div className="border-b border-border px-4 py-2.5 shrink-0">
                 <div className="flex items-center gap-2 mb-2">
-                  <button type="button" onClick={() => { setSelectedThreadId(null); setReplyMode(null) }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
+                  <button type="button" onClick={() => {
+                    console.log('[Inbox:nav] thread detail back button (mobile)', { fromThreadId: selectedThread?.id })
+                    setSelectedThreadId(null); setReplyMode(null)
+                  }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                   <h2 className="text-white font-medium truncate flex-1 text-sm">{selectedThread.subject || '(No subject)'}</h2>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${selectedThread.status === 'open' ? 'bg-accent/20 text-accent' : selectedThread.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{selectedThread.status}</span>
                   <button type="button" onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/inbox/${selectedThread.id}`); toast('Thread link copied') }}

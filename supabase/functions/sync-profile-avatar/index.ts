@@ -32,13 +32,18 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ ok: true, skipped: true, reason: 'No provider avatar URL' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
-    const imageRes = await fetch(avatarSourceUrl)
+    // Google (lh3.googleusercontent.com) blocks requests without User-Agent or with Referer header
+    const imageRes = await fetch(avatarSourceUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; JoloApp/1.0; +https://jolo.dev)' },
+      redirect: 'follow',
+      referrerPolicy: 'no-referrer',
+    })
     if (!imageRes.ok) {
-      return new Response(JSON.stringify({ error: `Failed to fetch provider avatar (${imageRes.status})` }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({ ok: false, skipped: true, reason: `Provider avatar fetch failed (${imageRes.status})` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
     const contentType = imageRes.headers.get('content-type')
     if (!contentType?.toLowerCase().startsWith('image/')) {
-      return new Response(JSON.stringify({ error: 'Provider avatar response was not an image.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({ ok: false, skipped: true, reason: 'Provider avatar was not an image' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
     const imageBytes = new Uint8Array(await imageRes.arrayBuffer())

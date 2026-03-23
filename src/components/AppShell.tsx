@@ -153,7 +153,10 @@ export default function AppShell() {
                         : 'text-gray-400 hover:bg-surface-muted hover:text-gray-200'
                     }`}
                     data-testid={testId}
-                    onClick={() => setSidebarOpen(false)}
+                    onClick={() => {
+                      if (to === '/inbox') console.log('[Inbox:nav] sidebar nav Inbox link click', { from: location.pathname })
+                      setSidebarOpen(false)
+                    }}
                   >
                     <Icon className="w-4 h-4 shrink-0" />
                     {label}
@@ -335,6 +338,7 @@ export default function AppShell() {
                       className={`h-full w-full flex flex-col items-center justify-center gap-1 text-[11px] transition-colors ${
                         active ? 'text-accent' : 'text-gray-400 hover:text-gray-200'
                       }`}
+                      onClick={() => { if (to === '/inbox') console.log('[Inbox:nav] mobile nav Inbox link click', { from: location.pathname }) }}
                     >
                       <Icon className="w-4 h-4 shrink-0" />
                       <span className="truncate max-w-[70px]">{label}</span>
