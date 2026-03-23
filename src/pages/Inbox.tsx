@@ -228,6 +228,10 @@ export default function Inbox() {
   const [isDragging, setIsDragging] = useState(false)
   const [imapReloadingId, setImapReloadingId] = useState<string | null>(null)
 
+  // Assign popover (multi-select)
+  const [showAssignPopover, setShowAssignPopover] = useState(false)
+  const [selectedAssignUserIds, setSelectedAssignUserIds] = useState<Set<string>>(new Set())
+
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
   const replyFileRef = useRef<HTMLInputElement>(null)
@@ -556,6 +560,9 @@ export default function Inbox() {
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
+  // Close assign popover when thread changes
+  useEffect(() => setShowAssignPopover(false), [selectedThreadId])
+
   // Refs for stable realtime callbacks (avoids channel teardown on every state change)
   const selectedThreadIdRef = useRef(selectedThreadId)
   const fetchThreadsRef = useRef(fetchThreads)
@@ -847,6 +854,42 @@ export default function Inbox() {
     setActionLoading(true)
     await supabase.from('inbox_thread_assignments').delete().eq('thread_id', selectedThreadId).eq('user_id', uid)
     await fetchThreads(); setActionLoading(false); toast('Unassigned')
+  }
+
+  const handleAssignMultiple = async (uids: string[]) => {
+    if (!selectedThreadId || !currentOrg?.id || uids.length === 0) return
+    setActionLoading(true)
+    const selectedThread = threads.find(t => t.id === selectedThreadId)
+    const subject = selectedThread?.subject ?? '(No subject)'
+    const assignerName = user?.id ? getUserName(user.id) : 'Someone'
+    const rows = uids.map(user_id => ({ thread_id: selectedThreadId, user_id }))
+    const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert(rows)
+    if (assignErr) {
+      console.warn('[Inbox] Multi-assign error:', assignErr.message)
+      setActionLoading(false)
+      toast(assignErr.message)
+      return
+    }
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session?.access_token) {
+      for (const uid of uids) {
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-user-notification`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+          body: JSON.stringify({ event_type: 'thread_assigned', user_id: uid, org_id: currentOrg.id, payload: { thread_id: selectedThreadId, subject, assigner_name: assignerName } }),
+        }).catch(() => {})
+      }
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ threadId: selectedThreadId, action: 'archive' }),
+      }).catch(() => {})
+    }
+    setShowAssignPopover(false)
+    setSelectedAssignUserIds(new Set())
+    await fetchThreads()
+    setActionLoading(false)
+    toast(`Assigned to ${uids.length} person${uids.length > 1 ? 's' : ''}`)
   }
 
   const handleBulkAssignTo = async (uid: string) => {
@@ -1454,24 +1497,21 @@ export default function Inbox() {
                             })()}</span>
                           </div>
                           <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
-                          <div className="flex items-center gap-2 mt-1">
-                            {/* Only show status badges in search results */}
-                            {searchQuery.trim() && t.status === 'open' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">open</span>}
-                            {searchQuery.trim() && t.status === 'closed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">closed</span>}
-                            {searchQuery.trim() && t.status === 'archived' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">trash</span>}
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${t.status === 'open' ? 'bg-accent/20 text-accent' : t.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{t.status === 'archived' ? 'trash' : t.status}</span>
                             {assignees.length > 0 && (
-                              <span className="inline-flex items-center gap-0.5">
-                                {assignees.slice(0, 3).map(a => {
+                              <span className="inline-flex items-center gap-1.5 flex-wrap">
+                                {assignees.slice(0, 4).map(a => {
                                   const av = getUserAvatar(a.user_id)
-                                  return av ? (
-                                    <img key={a.user_id} src={av} alt="" className="w-4 h-4 rounded-full" title={getUserName(a.user_id)} />
-                                  ) : (
-                                    <span key={a.user_id} className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent" title={getUserName(a.user_id)}>
-                                      {(getUserName(a.user_id))[0]?.toUpperCase()}
+                                  const name = getUserName(a.user_id)
+                                  return (
+                                    <span key={a.user_id} className="inline-flex items-center gap-1 text-[10px] text-gray-400">
+                                      {av ? <img src={av} alt="" className="w-4 h-4 rounded-full shrink-0" /> : <span className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-[8px] font-medium text-accent shrink-0">{(name)[0]?.toUpperCase()}</span>}
+                                      <span className="truncate max-w-[80px]">{name}</span>
                                     </span>
                                   )
                                 })}
-                                {assignees.length > 3 && <span className="text-[9px] text-gray-500 ml-0.5">+{assignees.length - 3}</span>}
+                                {assignees.length > 4 && <span className="text-[9px] text-gray-500">+{assignees.length - 4}</span>}
                               </span>
                             )}
                           </div>
@@ -1538,13 +1578,40 @@ export default function Inbox() {
                   {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
                   {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
                   <div className="w-px h-4 bg-border mx-0.5" />
-                  <select value="" onChange={e => { if (e.target.value) handleAssignTo(e.target.value) }} disabled={actionLoading}
-                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
-                    <option value="">{currentAssignees.length > 0 ? '+ Assign' : 'Assign…'}</option>
-                    {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
-                      <option key={u.user_id} value={u.user_id}>{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <button type="button" onClick={() => { setShowAssignPopover(v => !v); setSelectedAssignUserIds(new Set()) }} disabled={actionLoading}
+                      className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
+                      {currentAssignees.length > 0 ? '+ Assign' : 'Assign…'}
+                    </button>
+                    {showAssignPopover && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setShowAssignPopover(false)} aria-hidden />
+                        <div className="absolute left-0 top-full mt-1 z-50 min-w-[180px] rounded-lg border border-border bg-surface-elevated shadow-lg py-1 max-h-[200px] overflow-y-auto">
+                          {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).length === 0 ? (
+                            <div className="px-3 py-2 text-[11px] text-gray-500">Everyone is assigned</div>
+                          ) : (
+                            <>
+                              {inboxUsers.filter(u => !currentAssignees.some(a => a.user_id === u.user_id)).map(u => (
+                                <label key={u.user_id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface-muted cursor-pointer">
+                                  <input type="checkbox" checked={selectedAssignUserIds.has(u.user_id)}
+                                    onChange={e => setSelectedAssignUserIds(prev => { const n = new Set(prev); if (e.target.checked) n.add(u.user_id); else n.delete(u.user_id); return n })}
+                                    className="rounded border-border text-accent focus:ring-accent" />
+                                  {getUserAvatar(u.user_id) ? <img src={getUserAvatar(u.user_id)!} alt="" className="w-5 h-5 rounded-full" /> : <span className="w-5 h-5 rounded-full bg-accent/20 flex items-center justify-center text-[9px] font-medium text-accent">{(u.display_name || u.email || u.user_id)[0]?.toUpperCase()}</span>}
+                                  <span className="text-[11px] text-gray-200 truncate">{u.display_name || u.email || u.user_id.slice(0, 8)}{u.user_id === userId ? ' (Me)' : ''}</span>
+                                </label>
+                              ))}
+                              <div className="border-t border-border mt-1 pt-1 px-2">
+                                <button type="button" onClick={() => handleAssignMultiple([...selectedAssignUserIds])} disabled={selectedAssignUserIds.size === 0 || actionLoading}
+                                  className="w-full px-2 py-1 rounded text-[11px] font-medium bg-accent text-accent-foreground hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
+                                  Assign {selectedAssignUserIds.size > 0 ? `(${selectedAssignUserIds.size})` : ''}
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                   {currentAssignees.map(a => (
                     <span key={a.user_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-surface-muted text-[11px] text-gray-200">
                       {getUserAvatar(a.user_id) ? (
