@@ -138,8 +138,7 @@ export default function Inbox() {
     supabase.from('inbox_threads')
       .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
       .eq('id', selectedThreadId).eq('org_id', currentOrg.id).single()
-      .then(({ data }) => setSelectedThreadFallback((data as InboxThread) ?? null))
-      .catch(() => setSelectedThreadFallback(null))
+      .then(({ data }) => setSelectedThreadFallback((data as InboxThread) ?? null), () => setSelectedThreadFallback(null))
   }, [selectedThreadId, threads, currentOrg?.id])
 
   // When navigating to a thread via URL, switch filter only if the thread isn't already in the list
@@ -164,8 +163,7 @@ export default function Inbox() {
         const targetFilter: InboxFilter = status === 'archived' ? 'trash' : 'all'
         console.log('[Inbox:nav] URL has threadId → switch filter', { urlThreadId, status, targetFilter })
         setFilter(targetFilter)
-      })
-      .catch(() => setFilter('all'))
+      }, () => setFilter('all'))
   }, [urlThreadId, threads, currentOrg?.id])
 
   // Update browser URL when thread selection changes
