@@ -6,7 +6,7 @@
  *   file attachment rows + storage objects for this message, then re-imports attachments.
  */
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { corsHeaders } from '../_shared/cors.ts'
@@ -70,7 +70,8 @@ Deno.serve(async (req: Request) => {
 
   const force = Boolean(forceRefresh)
 
-  if (!force && (msg.body !== null || msg.html_body !== null)) {
+  const hasStoredContent = (v: unknown) => v != null && String(v).trim() !== ''
+  if (!force && (hasStoredContent(msg.body) || hasStoredContent(msg.html_body))) {
     return json({ body: msg.body, htmlBody: msg.html_body, fromCache: true })
   }
 
