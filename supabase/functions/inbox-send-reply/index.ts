@@ -59,10 +59,16 @@ Deno.serve(async (req: Request) => {
 
   const { body: bodyContent, subject: reqSubject, to: reqTo, cc, bcc, isHtml, compose, accountId, attachments: attachmentRefs } = body
   const threadId = body.threadId?.trim() || null
-  console.log(`[inbox-send-reply] ${reqId} body: threadId=${threadId ?? 'null'}, compose=${!!compose}, to=${reqTo ?? '(empty)'}, accountId=${accountId ?? 'auto'}, attachments=${attachmentRefs?.length ?? 0}`)
+  const attNames = attachmentRefs?.map((a) => a.fileName).join(', ') ?? ''
+  console.log(`[inbox-send-reply] ${reqId} body: threadId=${threadId ?? 'null'}, compose=${!!compose}, to=${reqTo ?? '(empty)'}, accountId=${accountId ?? 'auto'}, attachments=${attachmentRefs?.length ?? 0}${attNames ? ` (${attNames})` : ''}`)
 
-  if (!bodyContent?.trim()) return jsonRes({ error: 'body is required' })
+  const hasAttachments = (attachmentRefs?.length ?? 0) > 0
+  const bodyTrim = bodyContent?.trim() ?? ''
+  if (!bodyTrim && !hasAttachments) return jsonRes({ error: 'body is required' })
   if (compose && !reqTo?.trim()) return jsonRes({ error: 'to is required for compose' })
+
+  const effectiveBody =
+    isHtml && hasAttachments && !bodyTrim ? '<p></p>' : (bodyContent ?? '')
 
   const service = createClient(supabaseUrl, serviceKey)
 
@@ -155,17 +161,19 @@ Deno.serve(async (req: Request) => {
   if (bcc?.trim()) mailOpts.bcc = bcc.trim()
 
   if (isHtml) {
-    mailOpts.html = bodyContent
-    mailOpts.text = stripHtml(bodyContent)
+    mailOpts.html = effectiveBody
+    mailOpts.text = stripHtml(effectiveBody)
   } else {
-    mailOpts.text = bodyContent
+    mailOpts.text = effectiveBody
   }
 
   if (attachmentRefs?.length) {
     const nodeAttachments: { filename: string; content: Uint8Array; contentType?: string }[] = []
     for (const att of attachmentRefs) {
+      console.log(`[inbox-send-reply] ${reqId} storage download: path=${att.filePath} fileName=${att.fileName}`)
       const { data: fileData, error: dlErr } = await service.storage.from('inbox-attachments').download(att.filePath)
       if (dlErr || !fileData) {
+        console.log(`[inbox-send-reply] ${reqId} storage download FAILED: path=${att.filePath}`, dlErr?.message ?? 'no blob')
         return jsonRes({ error: `Failed to load attachment: ${att.fileName}` })
       }
       const buf = new Uint8Array(await fileData.arrayBuffer())
@@ -207,8 +215,8 @@ Deno.serve(async (req: Request) => {
       from_identifier: account.email, to_identifier: toAddress,
       cc: cc?.trim() || null, bcc: bcc?.trim() || null, imap_account_id: account.id, received_at: now,
     }
-    if (isHtml) { msgPayload.html_body = bodyContent; msgPayload.body = stripHtml(bodyContent) }
-    else { msgPayload.body = bodyContent }
+    if (isHtml) { msgPayload.html_body = effectiveBody; msgPayload.body = stripHtml(effectiveBody) }
+    else { msgPayload.body = effectiveBody }
 
     console.log(`[inbox-send-reply] ${reqId} inserting outbound message: threadId=${saveThreadId}, from=${account.email}, to=${toAddress}, received_at=${now}`)
     const { data: insertedMsg, error: msgErr } = await service

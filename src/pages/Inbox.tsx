@@ -54,6 +54,23 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+/** True when TipTap/HTML body has no visible text (allows attachment-only send). */
+function isHtmlBodyEffectivelyEmpty(html: string): boolean {
+  const text = html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\u200b/g, '')
+    .trim()
+  return text.length === 0
+}
+
+function sanitizeInboxStorageFileName(name: string): string {
+  const base = name.replace(/[/\\]/g, '_').trim() || 'attachment'
+  return base.length > 180 ? base.slice(0, 180) : base
+}
+
 /** Render comment content with @mentions in amber, non-mention text in white (for display in thread) */
 function renderCommentContentWithMentions(content: string): React.ReactNode {
   if (!content) return null
@@ -1021,7 +1038,13 @@ export default function Inbox() {
 
   const handleSendReply = async () => {
     if (!replyTo.trim() && replyMode !== 'compose') { toast('Recipient required'); return }
-    if (!replyHtml.trim()) { toast('Message body is empty'); return }
+    const hasPendingFiles = replyAttachments.length > 0
+    if (isHtmlBodyEffectivelyEmpty(replyHtml) && !hasPendingFiles) {
+      toast('Message body is empty')
+      return
+    }
+    const bodyForApi =
+      isHtmlBodyEffectivelyEmpty(replyHtml) && hasPendingFiles ? '<p></p>' : replyHtml
     if (sendingReplyRef.current) {
       console.warn('[Inbox] handleSendReply: already sending, ignoring duplicate call')
       return
@@ -1029,26 +1052,41 @@ export default function Inbox() {
     sendingReplyRef.current = true
     setSendingReply(true)
     const sendId = `send-${Date.now()}`
-    console.log('[Inbox] handleSendReply:', sendId, 'threadId=', selectedThreadId, 'to=', replyTo?.slice(0, 50), 'mode=', replyMode)
+    console.log('[Inbox] handleSendReply:', sendId, 'threadId=', selectedThreadId, 'to=', replyTo?.slice(0, 50), 'mode=', replyMode, 'pendingAttachments=', replyAttachments.length)
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) { toast('Please sign in again'); sendingReplyRef.current = false; setSendingReply(false); return }
-    let attachmentRefs: { fileName: string; filePath: string; contentType: string }[] = []
+    let attachmentRefs: { fileName: string; filePath: string; contentType: string; fileSize?: number }[] = []
     if (replyAttachments.length > 0 && currentOrg?.id) {
-      for (const file of replyAttachments) {
-        const path = `${currentOrg.id}/${selectedThreadId ?? 'compose'}/${Date.now()}-${file.name}`
+      for (let i = 0; i < replyAttachments.length; i++) {
+        const file = replyAttachments[i]
+        const path = `${currentOrg.id}/${selectedThreadId ?? 'compose'}/${crypto.randomUUID()}-${sanitizeInboxStorageFileName(file.name)}`
+        console.log('[Inbox:attachment] upload start', { sendId, index: i, path, name: file.name, size: file.size, type: file.type })
         const { error } = await supabase.storage.from('inbox-attachments').upload(path, file)
-        if (!error) attachmentRefs.push({ fileName: file.name, filePath: path, contentType: file.type })
+        if (error) {
+          console.error('[Inbox:attachment] upload failed', { sendId, path, name: file.name, message: error.message, error })
+          toast(`Could not upload "${file.name}": ${error.message}`)
+          sendingReplyRef.current = false
+          setSendingReply(false)
+          return
+        }
+        attachmentRefs.push({
+          fileName: file.name,
+          filePath: path,
+          contentType: file.type || 'application/octet-stream',
+          fileSize: file.size,
+        })
+        console.log('[Inbox:attachment] upload ok', { sendId, path, name: file.name })
       }
     }
     const payload: Record<string, unknown> = {
-      body: replyHtml, subject: replySubject, to: replyTo.trim(),
+      body: bodyForApi, subject: replySubject, to: replyTo.trim(),
       cc: replyCc.trim() || undefined, bcc: replyBcc.trim() || undefined,
       isHtml: true, accountId: selectedAccountId || undefined,
       attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
     }
-    if (selectedThreadId && replyMode !== 'compose' && replyMode !== 'forward') payload.threadId = selectedThreadId
+    if (selectedThreadId && replyMode !== 'compose') payload.threadId = selectedThreadId
     else payload.compose = true
-    console.log('[Inbox] handleSendReply:', sendId, 'calling inbox-send-reply')
+    console.log('[Inbox] handleSendReply:', sendId, 'calling inbox-send-reply', { attachmentCount: attachmentRefs.length, hasThreadId: !!payload.threadId, compose: !!payload.compose })
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
@@ -1062,7 +1100,10 @@ export default function Inbox() {
     setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
     console.log('[Inbox] handleSendReply:', sendId, 'success, fetching threads and messages')
     toast('Sent'); fetchThreads()
-    if (selectedThreadId) fetchMessages(selectedThreadId)
+    if (selectedThreadId) {
+      fetchMessages(selectedThreadId)
+      fetchAttachments(selectedThreadId)
+    }
   }
 
   const handleAddComment = async () => {
@@ -1151,8 +1192,18 @@ export default function Inbox() {
     }
   }
 
+  const appendReplyAttachments = (files: File[]) => {
+    if (files.length === 0) return
+    console.log('[Inbox:attachment] add files', { count: files.length, names: files.map(f => f.name), sizes: files.map(f => f.size) })
+    setReplyAttachments(prev => [...prev, ...files])
+  }
+
   // File drop handling
-  const handleDrop = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); if (e.dataTransfer.files.length > 0) setReplyAttachments(prev => [...prev, ...Array.from(e.dataTransfer.files)]) }
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+    if (e.dataTransfer.files.length > 0) appendReplyAttachments(Array.from(e.dataTransfer.files))
+  }
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true) }
   const handleDragLeave = () => setIsDragging(false)
 
@@ -1294,12 +1345,21 @@ export default function Inbox() {
       </div>
       <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your message…" autofocus />
       {replyAttachments.length > 0 && (
-        <div className="flex flex-wrap gap-2">{replyAttachments.map((f, i) => (
-          <span key={i} className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300 inline-flex items-center gap-1">
-            <Paperclip className="w-3 h-3" /> {f.name}
-            <button type="button" onClick={() => setReplyAttachments(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 ml-1">&times;</button>
-          </span>
-        ))}</div>
+        <div className="px-1 py-2 space-y-1.5">
+          <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">Attached to this send</div>
+          <div className="flex flex-wrap gap-2">
+            {replyAttachments.map((f, i) => (
+              <span
+                key={`${f.name}-${f.size}-${f.lastModified}-${i}`}
+                className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300 inline-flex items-center gap-1 max-w-full"
+              >
+                <Paperclip className="w-3 h-3 shrink-0" />
+                <span className="truncate" title={f.name}>{f.name}</span>
+                <button type="button" onClick={() => setReplyAttachments(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 ml-1 shrink-0">&times;</button>
+              </span>
+            ))}
+          </div>
+        </div>
       )}
       <div className="flex items-center gap-2">
         <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
@@ -1309,7 +1369,16 @@ export default function Inbox() {
         <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
           <Paperclip className="w-4 h-4" />
         </button>
-        <input ref={replyFileRef} type="file" multiple className="hidden" onChange={e => { if (e.target.files) setReplyAttachments(prev => [...prev, ...Array.from(e.target.files!)]); e.target.value = '' }} />
+        <input
+          ref={replyFileRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files && e.target.files.length > 0) appendReplyAttachments(Array.from(e.target.files))
+            e.target.value = ''
+          }}
+        />
         <button type="button" onClick={() => {
           console.log('[Inbox:nav] Reply form Cancel click')
           setReplyMode(null)
@@ -1705,7 +1774,6 @@ export default function Inbox() {
                           ))}
                           {isExpanded && msgAttachments.length > 0 && (
                             <div className="border-t border-border px-4 py-2.5 bg-surface-muted/30">
-                              <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">Attachments with this message</div>
                               <div className="flex flex-wrap gap-2">
                                 {msgAttachments.map((a) => (
                                   <a key={a.id} href={getAttachmentHref(a)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-muted border border-border text-gray-200 hover:text-accent text-xs">
