@@ -3,6 +3,10 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
 import { ArrowLeft, Download, Mail, Plus, Trash2 } from 'lucide-react'
+import { buildResumePdfFromElement } from '@/lib/resumePdf'
+import { resumeToHtml } from '@/lib/resumeHtml'
+import type { GeneratedResume } from '@/types/resume'
+import '@/components/resume/resume-editor.css'
 
 type Lead = {
   id: string
@@ -65,6 +69,8 @@ type ResumeDoc = {
   role_title: string | null
   created_at: string
   template_id: string | null
+  content_json: GeneratedResume | null
+  document_html: string | null
 }
 
 const LEAD_STATUS_OPTIONS = [
@@ -156,7 +162,7 @@ export default function LeadDetail() {
         .order('attempted_at', { ascending: false }),
       supabase
         .from('resume_documents')
-        .select('id, file_path, candidate_name, company_name, role_title, created_at, template_id')
+        .select('id, file_path, candidate_name, company_name, role_title, created_at, template_id, content_json, document_html')
         .eq('lead_id', id)
         .order('created_at', { ascending: false }),
     ])
@@ -207,12 +213,60 @@ export default function LeadDetail() {
   }
 
   const handleDownloadResume = async (doc: ResumeDoc) => {
-    if (!doc.file_path || !lead) {
-      alert('No PDF file is stored for this resume.')
-      return
-    }
+    if (!lead) return
+
     setDownloadingId(doc.id)
     try {
+      // Preferred path: rebuild PDF from saved resume HTML/content so this matches Edit → Download PDF quality.
+      const sourceHtml =
+        typeof doc.document_html === 'string' && doc.document_html.trim()
+          ? doc.document_html
+          : doc.content_json
+            ? resumeToHtml(doc.content_json)
+            : null
+
+      if (sourceHtml) {
+        const host = document.createElement('div')
+        host.style.position = 'fixed'
+        host.style.left = '-20000px'
+        host.style.top = '0'
+        host.style.width = '210mm'
+        host.style.opacity = '0'
+        host.style.pointerEvents = 'none'
+
+        const page = document.createElement('div')
+        page.className = 'resume-a4-page'
+        page.style.width = '210mm'
+        page.style.background = '#ffffff'
+
+        const prose = document.createElement('div')
+        prose.className = 'ProseMirror'
+        prose.innerHTML = sourceHtml
+
+        page.appendChild(prose)
+        host.appendChild(page)
+        document.body.appendChild(host)
+
+        try {
+          const blob = await buildResumePdfFromElement(page)
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `${slugify(lead.title)}-${slugify(doc.candidate_name || 'resume')}.pdf`
+          a.click()
+          URL.revokeObjectURL(url)
+          return
+        } finally {
+          host.remove()
+        }
+      }
+
+      // Fallback for legacy rows that only have an uploaded file.
+      if (!doc.file_path) {
+        alert('No stored resume content or PDF file exists for this record.')
+        return
+      }
+
       const { data, error } = await supabase.storage.from('lead-resumes').download(doc.file_path)
       if (error || !data) {
         alert(`Download failed: ${error?.message ?? 'Unknown error'}`)
@@ -224,6 +278,8 @@ export default function LeadDetail() {
       a.download = `${slugify(lead.title)}-${slugify(doc.candidate_name || 'resume')}.pdf`
       a.click()
       URL.revokeObjectURL(url)
+    } catch (e) {
+      alert(`Could not build PDF: ${(e as Error).message}`)
     } finally {
       setDownloadingId(null)
     }
