@@ -1,153 +1,128 @@
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 
-const WHITE_RGB_THRESHOLD = 246
-const BLANK_ROW_MAX_INK_RATIO = 0.014
-const SCAN_WINDOW_PX = 120
-const ROW_SAMPLE_STRIDE = 4
-const BLOCK_ROW_PENALTY = 0.7
+type PaginatedPages = {
+  pages: HTMLElement[]
+  cleanup: () => void
+}
 
-function getRowInkRatio(ctx: CanvasRenderingContext2D, width: number, y: number): number {
-  const row = ctx.getImageData(0, y, width, 1).data
-  let sampled = 0
-  let inked = 0
+function paginateResumeElement(element: HTMLElement): PaginatedPages {
+  const sourceProse = element.querySelector('.ProseMirror') as HTMLElement | null
+  if (!sourceProse) {
+    return { pages: [element], cleanup: () => {} }
+  }
 
-  for (let x = 0; x < width; x += ROW_SAMPLE_STRIDE) {
-    const i = x * 4
-    const r = row[i]
-    const g = row[i + 1]
-    const b = row[i + 2]
-    const a = row[i + 3]
-    sampled += 1
+  const pageWidthPx = Math.max(Math.ceil(element.getBoundingClientRect().width), element.scrollWidth, 1)
+  const pageHeightPx = Math.ceil(pageWidthPx * (297 / 210))
 
-    if (a > 10 && (r < WHITE_RGB_THRESHOLD || g < WHITE_RGB_THRESHOLD || b < WHITE_RGB_THRESHOLD)) {
-      inked += 1
+  const proseStyles = window.getComputedStyle(sourceProse)
+  const paddingTop = parseFloat(proseStyles.paddingTop || '0')
+  const paddingBottom = parseFloat(proseStyles.paddingBottom || '0')
+  const maxContentHeight = Math.max(1, Math.floor(pageHeightPx - paddingTop - paddingBottom))
+
+  const host = document.createElement('div')
+  host.style.position = 'fixed'
+  host.style.left = '-20000px'
+  host.style.top = '0'
+  host.style.width = `${pageWidthPx}px`
+  host.style.opacity = '0'
+  host.style.pointerEvents = 'none'
+  host.style.zIndex = '-1'
+  document.body.appendChild(host)
+
+  const createPage = () => {
+    const page = document.createElement('div')
+    page.className = element.className
+    page.style.width = `${pageWidthPx}px`
+    page.style.height = `${pageHeightPx}px`
+    page.style.minHeight = `${pageHeightPx}px`
+    page.style.background = '#ffffff'
+    page.style.boxSizing = 'border-box'
+    page.style.overflow = 'hidden'
+    page.style.border = 'none'
+    page.style.boxShadow = 'none'
+
+    const prose = document.createElement('div')
+    prose.className = sourceProse.className
+    page.appendChild(prose)
+    host.appendChild(page)
+    return { page, prose }
+  }
+
+  const pages: HTMLDivElement[] = []
+  let current = createPage()
+
+  const sourceChildren = Array.from(sourceProse.children)
+  if (sourceChildren.length === 0) {
+    current.prose.innerHTML = sourceProse.innerHTML
+    pages.push(current.page)
+    return {
+      pages,
+      cleanup: () => {
+        host.remove()
+      },
     }
   }
 
-  return sampled > 0 ? inked / sampled : 0
-}
+  for (const child of sourceChildren) {
+    const clone = child.cloneNode(true) as HTMLElement
+    current.prose.appendChild(clone)
 
-function collectBlockRanges(element: HTMLElement, scaleY: number): Array<{ top: number; bottom: number }> {
-  const rootRect = element.getBoundingClientRect()
-  const blockNodes = element.querySelectorAll<HTMLElement>('h1,h2,h3,p,ul,ol,li,hr,blockquote,table,pre')
-  const ranges: Array<{ top: number; bottom: number }> = []
+    if (current.prose.scrollHeight > maxContentHeight && current.prose.children.length > 1) {
+      current.prose.removeChild(clone)
+      pages.push(current.page)
 
-  blockNodes.forEach((node) => {
-    const rect = node.getBoundingClientRect()
-    const top = Math.floor((rect.top - rootRect.top) * scaleY)
-    const bottom = Math.ceil((rect.bottom - rootRect.top) * scaleY)
-    if (Number.isFinite(top) && Number.isFinite(bottom) && bottom - top >= 2) {
-      ranges.push({ top, bottom })
-    }
-  })
-
-  return ranges
-}
-
-function isInsideBlockRow(y: number, blockRanges: Array<{ top: number; bottom: number }>): boolean {
-  for (const r of blockRanges) {
-    if (y >= r.top + 2 && y <= r.bottom - 2) return true
-  }
-  return false
-}
-
-function findBreakRow(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  startY: number,
-  idealEndY: number,
-  maxY: number,
-  minSliceHeightPx: number,
-  blockRanges: Array<{ top: number; bottom: number }>,
-): number {
-  const minAllowedY = Math.max(startY + minSliceHeightPx, 0)
-  const scanStart = Math.max(idealEndY - SCAN_WINDOW_PX, minAllowedY)
-  const scanEnd = Math.min(idealEndY + SCAN_WINDOW_PX, maxY)
-
-  let bestY = idealEndY
-  let bestScore = Number.POSITIVE_INFINITY
-
-  for (let y = scanStart; y <= scanEnd; y += 1) {
-    const ink = getRowInkRatio(ctx, width, y)
-    const distancePenalty = Math.abs(y - idealEndY) / SCAN_WINDOW_PX
-    const blockPenalty = isInsideBlockRow(y, blockRanges) ? BLOCK_ROW_PENALTY : 0
-    const score = ink + distancePenalty * 0.18 + blockPenalty
-
-    if (score < bestScore) {
-      bestScore = score
-      bestY = y
-      if (ink <= BLANK_ROW_MAX_INK_RATIO && blockPenalty === 0 && distancePenalty < 0.08) {
-        break
-      }
+      current = createPage()
+      current.prose.appendChild(clone)
     }
   }
 
-  return bestY
+  if (current.prose.children.length > 0 || pages.length === 0) {
+    pages.push(current.page)
+  }
+
+  return {
+    pages,
+    cleanup: () => {
+      host.remove()
+    },
+  }
 }
 
 /**
- * Rasterize a DOM node (the same resume preview the user edits) into a multi-page A4 PDF.
+ * Render the editable resume preview to an A4 PDF without cutting text lines.
  *
- * Instead of re-drawing one huge image with negative Y offsets (which can cut through text lines),
- * we slice the canvas per page and look for a nearby low-ink row before each page break.
+ * Strategy:
+ * 1) Paginate DOM blocks (paragraphs/list items/headings) into virtual A4 pages.
+ * 2) Rasterize each page separately.
+ * 3) Insert one image per PDF page.
  */
 export async function buildResumePdfFromElement(element: HTMLElement): Promise<Blob> {
-  const canvas = await html2canvas(element, {
-    scale: 2,
-    useCORS: true,
-    allowTaint: false,
-    logging: false,
-    backgroundColor: '#ffffff',
-    windowWidth: element.scrollWidth,
-    windowHeight: element.scrollHeight,
-  })
-
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) throw new Error('Unable to read rendered resume canvas')
-
   const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
   const pageWidthMm = pdf.internal.pageSize.getWidth()
   const pageHeightMm = pdf.internal.pageSize.getHeight()
 
-  const pageHeightPx = Math.floor((canvas.width * pageHeightMm) / pageWidthMm)
-  const minSliceHeightPx = Math.floor(pageHeightPx * 0.6)
-  const scaleY = canvas.height / Math.max(element.scrollHeight, 1)
-  const blockRanges = collectBlockRanges(element, scaleY)
+  const { pages, cleanup } = paginateResumeElement(element)
 
-  let startY = 0
-  let pageIndex = 0
+  try {
+    for (let i = 0; i < pages.length; i += 1) {
+      const page = pages[i]
+      const canvas = await html2canvas(page, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: false,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: page.scrollWidth,
+        windowHeight: page.scrollHeight,
+      })
 
-  while (startY < canvas.height) {
-    const idealEndY = Math.min(startY + pageHeightPx, canvas.height)
-    let endY = idealEndY
-
-    if (idealEndY < canvas.height) {
-      endY = findBreakRow(ctx, canvas.width, startY, idealEndY, canvas.height - 1, minSliceHeightPx, blockRanges)
+      const imgData = canvas.toDataURL('image/jpeg', 0.94)
+      if (i > 0) pdf.addPage()
+      pdf.addImage(imgData, 'JPEG', 0, 0, pageWidthMm, pageHeightMm)
     }
-
-    if (endY <= startY) break
-
-    const sliceHeightPx = endY - startY
-    const pageCanvas = document.createElement('canvas')
-    pageCanvas.width = canvas.width
-    pageCanvas.height = sliceHeightPx
-
-    const pageCtx = pageCanvas.getContext('2d')
-    if (!pageCtx) throw new Error('Unable to render PDF page slice')
-
-    pageCtx.fillStyle = '#ffffff'
-    pageCtx.fillRect(0, 0, pageCanvas.width, pageCanvas.height)
-    pageCtx.drawImage(canvas, 0, startY, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx)
-
-    const pageImgData = pageCanvas.toDataURL('image/jpeg', 0.94)
-    const renderedHeightMm = (sliceHeightPx * pageWidthMm) / canvas.width
-
-    if (pageIndex > 0) pdf.addPage()
-    pdf.addImage(pageImgData, 'JPEG', 0, 0, pageWidthMm, renderedHeightMm)
-
-    startY = endY
-    pageIndex += 1
+  } finally {
+    cleanup()
   }
 
   return pdf.output('blob')
