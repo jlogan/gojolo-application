@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
+import ResumeTemplatesPage from '@/pages/leads/ResumeTemplatesPage'
 import {
   ArrowLeft,
   Mail,
@@ -17,6 +18,7 @@ import {
   Trash2,
   Check,
   Hash,
+  FileText,
 } from 'lucide-react'
 
 type Role = { id: string; name: string }
@@ -69,13 +71,14 @@ type SlackConfig = {
   notify_on_mention: boolean; notify_on_thread_close: boolean
   notify_on_task_created?: boolean; notify_on_task_status_change?: boolean; notify_on_task_comment?: boolean
 }
-type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'settings'
+type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'resume_templates' | 'settings'
 
 const SECTIONS: { id: AdminSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'users', label: 'Users & Roles', icon: Users },
   { id: 'imap', label: 'Email accounts', icon: Inbox },
   { id: 'slack', label: 'Slack', icon: Hash },
   { id: 'phone_numbers', label: 'Phone numbers', icon: Phone },
+  { id: 'resume_templates', label: 'Resume Templates', icon: FileText },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
@@ -88,8 +91,10 @@ const ALL_PERMISSIONS = [
 ]
 
 export default function Admin() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const { isPlatformAdmin, currentOrg, isOrgAdmin } = useOrg()
-  const [section, setSection] = useState<AdminSection>('users')
+  const [section, setSection] = useState<AdminSection>(location.pathname.includes('/admin/resume-templates') ? 'resume_templates' : 'users')
   const [roles, setRoles] = useState<Role[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
   const [invitations, setInvitations] = useState<Invitation[]>([])
@@ -164,6 +169,16 @@ export default function Admin() {
   useEffect(() => {
     if (section === 'imap') setImapView('list')
   }, [section])
+
+  useEffect(() => {
+    if (location.pathname.includes('/admin/resume-templates')) {
+      setSection('resume_templates')
+      return
+    }
+    if (location.pathname === '/admin') {
+      setSection((prev) => (prev === 'resume_templates' ? 'users' : prev))
+    }
+  }, [location.pathname])
 
   const loadSlackUsersAndMappings = useCallback(async () => {
     if (!currentOrg?.id) return
@@ -750,7 +765,15 @@ export default function Admin() {
               <button
                 key={id}
                 type="button"
-                onClick={() => setSection(id)}
+                onClick={() => {
+                  if (id === 'resume_templates') {
+                    setSection('resume_templates')
+                    navigate('/admin/resume-templates')
+                    return
+                  }
+                  setSection(id)
+                  if (location.pathname !== '/admin') navigate('/admin')
+                }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                   section === id
                     ? 'bg-surface-muted text-white'
@@ -768,7 +791,7 @@ export default function Admin() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto min-w-0">
-        <div className="p-4 md:p-6 max-w-3xl">
+        <div className={`p-4 md:p-6 ${section === 'resume_templates' ? 'max-w-6xl' : 'max-w-3xl'}`}>
           {currentOrg && (
             <p className="text-sm text-gray-500 mb-4">
               Managing: <span className="text-gray-300 font-medium">{currentOrg.name}</span>
@@ -1656,6 +1679,10 @@ export default function Admin() {
                 </button>
               )}
             </>
+          )}
+
+          {section === 'resume_templates' && (
+            <ResumeTemplatesPage embeddedInAdmin />
           )}
 
           {section === 'settings' && (
