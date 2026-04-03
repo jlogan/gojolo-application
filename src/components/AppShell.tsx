@@ -16,6 +16,7 @@ import {
   FolderKanban,
   Plus,
   Clock,
+  Target,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -36,6 +37,9 @@ import ProjectDetail from '@/pages/projects/ProjectDetail'
 import ProjectForm from '@/pages/projects/ProjectForm'
 import TaskDetail from '@/pages/projects/TaskDetail'
 import Timesheets from '@/pages/Timesheets'
+import LeadsList from '@/pages/leads/LeadsList'
+import LeadForm from '@/pages/leads/LeadForm'
+import LeadDetail from '@/pages/leads/LeadDetail'
 
 type AppMode = 'software' | 'chat'
 
@@ -43,6 +47,7 @@ const NAV = [
   { to: '/', label: 'Home', icon: LayoutGrid, testId: 'nav-home' },
   { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
+  { to: '/leads', label: 'Leads', icon: Target, testId: 'nav-leads' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
 ]
@@ -311,6 +316,11 @@ export default function AppShell() {
               <Route path="/projects/:id" element={<ProjectDetail />} />
               <Route path="/projects/:id/edit" element={<ProjectForm />} />
               <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetail />} />
+              <Route path="/leads" element={<LeadsList />} />
+              <Route path="/leads/new" element={<LeadForm />} />
+              <Route path="/leads/:leadId/edit" element={<LeadForm />} />
+              <Route path="/leads/:id" element={<LeadDetail />} />
+              <Route path="/leads/templates" element={<Navigate to="/admin/resume-templates" replace />} />
               <Route path="/timesheets" element={<Timesheets />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
@@ -321,7 +331,7 @@ export default function AppShell() {
               <Route path="/profile" element={<Profile />} />
               <Route path="/settings" element={<OrgSettings />} />
               <Route path="/organizations" element={<OrganizationsList />} />
-              <Route path="/admin" element={<Admin />} />
+              <Route path="/admin/*" element={<Admin />} />
             </Routes>
           </main>
 
