@@ -549,7 +549,7 @@ Capabilities: create/list/update projects and tasks, create/list contacts and co
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-4o',
           messages,
           tools: TOOLS,
           tool_choice: 'auto',
