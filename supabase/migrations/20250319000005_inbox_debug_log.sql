@@ -19,6 +19,7 @@ COMMENT ON TABLE public.inbox_debug_log IS 'Client Inbox debug logs when ?debug=
 ALTER TABLE public.inbox_debug_log ENABLE ROW LEVEL SECURITY;
 
 -- Users can insert their own debug logs (org must match their membership)
+DROP POLICY IF EXISTS "inbox_debug_log_insert" ON public.inbox_debug_log;
 CREATE POLICY "inbox_debug_log_insert" ON public.inbox_debug_log FOR INSERT TO authenticated
   WITH CHECK (
     user_id = auth.uid()
@@ -29,6 +30,7 @@ CREATE POLICY "inbox_debug_log_insert" ON public.inbox_debug_log FOR INSERT TO a
   );
 
 -- Users can read their own org's logs (for debugging)
+DROP POLICY IF EXISTS "inbox_debug_log_select" ON public.inbox_debug_log;
 CREATE POLICY "inbox_debug_log_select" ON public.inbox_debug_log FOR SELECT TO authenticated
   USING (
     user_id = auth.uid()
