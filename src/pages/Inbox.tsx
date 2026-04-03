@@ -54,6 +54,12 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+function stripHtmlToText(html: string, maxLen: number): string {
+  const t = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  if (t.length <= maxLen) return t
+  return `${t.slice(0, maxLen)}…`
+}
+
 /** True when TipTap/HTML body has no visible text (allows attachment-only send). */
 function isHtmlBodyEffectivelyEmpty(html: string): boolean {
   const text = html
@@ -105,7 +111,7 @@ export default function Inbox() {
   const { user } = useAuth()
   const { threadId: urlThreadId } = useParams<{ threadId?: string }>()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const inboxDebug = searchParams.get('debug') === '1'
   const debugEnabledRef = useRef(inboxDebug)
   debugEnabledRef.current = inboxDebug
@@ -254,6 +260,8 @@ export default function Inbox() {
   const replyFileRef = useRef<HTMLInputElement>(null)
   const sendingReplyRef = useRef(false)
   const outboundEmptyWarnedKeyRef = useRef<string | null>(null)
+  /** When set (from /inbox?compose=1&leadId=...), a successful send logs a lead_attempt for that lead. */
+  const leadComposeContextRef = useRef<{ leadId: string; contactId: string | null } | null>(null)
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -1005,6 +1013,7 @@ export default function Inbox() {
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
     setReplyAnchorMsgId(null)
     if (mode === 'compose') {
+      leadComposeContextRef.current = null
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
     } else if (selectedThread && messages.length > 0) {
       const last = messages[messages.length - 1]
@@ -1035,6 +1044,32 @@ export default function Inbox() {
     setReplyMode(mode)
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
   }
+
+  // Deep link from lead detail: /inbox?compose=1&to=...&leadId=...&contactId=...
+  useEffect(() => {
+    if (searchParams.get('compose') !== '1') return
+    const to = searchParams.get('to')
+    if (!to?.trim()) return
+    const leadId = searchParams.get('leadId')
+    const contactId = searchParams.get('contactId')
+    const subject = searchParams.get('subject')
+
+    leadComposeContextRef.current = leadId ? { leadId, contactId: contactId || null } : null
+    setSelectedThreadId(null)
+    setReplyAnchorMsgId(null)
+    setReplyTo(decodeURIComponent(to.trim()))
+    setReplyCc('')
+    setReplyBcc('')
+    setShowCcBcc(false)
+    setReplySubject(subject ? decodeURIComponent(subject) : '')
+    setReplyHtml('')
+    setReplyAttachments([])
+    setReplyMode('compose')
+
+    const next = new URLSearchParams(searchParams)
+    ;['compose', 'to', 'leadId', 'contactId', 'subject'].forEach((k) => next.delete(k))
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   const handleSendReply = async () => {
     if (!replyTo.trim() && replyMode !== 'compose') { toast('Recipient required'); return }
@@ -1097,6 +1132,33 @@ export default function Inbox() {
     sendingReplyRef.current = false
     setSendingReply(false)
     if (data?.error) { toast(data.error); return }
+
+    const leadCtx = leadComposeContextRef.current
+    if (leadCtx?.leadId && currentOrg?.id && replyMode === 'compose') {
+      leadComposeContextRef.current = null
+      const { data: userForAttempt } = await supabase.auth.getUser()
+      const attemptUserId = userForAttempt?.user?.id ?? null
+      const bodyText = stripHtmlToText(replyHtml, 6000)
+      const summary = [replySubject.trim() && `Subject: ${replySubject.trim()}`, bodyText].filter(Boolean).join('\n\n')
+      await supabase.from('lead_attempts').insert({
+        lead_id: leadCtx.leadId,
+        org_id: currentOrg.id,
+        contact_id: leadCtx.contactId,
+        attempt_type: 'email_outreach',
+        channel: 'email',
+        status: 'completed',
+        subject: replySubject.trim() || null,
+        content: summary || null,
+        attempted_at: new Date().toISOString(),
+        created_by: attemptUserId,
+      })
+      await supabase
+        .from('leads')
+        .update({ last_activity_at: new Date().toISOString() })
+        .eq('id', leadCtx.leadId)
+        .eq('org_id', currentOrg.id)
+    }
+
     setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
     console.log('[Inbox] handleSendReply:', sendId, 'success, fetching threads and messages')
     toast('Sent'); fetchThreads()
