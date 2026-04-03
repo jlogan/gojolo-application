@@ -2,9 +2,10 @@ import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 
 const WHITE_RGB_THRESHOLD = 246
-const BLANK_ROW_MAX_INK_RATIO = 0.012
-const SCAN_WINDOW_PX = 44
+const BLANK_ROW_MAX_INK_RATIO = 0.014
+const SCAN_WINDOW_PX = 120
 const ROW_SAMPLE_STRIDE = 4
+const BLOCK_ROW_PENALTY = 0.7
 
 function getRowInkRatio(ctx: CanvasRenderingContext2D, width: number, y: number): number {
   const row = ctx.getImageData(0, y, width, 1).data
@@ -27,6 +28,30 @@ function getRowInkRatio(ctx: CanvasRenderingContext2D, width: number, y: number)
   return sampled > 0 ? inked / sampled : 0
 }
 
+function collectBlockRanges(element: HTMLElement, scaleY: number): Array<{ top: number; bottom: number }> {
+  const rootRect = element.getBoundingClientRect()
+  const blockNodes = element.querySelectorAll<HTMLElement>('h1,h2,h3,p,ul,ol,li,hr,blockquote,table,pre')
+  const ranges: Array<{ top: number; bottom: number }> = []
+
+  blockNodes.forEach((node) => {
+    const rect = node.getBoundingClientRect()
+    const top = Math.floor((rect.top - rootRect.top) * scaleY)
+    const bottom = Math.ceil((rect.bottom - rootRect.top) * scaleY)
+    if (Number.isFinite(top) && Number.isFinite(bottom) && bottom - top >= 2) {
+      ranges.push({ top, bottom })
+    }
+  })
+
+  return ranges
+}
+
+function isInsideBlockRow(y: number, blockRanges: Array<{ top: number; bottom: number }>): boolean {
+  for (const r of blockRanges) {
+    if (y >= r.top + 2 && y <= r.bottom - 2) return true
+  }
+  return false
+}
+
 function findBreakRow(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -34,20 +59,31 @@ function findBreakRow(
   idealEndY: number,
   maxY: number,
   minSliceHeightPx: number,
+  blockRanges: Array<{ top: number; bottom: number }>,
 ): number {
   const minAllowedY = Math.max(startY + minSliceHeightPx, 0)
-  const upStart = Math.max(idealEndY - SCAN_WINDOW_PX, minAllowedY)
+  const scanStart = Math.max(idealEndY - SCAN_WINDOW_PX, minAllowedY)
+  const scanEnd = Math.min(idealEndY + SCAN_WINDOW_PX, maxY)
 
-  for (let y = idealEndY; y >= upStart; y -= 1) {
-    if (getRowInkRatio(ctx, width, y) <= BLANK_ROW_MAX_INK_RATIO) return y
+  let bestY = idealEndY
+  let bestScore = Number.POSITIVE_INFINITY
+
+  for (let y = scanStart; y <= scanEnd; y += 1) {
+    const ink = getRowInkRatio(ctx, width, y)
+    const distancePenalty = Math.abs(y - idealEndY) / SCAN_WINDOW_PX
+    const blockPenalty = isInsideBlockRow(y, blockRanges) ? BLOCK_ROW_PENALTY : 0
+    const score = ink + distancePenalty * 0.18 + blockPenalty
+
+    if (score < bestScore) {
+      bestScore = score
+      bestY = y
+      if (ink <= BLANK_ROW_MAX_INK_RATIO && blockPenalty === 0 && distancePenalty < 0.08) {
+        break
+      }
+    }
   }
 
-  const downEnd = Math.min(idealEndY + SCAN_WINDOW_PX, maxY)
-  for (let y = idealEndY + 1; y <= downEnd; y += 1) {
-    if (getRowInkRatio(ctx, width, y) <= BLANK_ROW_MAX_INK_RATIO) return y
-  }
-
-  return idealEndY
+  return bestY
 }
 
 /**
@@ -76,6 +112,8 @@ export async function buildResumePdfFromElement(element: HTMLElement): Promise<B
 
   const pageHeightPx = Math.floor((canvas.width * pageHeightMm) / pageWidthMm)
   const minSliceHeightPx = Math.floor(pageHeightPx * 0.6)
+  const scaleY = canvas.height / Math.max(element.scrollHeight, 1)
+  const blockRanges = collectBlockRanges(element, scaleY)
 
   let startY = 0
   let pageIndex = 0
@@ -85,7 +123,7 @@ export async function buildResumePdfFromElement(element: HTMLElement): Promise<B
     let endY = idealEndY
 
     if (idealEndY < canvas.height) {
-      endY = findBreakRow(ctx, canvas.width, startY, idealEndY, canvas.height - 1, minSliceHeightPx)
+      endY = findBreakRow(ctx, canvas.width, startY, idealEndY, canvas.height - 1, minSliceHeightPx, blockRanges)
     }
 
     if (endY <= startY) break
