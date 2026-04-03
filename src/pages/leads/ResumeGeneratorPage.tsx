@@ -1,0 +1,525 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { jsPDF } from 'jspdf'
+import { useOrg } from '@/contexts/OrgContext'
+import { supabase } from '@/lib/supabase'
+import { formatTemplateEducationText } from '@/lib/templateEducation'
+import { resumeExperienceOnlyInstructionLines } from '@/lib/resumeAiPrompts'
+import { formatResumeYearRange, sanitizeResumeRoleTitle } from '@/lib/resumeFormat'
+import { finalizeExperienceRoleTitles } from '@/lib/resumeExperienceTitles'
+import { normalizeExperienceCopy, normalizeResumeCopyText } from '@/lib/resumeCopyNormalize'
+
+type Template = {
+  id: string
+  name: string
+  candidate_name: string
+  headline: string | null
+  summary: string | null
+  email: string | null
+  phone: string | null
+  website: string | null
+  location: string | null
+  profile_photo_url: string | null
+  settings: Record<string, unknown> | null
+}
+
+type LeadContext = {
+  id: string
+  title: string
+  job_description: string | null
+  meta: Record<string, unknown> | null
+  companies: { name: string } | { name: string }[] | null
+}
+
+type TemplateExperience = {
+  company_name: string
+  start_year: number
+  end_year: number | null
+  job_location?: string | null
+}
+
+type GeneratedExperience = {
+  company_name: string
+  start_year: number
+  end_year: number | null
+  role_title: string
+  responsibilities: string[]
+  job_location?: string | null
+}
+
+type ResumePayload = {
+  generated_at: string
+  lead_id: string
+  candidate: {
+    name: string
+    headline: string | null
+    summary: string | null
+    email: string | null
+    phone: string | null
+    website: string | null
+    location: string | null
+    profile_photo_url: string | null
+  }
+  target: {
+    company_name: string | null
+    role_title: string | null
+  }
+  job_description: string
+  tailoring_notes: string | null
+  sections: {
+    core_skills_text: string
+    education_text: string
+  }
+  experience: GeneratedExperience[]
+}
+
+function asSingle<T>(v: T | T[] | null): T | null {
+  return Array.isArray(v) ? (v[0] ?? null) : v
+}
+
+function extractJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    const match = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/)
+    if (!match) throw new Error('No JSON block found in AI response')
+    return JSON.parse(match[0])
+  }
+}
+
+function drawWrapped(doc: jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight = 5): number {
+  const lines = doc.splitTextToSize(text, maxWidth)
+  lines.forEach((line: string) => {
+    doc.text(line, x, y)
+    y += lineHeight
+  })
+  return y
+}
+
+function buildResumePdf(payload: ResumePayload): Blob {
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+  const left = 14
+  const width = 182
+  let y = 16
+
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(18)
+  doc.text(payload.candidate.name || 'Candidate', left, y)
+  y += 7
+
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(11)
+  const headerBits = [payload.candidate.headline, payload.candidate.email, payload.candidate.phone, payload.candidate.website, payload.candidate.location].filter(Boolean)
+  y = drawWrapped(doc, headerBits.join(' • '), left, y, width)
+  y += 2
+
+  doc.setDrawColor(180)
+  doc.line(left, y, left + width, y)
+  y += 6
+
+  const ensureSpace = (needed = 20) => {
+    if (y + needed > 280) {
+      doc.addPage()
+      y = 16
+    }
+  }
+
+  const addSection = (title: string, body: string) => {
+    if (!body.trim()) return
+    ensureSpace(18)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(12)
+    doc.text(title, left, y)
+    y += 6
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(10)
+    y = drawWrapped(doc, body, left, y, width, 4.8)
+    y += 2
+  }
+
+  addSection('Target Role', `${payload.target.role_title ?? ''}${payload.target.company_name ? ` at ${payload.target.company_name}` : ''}`)
+  addSection('Professional Summary', payload.candidate.summary ?? '')
+  addSection('Core Skills', payload.sections.core_skills_text ?? '')
+
+  if (payload.experience.length) {
+    ensureSpace(20)
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(12)
+    doc.text('Professional Experience', left, y)
+    y += 6
+
+    payload.experience.forEach((exp) => {
+      ensureSpace(24)
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(10.5)
+      const years = formatResumeYearRange(exp.start_year, exp.end_year)
+      doc.text(`${exp.company_name} (${years})`, left, y)
+      y += 5
+      if (exp.job_location?.trim()) {
+        doc.setFont('helvetica', 'normal')
+        doc.setFontSize(9)
+        doc.setTextColor(90)
+        y = drawWrapped(doc, exp.job_location.trim(), left, y, width, 4.2)
+        doc.setTextColor(0)
+        y += 2
+      }
+      doc.setFont('helvetica', 'italic')
+      doc.setFontSize(10.5)
+      doc.text(exp.role_title || 'Role generated by AI', left, y)
+      y += 5
+
+      doc.setFont('helvetica', 'normal')
+      exp.responsibilities.forEach((bullet) => {
+        ensureSpace(8)
+        doc.text('•', left, y)
+        y = drawWrapped(doc, bullet, left + 4, y, width - 4, 4.8)
+      })
+      y += 2
+    })
+  }
+
+  addSection('Education', payload.sections.education_text ?? '')
+  return doc.output('blob')
+}
+
+export default function ResumeGeneratorPage() {
+  const { id: leadId } = useParams<{ id: string }>()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { currentOrg } = useOrg()
+
+  const isCreationStage = new URLSearchParams(location.search).get('stage') === 'create'
+
+  const [loading, setLoading] = useState(true)
+  const [lead, setLead] = useState<LeadContext | null>(null)
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [templateId, setTemplateId] = useState('')
+
+  const [jobDescription, setJobDescription] = useState('')
+  const [companyName, setCompanyName] = useState('')
+  const [roleTitle, setRoleTitle] = useState('')
+  const [includeProfilePhoto, setIncludeProfilePhoto] = useState(true)
+  const [tailoringNotes, setTailoringNotes] = useState('')
+
+  const [templateExperiences, setTemplateExperiences] = useState<TemplateExperience[]>([])
+  const [generatedJson, setGeneratedJson] = useState<ResumePayload | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!loading && leadId && !isCreationStage) {
+      navigate(`/leads/${leadId}`, { replace: true })
+    }
+  }, [loading, leadId, isCreationStage, navigate])
+
+  useEffect(() => {
+    if (!currentOrg?.id || !leadId) return
+
+    const load = async () => {
+      setLoading(true)
+
+      const [{ data: leadData }, { data: templateData }] = await Promise.all([
+        supabase
+          .from('leads')
+          .select('id, title, job_description, meta, companies(name)')
+          .eq('id', leadId)
+          .eq('org_id', currentOrg.id)
+          .single(),
+        supabase
+          .from('resume_templates')
+          .select('id, name, candidate_name, headline, summary, email, phone, website, location, profile_photo_url, settings')
+          .eq('org_id', currentOrg.id)
+          .order('created_at', { ascending: false }),
+      ])
+
+      const leadRow = (leadData as LeadContext | null) ?? null
+      setLead(leadRow)
+      setTemplates((templateData as Template[]) ?? [])
+
+      const preferredTemplateId = (leadRow?.meta?.resume_template_id as string | undefined) ?? ''
+      const available = (templateData as Template[]) ?? []
+      const picked = available.find((t) => t.id === preferredTemplateId)?.id ?? available[0]?.id ?? ''
+      setTemplateId(picked)
+
+      if (leadRow) {
+        setRoleTitle(leadRow.title ?? '')
+        setJobDescription(leadRow.job_description ?? '')
+        setCompanyName(asSingle(leadRow.companies)?.name ?? '')
+        setTailoringNotes(String((leadRow.meta?.resume_notes as string | undefined) ?? ''))
+      }
+
+      setLoading(false)
+    }
+
+    load()
+  }, [currentOrg?.id, leadId])
+
+  useEffect(() => {
+    if (!templateId) return
+    supabase
+      .from('resume_template_experiences')
+      .select('company_name, start_year, end_year, job_location')
+      .eq('template_id', templateId)
+      .order('sort_order', { ascending: true })
+      .then(({ data }) =>
+        setTemplateExperiences(
+          ((data as TemplateExperience[]) ?? []).map((e) => ({ ...e, job_location: e.job_location ?? null })),
+        ),
+      )
+  }, [templateId])
+
+  const selectedTemplate = useMemo(() => templates.find((t) => t.id === templateId) ?? null, [templates, templateId])
+
+  const generateExperienceWithAi = async (): Promise<GeneratedExperience[]> => {
+    if (!selectedTemplate || !currentOrg?.id || !leadId) return []
+
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) throw new Error('No auth session available')
+
+    const basePrompt = [
+      'You are generating resume experience entries for a single candidate.',
+      ...resumeExperienceOnlyInstructionLines(),
+      '',
+      'Use the TARGET JOB DESCRIPTION to tailor role titles and responsibilities.',
+      'DO NOT invent new companies or employment dates; only use provided experience inputs.',
+      'Return STRICT JSON with this shape:',
+      '{"experience":[{"company_name":"...","start_year":2020,"end_year":2022,"role_title":"...","responsibilities":["...","...","..."]}]}',
+      'Use 3-5 concise responsibilities per job, focused on job relevance and truthfulness.',
+      '',
+      `Lead ID: ${leadId}`,
+      `Target company: ${companyName || 'N/A'}`,
+      `Target role title: ${roleTitle || 'N/A'}`,
+      `Tailoring notes: ${tailoringNotes || 'N/A'}`,
+      '',
+      'TARGET JOB DESCRIPTION:',
+      jobDescription,
+      '',
+      'EXPERIENCE INPUTS (company, optional job location, start year, end year):',
+      JSON.stringify(
+        templateExperiences.map((e) => ({
+          company_name: e.company_name,
+          job_location: e.job_location?.trim() || null,
+          start_year: e.start_year,
+          end_year: e.end_year,
+        })),
+      ),
+    ].join('\n')
+
+    const callAi = async (message: string) => {
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ message, orgId: currentOrg.id, history: [] }),
+      })
+      const data = await res.json()
+      if (data?.error) throw new Error(data.error)
+      return String(data?.message ?? '')
+    }
+
+    const templateByKey = new Map(
+      templateExperiences.map((t) => [`${t.company_name}|${t.start_year}|${t.end_year ?? 'p'}`, t]),
+    )
+
+    const mergeLocations = (list: GeneratedExperience[]): GeneratedExperience[] =>
+      list.map((exp) => {
+        const key = `${exp.company_name}|${exp.start_year}|${exp.end_year ?? 'p'}`
+        const tmpl = templateByKey.get(key)
+        const aiLoc = exp.job_location != null ? String(exp.job_location).trim() : ''
+        return {
+          ...exp,
+          role_title: sanitizeResumeRoleTitle(String(exp.role_title ?? '')),
+          job_location: aiLoc || tmpl?.job_location?.trim() || null,
+        }
+      })
+
+    let raw = await callAi(basePrompt)
+    try {
+      const parsed = extractJson(raw) as { experience?: GeneratedExperience[] }
+      const list = Array.isArray(parsed.experience) ? parsed.experience : []
+      return normalizeExperienceCopy(finalizeExperienceRoleTitles(mergeLocations(list), roleTitle))
+    } catch {
+      raw = await callAi(`${basePrompt}\n\nIMPORTANT: Respond with JSON only. No markdown, no commentary.`)
+      const parsed = extractJson(raw) as { experience?: GeneratedExperience[] }
+      const list = Array.isArray(parsed.experience) ? parsed.experience : []
+      return normalizeExperienceCopy(finalizeExperienceRoleTitles(mergeLocations(list), roleTitle))
+    }
+  }
+
+  const generateDraft = async () => {
+    if (!selectedTemplate || !leadId || !jobDescription.trim()) return
+    setGenerating(true)
+
+    try {
+      const aiExperience = await generateExperienceWithAi()
+      setGeneratedJson({
+        generated_at: new Date().toISOString(),
+        lead_id: leadId,
+        candidate: {
+          name: selectedTemplate.candidate_name,
+          headline: selectedTemplate.headline ? normalizeResumeCopyText(selectedTemplate.headline) : selectedTemplate.headline,
+          summary: selectedTemplate.summary ? normalizeResumeCopyText(selectedTemplate.summary) : selectedTemplate.summary,
+          email: selectedTemplate.email,
+          phone: selectedTemplate.phone,
+          website: selectedTemplate.website,
+          location: selectedTemplate.location,
+          profile_photo_url: includeProfilePhoto ? selectedTemplate.profile_photo_url : null,
+        },
+        target: {
+          company_name: companyName || null,
+          role_title: roleTitle || null,
+        },
+        job_description: jobDescription,
+        tailoring_notes: tailoringNotes || null,
+        sections: {
+          core_skills_text: normalizeResumeCopyText(
+            String((selectedTemplate.settings?.core_skills_text as string | undefined) ?? ''),
+          ),
+          education_text: normalizeResumeCopyText(
+            String((selectedTemplate.settings?.education_text as string | undefined) ?? '').trim() ||
+              formatTemplateEducationText(selectedTemplate.settings) ||
+              '',
+          ),
+        },
+        experience: aiExperience,
+      })
+    } catch (err) {
+      alert(`AI generation failed: ${(err as Error).message}`)
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const saveGenerated = async () => {
+    if (!currentOrg?.id || !selectedTemplate || !generatedJson || !leadId) return
+    setSaving(true)
+
+    try {
+      const pdfBlob = buildResumePdf(generatedJson)
+      const ts = Date.now()
+      const cleanRole = (roleTitle || 'role').replace(/[^a-z0-9]+/gi, '-').replace(/(^-|-$)/g, '').toLowerCase()
+      const path = `${currentOrg.id}/${leadId}/${ts}-${cleanRole || 'resume'}.pdf`
+
+      const { error: uploadErr } = await supabase.storage
+        .from('lead-resumes')
+        .upload(path, pdfBlob, { contentType: 'application/pdf', upsert: false })
+      if (uploadErr) throw uploadErr
+
+      const { data: signed } = await supabase.storage.from('lead-resumes').createSignedUrl(path, 60 * 60 * 24 * 7)
+      const { data: userResult } = await supabase.auth.getUser()
+      const userId = userResult?.user?.id ?? null
+
+      const { error } = await supabase.from('resume_documents').insert({
+        org_id: currentOrg.id,
+        lead_id: leadId,
+        template_id: selectedTemplate.id,
+        candidate_name: selectedTemplate.candidate_name,
+        company_name: companyName || null,
+        role_title: roleTitle || null,
+        job_description: jobDescription || null,
+        render_format: 'pdf',
+        file_path: path,
+        file_url: signed?.signedUrl ?? null,
+        content_json: generatedJson,
+        created_by: userId,
+      })
+      if (error) throw error
+
+      alert('Resume PDF saved to lead history.')
+      navigate(`/leads/${leadId}`)
+    } catch (err) {
+      alert(`Could not save PDF: ${(err as Error).message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return <div className="p-4 md:p-6 text-gray-400">Loading…</div>
+  if (!leadId || !lead) {
+    return (
+      <div className="p-4 md:p-6">
+        <p className="text-gray-400">Lead context missing.</p>
+        <Link to="/leads" className="text-accent hover:underline">Back to leads</Link>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4 md:p-6 max-w-6xl" data-testid="resume-generator-page">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h1 className="text-xl font-semibold text-white">Resume Generator</h1>
+          <p className="text-sm text-gray-400">Lead creation step: generate and save the final PDF resume for this lead.</p>
+        </div>
+        <Link to="/leads/templates" className="px-3 py-2 rounded-lg border border-border text-gray-200 hover:bg-surface-muted">Manage templates</Link>
+      </div>
+
+      <div className="rounded-lg border border-border bg-surface-elevated p-3 mb-4 text-sm text-gray-300">
+        <p><span className="text-gray-500">Lead:</span> {lead.title}</p>
+        <p><span className="text-gray-500">Company:</span> {companyName || '—'}</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
+          <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white">
+            <option value="">Select template…</option>
+            {templates.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.candidate_name})</option>)}
+          </select>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Target company" className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-white" />
+            <input value={roleTitle} onChange={(e) => setRoleTitle(e.target.value)} placeholder="Target role" className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-white" />
+          </div>
+
+          <label className="text-sm text-gray-300 inline-flex items-center gap-2">
+            <input type="checkbox" checked={includeProfilePhoto} onChange={(e) => setIncludeProfilePhoto(e.target.checked)} /> Include profile photo
+          </label>
+
+          <textarea value={jobDescription} onChange={(e) => setJobDescription(e.target.value)} rows={10} placeholder="Job description"
+            className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white" />
+
+          <textarea value={tailoringNotes} onChange={(e) => setTailoringNotes(e.target.value)} rows={3} placeholder="Tailoring notes (optional)"
+            className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white" />
+
+          <div className="rounded border border-border p-2 bg-surface-muted/20">
+            <p className="text-xs text-gray-400 mb-1">Template employment history inputs (company + dates)</p>
+            {templateExperiences.length === 0 ? (
+              <p className="text-xs text-gray-500">No employment rows in this template yet.</p>
+            ) : (
+              <ul className="text-xs text-gray-300 space-y-1">
+                {templateExperiences.map((e, i) => (
+                  <li key={`${e.company_name}-${i}`}>
+                    {e.company_name} ({formatResumeYearRange(e.start_year, e.end_year)})
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <button onClick={generateDraft} disabled={generating || !jobDescription.trim()} className="px-4 py-2 rounded-lg bg-accent text-accent-foreground disabled:opacity-50">
+              {generating ? 'Generating…' : 'Generate draft'}
+            </button>
+            <button onClick={saveGenerated} disabled={!generatedJson || saving} className="px-4 py-2 rounded-lg border border-border text-gray-200 disabled:opacity-50">
+              {saving ? 'Saving PDF…' : 'Save PDF & finish'}
+            </button>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border bg-surface-elevated p-4">
+          <h2 className="text-sm font-medium text-gray-200 mb-2">Draft preview (JSON)</h2>
+          {!generatedJson ? (
+            <p className="text-sm text-gray-500">Generate a draft to preview AI-generated titles and responsibilities per employment entry.</p>
+          ) : (
+            <pre className="text-xs text-gray-200 whitespace-pre-wrap break-words max-h-[560px] overflow-y-auto">{JSON.stringify(generatedJson, null, 2)}</pre>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
