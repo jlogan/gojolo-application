@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useOrg, type Organization } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { LayoutGrid, Plus } from 'lucide-react'
+import { LayoutGrid, LogOut, Plus } from 'lucide-react'
 
 export default function WorkspacePicker() {
   const { memberships, currentOrg, setCurrentOrg, isPlatformAdmin, allOrganizations, refetch } = useOrg()
@@ -69,6 +69,11 @@ export default function WorkspacePicker() {
             ))}
           </ul>
         )}
+
+        <button type="button" onClick={async () => { await supabase.auth.signOut(); navigate('/login', { replace: true }) }}
+          className="w-full flex items-center justify-center gap-2 py-2 text-gray-500 hover:text-gray-300 transition-colors text-sm mb-4">
+          <LogOut className="w-4 h-4" /> Sign out
+        </button>
 
         {!showCreate ? (
           <button type="button" onClick={() => setShowCreate(true)}
