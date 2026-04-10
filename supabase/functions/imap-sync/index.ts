@@ -97,7 +97,18 @@ function parseBodyFromSourceRaw(source: Uint8Array | Buffer): string {
 const MAX_BODY_LENGTH = 50000
 
 /** Max message bodies to fetch per sync to stay under Gmail IMAP quota (~2.5GB/day). Only new messages get body fetch. */
-const MAX_BODY_FETCH_PER_SYNC = 10
+const MAX_BODY_FETCH_PER_SYNC = 25
+
+/** Max messages to process in resync mode (last ~24 UIDs window, capped). */
+const MAX_BATCH = 25
+
+const MAX_SYNC_RETRIES = 2
+const RETRY_DELAY_MS = 3000
+
+function isRetryableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /ECONNRESET|EPIPE|ETIMEDOUT|ENOTFOUND|socket hang up|connect(ion)? (closed|lost|refused|timed out)|network/i.test(msg)
+}
 
 type ParsedEmail = {
   body: string
@@ -276,11 +287,21 @@ serve(async (req) => {
 
     const secure = acc.imap_encryption === 'ssl' || acc.imap_encryption === 'tls'
     const port = Number(acc.port) || (secure ? 993 : 143)
+
+    for (let _syncAttempt = 0; _syncAttempt < MAX_SYNC_RETRIES; _syncAttempt++) {
+    if (_syncAttempt > 0) {
+      console.log('[imap-sync] account', acc.id, 'retry attempt', _syncAttempt + 1, '/', MAX_SYNC_RETRIES)
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+    }
+
     const client = new ImapFlow({
       host: acc.host,
       port,
       secure,
       auth: { user: acc.imap_username, pass: password },
+    })
+    client.on('error', (err: Error) => {
+      console.log('[imap-sync] account', acc.id, 'IMAP client error (connection/reset):', err?.message ?? String(err))
     })
 
     try {
@@ -288,10 +309,12 @@ serve(async (req) => {
       console.log('[imap-sync] account', acc.id, 'IMAP connected')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      console.log('[imap-sync] account', acc.id, 'IMAP connect failed:', msg)
+      console.log('[imap-sync] account', acc.id, 'IMAP connect failed:', msg, _syncAttempt < MAX_SYNC_RETRIES - 1 ? '(will retry)' : '(giving up)')
+      try { client.close() } catch { /* ignore */ }
+      if (isRetryableError(err) && _syncAttempt < MAX_SYNC_RETRIES - 1) continue
       errors.push(`${acc.imap_username}: ${msg}`)
       await service.from('imap_accounts').update({ last_error: msg }).eq('id', acc.id)
-      continue
+      break
     }
 
     const mailboxPath = getMailboxPath(acc.host)
@@ -311,7 +334,11 @@ serve(async (req) => {
           .eq('id', backfillThreadId)
           .single()
         const bt = threadRow as { id: string; subject: string | null; from_address: string | null; imap_account_id: string | null } | null
-        if (bt?.imap_account_id === acc.id) {
+        const backfillForThisAccount =
+          bt &&
+          (bt.imap_account_id === acc.id ||
+            (bt.imap_account_id == null && body.accountId === acc.id))
+        if (backfillForThisAccount) {
           const { count } = await service.from('inbox_messages').select('id', { count: 'exact', head: true }).eq('thread_id', backfillThreadId)
           if ((count ?? 0) === 0) {
             const threadSubjectNorm = (bt.subject ?? '').replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
@@ -395,7 +422,11 @@ serve(async (req) => {
                     return t > max ? t : max
                   }, 0)
                   const lastMsgAt = latestReceived > 0 ? new Date(latestReceived).toISOString() : new Date().toISOString()
-                  await service.from('inbox_threads').update({ last_message_at: lastMsgAt, updated_at: lastMsgAt }).eq('id', backfillThreadId)
+                  await service.from('inbox_threads').update({
+                    last_message_at: lastMsgAt,
+                    updated_at: lastMsgAt,
+                    ...(bt.imap_account_id == null ? { imap_account_id: acc.id } : {}),
+                  }).eq('id', backfillThreadId)
                 }
               } else {
                 console.log('[imap-sync] backfill found no matching messages in range', backfillRange)
@@ -638,6 +669,7 @@ serve(async (req) => {
         if (batchErr) {
           console.log('[imap-sync] account', acc.id, 'batch insert error:', batchErr.message, 'code=', batchErr.code)
           errors.push(`${acc.imap_username}: batch insert: ${batchErr.message}`)
+          highestUid = lastUid
         } else {
           messagesInserted = count ?? insertRows.length
           insertedRows = (insertedData ?? []) as { id: string; external_uid: number; thread_id: string }[]
@@ -846,16 +878,24 @@ serve(async (req) => {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.log('[imap-sync] account', acc.id, 'error:', msg)
+      if (isRetryableError(err) && _syncAttempt < MAX_SYNC_RETRIES - 1) {
+        console.log('[imap-sync] account', acc.id, 'transient error, will retry')
+        continue
+      }
       errors.push(`${acc.imap_username}: ${msg}`)
       await service.from('imap_accounts').update({ last_error: msg }).eq('id', acc.id)
     } finally {
-      if (lock) await lock.release()
+      if (lock) {
+        try { await lock.release() } catch { /* connection may be dead */ }
+      }
       try {
         await client.logout()
       } catch {
-        client.close()
+        try { client.close() } catch { /* ignore */ }
       }
     }
+    break
+    } // end retry loop
   }
 
   const result = {

@@ -546,6 +546,31 @@ export default function Admin() {
     setImapSyncAccountId(accountId)
     setImapSyncMessage(null)
     const result = await callImapSync(accountId)
+    let bodyParts: string[] = []
+    if (!result?.error && currentOrg?.id) {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.access_token) {
+        try {
+          const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/backfill-empty-bodies`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+              apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+            },
+            body: JSON.stringify({ orgId: currentOrg.id, accountId, limit: 50 }),
+          })
+          const bf = (await res.json().catch(() => ({}))) as { filled?: number; error?: string; message?: string }
+          if (bf.error) {
+            bodyParts.push(`Body backfill: ${bf.error}`)
+          } else if (typeof bf.filled === 'number' && bf.filled > 0) {
+            bodyParts.push(`${bf.filled} message body/bodies loaded from IMAP (batch of up to 50)`)
+          }
+        } catch {
+          // ignore backfill failure; sync result still shown
+        }
+      }
+    }
     setImapSyncAccountId(null)
     if (result?.error) {
       setImapSyncMessage(result.error)
@@ -558,6 +583,7 @@ export default function Admin() {
       const parts: string[] = []
       if (messagesUpdated > 0) parts.push(`${messagesUpdated} message(s) re-downloaded`)
       if (messagesInserted > 0) parts.push(`${messagesInserted} new message(s), ${threadsCreated} thread(s)`)
+      if (bodyParts.length) parts.push(...bodyParts)
       setImapSyncMessage(
         parts.length > 0 ? `Sync complete. ${parts.join('; ')}.` : 'Sync complete. No new messages.'
       )

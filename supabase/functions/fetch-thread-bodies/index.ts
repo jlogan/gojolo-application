@@ -9,7 +9,7 @@
  * Limits: processes at most MAX_FETCH_PER_REQUEST messages per call to avoid 546 WORKER_LIMIT.
  * Client can call again; already-fetched messages will be returned from DB.
  */
-const MAX_FETCH_PER_REQUEST = 5
+const MAX_FETCH_PER_REQUEST = 15
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
@@ -206,6 +206,9 @@ Deno.serve(async (req: Request) => {
       auth: { user: acc.imap_username as string, pass: password },
       logger: false,
     })
+    client.on('error', (err: Error) => {
+      console.log('[fetch-thread-bodies] IMAP client error (connection/reset):', err?.message ?? String(err))
+    })
 
     try {
       const tConn = performance.now()
@@ -253,7 +256,7 @@ Deno.serve(async (req: Request) => {
               if (!upErr) {
                 const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
                 htmlBody = htmlBody!.replace(
-                  new RegExp(`cid:${cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'),
+                  new RegExp('cid:' + cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
                   urlData.publicUrl
                 )
                 await service.from('inbox_attachments').insert({
@@ -319,19 +322,15 @@ Deno.serve(async (req: Request) => {
         }
       } finally {
         const tUnlock = performance.now()
-        await lock.release()
+        try { await lock.release() } catch { /* connection may be dead */ }
         console.log('[fetch-thread-bodies] mailbox lock released', { accId, elapsedMs: Math.round(performance.now() - tUnlock) })
       }
       const tLogout = performance.now()
-      await client.logout().catch(() => client.close())
+      await client.logout().catch(() => { try { client.close() } catch { /* ignore */ } })
       console.log('[fetch-thread-bodies] IMAP logout', { accId, logoutMs: Math.round(performance.now() - tLogout), accTotalMs: Math.round(performance.now() - tAcc) })
     } catch (err) {
       console.error('[fetch-thread-bodies] IMAP error', { accId, error: (err as Error).message })
-      try {
-        await client.logout()
-      } catch {
-        client.close()
-      }
+      try { await client.logout() } catch { try { client.close() } catch { /* ignore */ } }
       for (const msg of msgs) {
         result.push({ id: msg.id, body: null, htmlBody: null, attachments: [] })
       }

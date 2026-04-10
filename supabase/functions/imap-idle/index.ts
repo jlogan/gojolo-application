@@ -95,6 +95,9 @@ Deno.serve(async (req: Request) => {
       auth: { user: acc.imap_username, pass: password },
       logger: false,
     })
+    client.on('error', (err: Error) => {
+      console.log('[imap-idle] account', acc.id, 'IMAP client error (connection/reset):', err?.message ?? String(err))
+    })
 
     try {
       await client.connect()
@@ -144,12 +147,12 @@ Deno.serve(async (req: Request) => {
           if (uid > highestUid) highestUid = uid
 
           const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
+          const source = msg.source as Uint8Array | Buffer | undefined
           const fromHeader = source ? getHeader(source, 'From')?.trim() : null
           const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
           const toAddr = envelope?.to?.[0]?.address ?? ''
           const subject = envelope?.subject ?? ''
           const date = envelope?.date ? new Date(envelope.date) : new Date()
-          const source = msg.source as Uint8Array | Buffer | undefined
 
           const rawMsgId = source ? getHeader(source, 'Message-ID') : null
           const messageId = normalizeMessageId(rawMsgId)
@@ -259,15 +262,15 @@ Deno.serve(async (req: Request) => {
 
         totalNew += inserted
       } finally {
-        await lock.release()
+        try { await lock.release() } catch { /* connection may be dead */ }
       }
 
-      await client.logout().catch(() => client.close())
+      await client.logout().catch(() => { try { client.close() } catch { /* ignore */ } })
     } catch (err) {
       const msg = (err as Error).message
       errors.push(`${acc.imap_username}: ${msg}`)
       await service.from('imap_accounts').update({ last_error: msg }).eq('id', acc.id)
-      try { await client.logout() } catch { client.close() }
+      try { await client.logout() } catch { try { client.close() } catch { /* ignore */ } }
     }
   }
 

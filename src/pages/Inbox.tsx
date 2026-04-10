@@ -19,6 +19,8 @@ type InboxThread = {
   subject: string | null; last_message_at: string; created_at: string
   from_address: string | null; imap_account_id: string | null
   inbox_thread_assignments?: ThreadAssignment[] | null
+  /** Populated when select includes inbox_messages(count) */
+  inbox_messages?: { count: number }[] | null
 }
 type InboxMessage = {
   id: string; thread_id: string; channel: string; direction: string
@@ -159,7 +161,7 @@ export default function Inbox() {
       return
     }
     supabase.from('inbox_threads')
-      .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
+      .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id), inbox_messages(count)')
       .eq('id', selectedThreadId).eq('org_id', currentOrg.id).single()
       .then(({ data }) => setSelectedThreadFallback((data as InboxThread) ?? null), () => setSelectedThreadFallback(null))
   }, [selectedThreadId, threads, currentOrg?.id])
@@ -324,7 +326,7 @@ export default function Inbox() {
     try {
       debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, pageSize })
       let query = supabase.from('inbox_threads')
-        .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
+        .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id), inbox_messages(count)')
         .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
       if (filter === 'inbox') {
         query = query.eq('status', 'open')
@@ -339,6 +341,15 @@ export default function Inbox() {
       else if (filter === 'all') query = query.neq('status', 'archived')
       const { data, error: threadsErr } = await query
       let result = (data as InboxThread[]) ?? []
+      // Hide orphan threads (no inbox_messages rows) — they break fetch-thread-bodies and confuse the UI
+      const beforeOrphans = result.length
+      result = result.filter((t) => {
+        const cnt = (t as InboxThread).inbox_messages?.[0]?.count ?? 0
+        return cnt > 0
+      })
+      if (beforeOrphans !== result.length) {
+        debugLog('fetchThreads', { event: 'orphan_threads_hidden', before: beforeOrphans, after: result.length })
+      }
       debugLog('fetchThreads', { event: 'threads_raw', count: result.length, error: threadsErr?.message, threads: result.map(t => ({ id: t.id, subject: t.subject?.slice(0, 30), status: t.status, assigns: (t.inbox_thread_assignments ?? []).map((a: { user_id: string }) => a.user_id) })) })
       // For inbox filter: only show threads assigned to me or unassigned
       if (filter === 'inbox') {
@@ -355,7 +366,7 @@ export default function Inbox() {
       const sid = selectedThreadIdRef.current
       if (sid && !result.some(t => t.id === sid)) {
         const { data: single } = await supabase.from('inbox_threads')
-          .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)')
+          .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id), inbox_messages(count)')
           .eq('id', sid).eq('org_id', currentOrg!.id).single()
         const thread = single as InboxThread | null
         if (thread && (filter !== 'all' || thread.status !== 'archived')) {
@@ -405,7 +416,7 @@ export default function Inbox() {
       console.error('[Inbox] inbox_messages query failed:', queryError.message, queryError)
     }
 
-    // If thread has no messages, trigger sync for this thread's IMAP account then re-fetch
+    // If thread has no messages, trigger IMAP backfill (orphan thread recovery). imap_account_id may be null — pick any active account for the org.
     if (msgs.length === 0) {
       debugLog('fetchMessages', { event: 'backfill_trigger', threadId: tid }, tid)
       const { data: threadRow } = await supabase.from('inbox_threads')
@@ -413,7 +424,17 @@ export default function Inbox() {
         .eq('id', tid)
         .single()
       const thread = threadRow as { org_id: string; imap_account_id: string | null } | null
-      if (thread?.imap_account_id && thread?.org_id) {
+      let accountId = thread?.imap_account_id ?? null
+      if (thread?.org_id && !accountId) {
+        const { data: accPick } = await supabase.from('imap_accounts')
+          .select('id')
+          .eq('org_id', thread.org_id)
+          .eq('is_active', true)
+          .order('email')
+          .limit(1)
+        accountId = accPick?.[0]?.id ?? null
+      }
+      if (thread?.org_id && accountId) {
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.access_token) {
           try {
@@ -424,7 +445,7 @@ export default function Inbox() {
                 Authorization: `Bearer ${session.access_token}`,
                 apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
               },
-              body: JSON.stringify({ orgId: thread.org_id, accountId: thread.imap_account_id, backfillForThread: tid }),
+              body: JSON.stringify({ orgId: thread.org_id, accountId, backfillForThread: tid }),
             })
             if (res.ok) {
               const { data: dataAfter } = await supabase.from('inbox_messages')
@@ -437,6 +458,8 @@ export default function Inbox() {
             // ignore sync failure, keep msgs empty
           }
         }
+      } else if (thread?.org_id && !accountId) {
+        console.warn('[Inbox] Thread has no messages and no active IMAP account to backfill', { threadId: tid, orgId: thread.org_id })
       }
     }
 

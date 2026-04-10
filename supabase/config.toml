@@ -57,6 +57,10 @@ verify_jwt = false
 [functions.fetch-thread-bodies]
 verify_jwt = false
 
+# backfill-empty-bodies: batch IMAP fetch for up to 50 messages with empty body per account (Admin sync).
+[functions.backfill-empty-bodies]
+verify_jwt = false
+
 # refresh-email: public endpoint to trigger magic-link email for an address; no auth, generic JSON response only.
 [functions.refresh-email]
 verify_jwt = false
