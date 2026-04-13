@@ -39,8 +39,10 @@ function jsonRes(data: unknown, status: number) {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
+  const t0 = performance.now()
+  console.log('[backfill-empty-bodies] request', { method: req.method })
 
+  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
   if (req.method !== 'POST') return jsonRes({ error: 'Method not allowed' }, 405)
 
   const body = await req.json().catch(() => ({})) as {
@@ -52,22 +54,33 @@ Deno.serve(async (req: Request) => {
   const accountId = body.accountId?.trim()
   const limit = Math.min(MAX_PER_CALL, Math.max(1, Math.floor(body.limit ?? MAX_PER_CALL)))
 
-  if (!orgId || !accountId) return jsonRes({ error: 'orgId and accountId required' }, 400)
+  console.log('[backfill-empty-bodies] params', { orgId, accountId, limit })
+
+  if (!orgId || !accountId) {
+    console.log('[backfill-empty-bodies] missing orgId or accountId')
+    return jsonRes({ error: 'orgId and accountId required' }, 400)
+  }
 
   const auth = req.headers.get('Authorization')
-  if (!auth) return jsonRes({ error: 'Unauthorized' }, 401)
+  if (!auth) {
+    console.log('[backfill-empty-bodies] no Authorization header')
+    return jsonRes({ error: 'Unauthorized' }, 401)
+  }
 
   const service = createClient(supabaseUrl, serviceKey)
   const userClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: auth } } })
 
+  console.log('[backfill-empty-bodies] checking permissions')
   const [adminRes, permRes] = await Promise.all([
     userClient.rpc('is_org_admin', { p_org_id: orgId }),
     userClient.rpc('user_has_permission', { p_org_id: orgId, p_permission: 'inbox.view' }),
   ])
+  console.log('[backfill-empty-bodies] permissions', { isAdmin: adminRes.data, hasInboxView: permRes.data, adminErr: adminRes.error?.message, permErr: permRes.error?.message })
   if (adminRes.data !== true && permRes.data !== true) {
     return jsonRes({ error: 'Forbidden: org admin or inbox.view required' }, 403)
   }
 
+  console.log('[backfill-empty-bodies] loading IMAP account', { accountId, orgId })
   const { data: accRow, error: accErr } = await service
     .from('imap_accounts')
     .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted')
@@ -77,13 +90,23 @@ Deno.serve(async (req: Request) => {
     .maybeSingle()
 
   if (accErr || !accRow) {
+    console.log('[backfill-empty-bodies] account not found', { accErr: accErr?.message, hasRow: !!accRow })
     return jsonRes({ error: 'IMAP account not found or not in this workspace' }, 404)
   }
+  console.log('[backfill-empty-bodies] account loaded', { host: accRow.host, username: accRow.imap_username })
 
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
+    console.log('[backfill-empty-bodies] ENCRYPTION_KEY not configured')
     return jsonRes({ error: 'ENCRYPTION_KEY not configured' }, 500)
   }
 
+  // Find messages needing body — try RPC first, fall back to direct query if RPC doesn't exist yet
+  type MsgRow = { id: string; thread_id: string; external_uid: number; body: string | null; html_body: string | null; direction: string }
+  let msgs: MsgRow[] = []
+
+  console.log('[backfill-empty-bodies] querying messages needing body (limit:', limit, ')')
+
+  // Try RPC first, fall back to direct query if RPC not deployed
   const { data: rpcRows, error: rpcErr } = await service.rpc('inbox_messages_needing_body_for_account', {
     p_account_id: accountId,
     p_org_id: orgId,
@@ -91,39 +114,84 @@ Deno.serve(async (req: Request) => {
   })
 
   if (rpcErr) {
-    console.error('[backfill-empty-bodies] rpc error', rpcErr)
-    return jsonRes({ error: rpcErr.message, filled: 0 }, 500)
+    console.log('[backfill-empty-bodies] RPC failed (may not be deployed yet), falling back to direct query:', rpcErr.message)
   }
 
-  const msgs = (rpcRows ?? []) as {
-    id: string
-    thread_id: string
-    external_uid: number
-    body: string | null
-    html_body: string | null
-    direction: string
-  }[]
+  if (!rpcErr && rpcRows) {
+    msgs = (rpcRows ?? []) as MsgRow[]
+    console.log('[backfill-empty-bodies] RPC returned', msgs.length, 'messages needing body')
+  } else {
+    // Direct query: messages for this account with empty bodies
+    const { data: directRows, error: directErr } = await service
+      .from('inbox_messages')
+      .select('id, thread_id, external_uid, body, html_body, direction, imap_account_id')
+      .eq('imap_account_id', accountId)
+      .eq('channel', 'email')
+      .not('external_uid', 'is', null)
+      .or('body.is.null,body.eq.,html_body.is.null,html_body.eq.')
+      .order('received_at', { ascending: false })
+      .limit(limit * 2)
+    if (directErr) {
+      console.error('[backfill-empty-bodies] direct query failed:', directErr.message)
+      return jsonRes({ error: directErr.message, filled: 0 }, 500)
+    }
+    const directFiltered = ((directRows ?? []) as (MsgRow & { imap_account_id?: string })[]).filter((m) => {
+      const bEmpty = m.body == null || (typeof m.body === 'string' && !m.body.trim())
+      const hEmpty = m.html_body == null || (typeof m.html_body === 'string' && !m.html_body.trim())
+      return bEmpty && hEmpty && m.external_uid != null
+    })
+    console.log('[backfill-empty-bodies] direct query: raw', directRows?.length, '→ filtered', directFiltered.length)
+
+    // Also find messages with NULL imap_account_id on threads owned by this account
+    const { data: orphanRows, error: orphanErr } = await service
+      .from('inbox_messages')
+      .select('id, thread_id, external_uid, body, html_body, direction, imap_account_id')
+      .is('imap_account_id', null)
+      .eq('channel', 'email')
+      .not('external_uid', 'is', null)
+      .or('body.is.null,body.eq.,html_body.is.null,html_body.eq.')
+      .order('received_at', { ascending: false })
+      .limit(limit * 2)
+    if (!orphanErr && orphanRows?.length) {
+      // Filter to messages on threads that belong to this account's org
+      const orphanThreadIds = [...new Set((orphanRows as { thread_id: string }[]).map((r) => r.thread_id))]
+      const { data: threadCheck } = await service
+        .from('inbox_threads')
+        .select('id')
+        .in('id', orphanThreadIds.slice(0, 200))
+        .eq('org_id', orgId)
+      const validThreadIds = new Set((threadCheck ?? []).map((t: { id: string }) => t.id))
+      const orphanFiltered = (orphanRows as (MsgRow & { imap_account_id?: string | null })[]).filter((m) => {
+        const bEmpty = m.body == null || (typeof m.body === 'string' && !m.body.trim())
+        const hEmpty = m.html_body == null || (typeof m.html_body === 'string' && !m.html_body.trim())
+        return bEmpty && hEmpty && m.external_uid != null && validThreadIds.has(m.thread_id)
+      })
+      if (orphanFiltered.length > 0) {
+        console.log('[backfill-empty-bodies] found', orphanFiltered.length, 'orphan messages (null imap_account_id) on org threads — patching')
+        await service.from('inbox_messages')
+          .update({ imap_account_id: accountId })
+          .in('id', orphanFiltered.map((m) => m.id))
+        for (const m of orphanFiltered) m.imap_account_id = accountId
+        directFiltered.push(...orphanFiltered)
+      }
+    }
+    msgs = directFiltered.slice(0, limit)
+    console.log('[backfill-empty-bodies] total messages to process:', msgs.length)
+  }
 
   if (msgs.length === 0) {
+    console.log('[backfill-empty-bodies] no messages need body fetch, done')
     return jsonRes({ filled: 0, message: 'No messages need body fetch for this account.' }, 200)
   }
 
-  const { data: attRows } = await service
-    .from('inbox_attachments')
-    .select('message_id, file_name, file_path')
-    .in('message_id', msgs.map((m) => m.id))
-  const attsByMsg = new Map<string, { file_name: string; file_path: string }[]>()
-  for (const a of (attRows ?? []) as { message_id: string; file_name: string; file_path: string }[]) {
-    const list = attsByMsg.get(a.message_id) ?? []
-    list.push({ file_name: a.file_name, file_path: a.file_path })
-    attsByMsg.set(a.message_id, list)
-  }
+  console.log('[backfill-empty-bodies] messages to process:', msgs.map((m) => ({ id: m.id.slice(0, 8), uid: m.external_uid, dir: m.direction })))
 
   let password: string
   try {
     password = await decrypt(accRow.credentials_encrypted as string, encryptionKeyHex.slice(0, 64))
+    console.log('[backfill-empty-bodies] credentials decrypted ok')
   } catch (e) {
-    console.error('[backfill-empty-bodies] decrypt failed', e)
+    console.error('[backfill-empty-bodies] decrypt failed:', (e as Error).message)
     return jsonRes({ error: 'Failed to decrypt credentials', filled: 0 }, 500)
   }
 
@@ -131,6 +199,8 @@ Deno.serve(async (req: Request) => {
   const secure = acc.imap_encryption === 'ssl' || acc.imap_encryption === 'tls'
   const isGmail = acc.host.toLowerCase().includes('gmail.com')
   const mailboxPath = isGmail ? '[Gmail]/All Mail' : 'INBOX'
+
+  console.log('[backfill-empty-bodies] connecting IMAP', { host: acc.host, port: Number(acc.port) || 993, secure, mailbox: mailboxPath })
 
   const client = new ImapFlow({
     host: acc.host,
@@ -148,26 +218,40 @@ Deno.serve(async (req: Request) => {
     raw instanceof Uint8Array ? raw : Array.isArray(raw) ? new Uint8Array(raw) : new Uint8Array((raw as ArrayBuffer) ?? [])
 
   let filled = 0
+  let skipped = 0
+  let errored = 0
 
   try {
     await client.connect()
+    console.log('[backfill-empty-bodies] IMAP connected', { elapsedMs: Math.round(performance.now() - t0) })
+
     const lock = await client.getMailboxLock(mailboxPath)
+    console.log('[backfill-empty-bodies] mailbox lock acquired', { mailbox: mailboxPath, elapsedMs: Math.round(performance.now() - t0) })
+
     try {
-      for (const msg of msgs) {
+      for (let i = 0; i < msgs.length; i++) {
+        const msg = msgs[i]
+        const tMsg = performance.now()
         try {
+          console.log('[backfill-empty-bodies] fetching', i + 1, '/', msgs.length, { id: msg.id.slice(0, 8), uid: msg.external_uid, direction: msg.direction })
           const fetched = await client.fetchAll(String(msg.external_uid), { source: true, uid: true }, { uid: true })
           const source = fetched[0]?.source as Uint8Array | undefined
           if (!source) {
-            console.log('[backfill-empty-bodies] no source', { id: msg.id, uid: msg.external_uid })
+            console.log('[backfill-empty-bodies] no source returned for UID', msg.external_uid, '— marking as unavailable so it won\'t retry')
+            await service.from('inbox_messages')
+              .update({ body: '[Message no longer available on mail server]' })
+              .eq('id', msg.id)
+            skipped++
             continue
           }
+          console.log('[backfill-empty-bodies] source fetched', { uid: msg.external_uid, bytes: source.byteLength, fetchMs: Math.round(performance.now() - tMsg) })
 
           const parsed = await PostalMime.parse(source)
           let bodyText = parsed.text ?? ''
           let htmlBody = parsed.html ?? null
+          console.log('[backfill-empty-bodies] parsed', { uid: msg.external_uid, textLen: bodyText.length, htmlLen: htmlBody?.length ?? 0, attachments: (parsed.attachments ?? []).length })
 
           const inlineAtts = (parsed.attachments ?? []).filter((a: { contentId?: string }) => a.contentId)
-          const newAtts: { file_name: string; file_path: string }[] = []
           if (htmlBody && inlineAtts.length > 0) {
             for (const att of inlineAtts) {
               const cid = att.contentId!.replace(/^<|>$/g, '')
@@ -191,7 +275,6 @@ Deno.serve(async (req: Request) => {
                   file_size: contentBytes.length,
                   content_type: att.mimeType,
                 })
-                newAtts.push({ file_name: fname, file_path: path })
               }
             }
           }
@@ -213,7 +296,6 @@ Deno.serve(async (req: Request) => {
                 file_size: contentBytes.length,
                 content_type: att.mimeType,
               })
-              newAtts.push({ file_name: fname, file_path: path })
             }
           }
 
@@ -224,9 +306,16 @@ Deno.serve(async (req: Request) => {
             .from('inbox_messages')
             .update({ body: bodyText || null, html_body: htmlBody })
             .eq('id', msg.id)
-          if (!upDb) filled++
+          if (upDb) {
+            console.error('[backfill-empty-bodies] DB update failed for', msg.id.slice(0, 8), upDb.message)
+            errored++
+          } else {
+            filled++
+            console.log('[backfill-empty-bodies] message done', { id: msg.id.slice(0, 8), uid: msg.external_uid, bodyLen: bodyText.length, htmlLen: htmlBody?.length ?? 0, msgMs: Math.round(performance.now() - tMsg) })
+          }
         } catch (oneErr) {
-          console.error('[backfill-empty-bodies] message failed', msg.id, (oneErr as Error).message)
+          errored++
+          console.error('[backfill-empty-bodies] message failed', { id: msg.id.slice(0, 8), uid: msg.external_uid, error: (oneErr as Error).message })
         }
       }
     } finally {
@@ -234,14 +323,20 @@ Deno.serve(async (req: Request) => {
     }
     await client.logout().catch(() => { try { client.close() } catch { /* ignore */ } })
   } catch (err) {
-    console.error('[backfill-empty-bodies] IMAP error', (err as Error).message)
+    console.error('[backfill-empty-bodies] IMAP error:', (err as Error).message)
     try { await client.logout() } catch { try { client.close() } catch { /* ignore */ } }
-    return jsonRes({ error: (err as Error).message, filled }, 500)
+    return jsonRes({ error: (err as Error).message, filled, skipped, errored }, 500)
   }
 
+  const totalMs = Math.round(performance.now() - t0)
+  console.log('[backfill-empty-bodies] done', { filled, skipped, errored, requested: msgs.length, totalMs })
   return jsonRes({
     filled,
+    skipped,
+    errored,
     requested: msgs.length,
-    message: filled > 0 ? `Fetched bodies for ${filled} message(s). Run sync again if more remain.` : 'No bodies could be loaded (check IMAP logs).',
+    message: filled > 0
+      ? `Fetched bodies for ${filled} message(s)${skipped ? `, ${skipped} skipped (no IMAP source)` : ''}${errored ? `, ${errored} errored` : ''}. Run sync again if more remain.`
+      : 'No bodies could be loaded (check Edge Function logs).',
   }, 200)
 })
