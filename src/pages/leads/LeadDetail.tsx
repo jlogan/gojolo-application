@@ -253,7 +253,7 @@ export default function LeadDetail() {
           const url = URL.createObjectURL(blob)
           const a = document.createElement('a')
           a.href = url
-          a.download = `${slugify(lead.title)}-${slugify(doc.candidate_name || 'resume')}.pdf`
+          a.download = `jay-logan-${lead.id}.pdf`
           a.click()
           URL.revokeObjectURL(url)
           return
@@ -276,7 +276,7 @@ export default function LeadDetail() {
       const url = URL.createObjectURL(data)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${slugify(lead.title)}-${slugify(doc.candidate_name || 'resume')}.pdf`
+      a.download = `jay-logan-${lead.id}.pdf`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
