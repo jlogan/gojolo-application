@@ -16,7 +16,7 @@ BEGIN
   SET
     status = 'closed_lost',
     updated_at = now()
-  WHERE l.status NOT IN ('closed_won', 'closed_lost')
+  WHERE l.status NOT IN ('closed_won', 'closed_lost', 'not_interested')
     AND COALESCE(
       (SELECT MAX(la.attempted_at) FROM public.lead_attempts la WHERE la.lead_id = l.id),
       l.created_at

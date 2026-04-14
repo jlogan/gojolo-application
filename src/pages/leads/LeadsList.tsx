@@ -15,7 +15,7 @@ type LeadRow = {
 
 type LeadActivityStats = { count: number; lastAt: string | null }
 
-type LeadFilter = 'untouched' | 'active' | 'stale' | 'closed_lost' | 'closed_won'
+type LeadFilter = 'untouched' | 'active' | 'stale' | 'closed_lost' | 'closed_won' | 'not_interested'
 
 const FILTERS: { id: LeadFilter; label: string }[] = [
   { id: 'untouched', label: 'Untouched' },
@@ -23,6 +23,7 @@ const FILTERS: { id: LeadFilter; label: string }[] = [
   { id: 'stale', label: 'Stale' },
   { id: 'closed_lost', label: 'Closed Lost' },
   { id: 'closed_won', label: 'Closed Won' },
+  { id: 'not_interested', label: 'Not Interested' },
 ]
 
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000
@@ -36,6 +37,7 @@ const STATUS_LABELS: Record<string, string> = {
   interview: 'Interview',
   closed_won: 'Closed Won',
   closed_lost: 'Closed Lost',
+  not_interested: 'Not Interested',
 }
 
 function prettyStatus(status: string): string {
@@ -54,10 +56,12 @@ function lastActivityLabel(stats: LeadActivityStats): string {
 function leadMatchesFilter(lead: LeadRow, stats: LeadActivityStats, filter: LeadFilter, now: number): boolean {
   const closedLost = lead.status === 'closed_lost'
   const closedWon = lead.status === 'closed_won'
-  const isClosed = closedLost || closedWon
+  const notInterested = lead.status === 'not_interested'
+  const isClosed = closedLost || closedWon || notInterested
 
   if (filter === 'closed_lost') return closedLost
   if (filter === 'closed_won') return closedWon
+  if (filter === 'not_interested') return notInterested
 
   const hasActivity = stats.count > 0
   const lastMs = stats.lastAt ? new Date(stats.lastAt).getTime() : 0

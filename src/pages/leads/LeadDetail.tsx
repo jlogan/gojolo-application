@@ -82,6 +82,7 @@ const LEAD_STATUS_OPTIONS = [
   'interview',
   'closed_won',
   'closed_lost',
+  'not_interested',
 ] as const
 
 function slugify(input: string): string {
