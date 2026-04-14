@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS public.invoices (
   next_recurring_date date,
 
   -- Access
-  hash text DEFAULT encode(gen_random_bytes(16), 'hex'),  -- public access link
+  hash text DEFAULT md5(random()::text || clock_timestamp()::text),  -- public access link
 
   -- Stripe
   stripe_payment_intent_id text,
