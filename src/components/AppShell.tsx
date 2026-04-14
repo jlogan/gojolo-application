@@ -18,7 +18,6 @@ import {
   Clock,
   Target,
   FileText,
-  Receipt,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -45,8 +44,7 @@ import LeadDetail from '@/pages/leads/LeadDetail'
 import InvoicesList from '@/pages/invoices/InvoicesList'
 import InvoiceForm from '@/pages/invoices/InvoiceForm'
 import InvoiceDetail from '@/pages/invoices/InvoiceDetail'
-import ExpensesList from '@/pages/expenses/ExpensesList'
-import ExpenseForm from '@/pages/expenses/ExpenseForm'
+// Expenses module hidden for now — tables remain in DB for future use
 
 type AppMode = 'software' | 'chat'
 
@@ -57,7 +55,6 @@ const NAV = [
   { to: '/leads', label: 'Leads', icon: Target, testId: 'nav-leads' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
   { to: '/invoices', label: 'Invoices', icon: FileText, testId: 'nav-invoices' },
-  { to: '/expenses', label: 'Expenses', icon: Receipt, testId: 'nav-expenses' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
 ]
 
@@ -343,9 +340,6 @@ export default function AppShell() {
               <Route path="/invoices/new" element={<InvoiceForm />} />
               <Route path="/invoices/:id" element={<InvoiceDetail />} />
               <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
-              <Route path="/expenses" element={<ExpensesList />} />
-              <Route path="/expenses/new" element={<ExpenseForm />} />
-              <Route path="/expenses/:id/edit" element={<ExpenseForm />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
