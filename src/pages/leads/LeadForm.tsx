@@ -11,9 +11,13 @@ import { formatResumeYearRange, sanitizeResumeRoleTitle } from '@/lib/resumeForm
 import { finalizeExperienceRoleTitles } from '@/lib/resumeExperienceTitles'
 import { normalizeGeneratedResume } from '@/lib/resumeCopyNormalize'
 import { buildResumePdfFromElement } from '@/lib/resumePdf'
+import { coverLetterInstructionLines } from '@/lib/coverLetterAiPrompts'
+import { coverLetterToHtml } from '@/lib/coverLetterHtml'
+import { buildCoverLetterPdfFromElement } from '@/lib/coverLetterPdf'
 import type { GeneratedExperience, GeneratedResume } from '@/types/resume'
+import type { GeneratedCoverLetter } from '@/types/coverLetter'
 import { ResumeRichEditor, type ResumeRichEditorHandle } from '@/components/resume/ResumeRichEditor'
-import { ArrowLeft, Download } from 'lucide-react'
+import { ArrowLeft, Download, FileText } from 'lucide-react'
 
 type CompanyOption = { id: string; name: string }
 type ContactOption = { id: string; name: string; email: string | null; company_id: string | null }
@@ -322,8 +326,18 @@ export default function LeadForm() {
   const [prefillLoaded, setPrefillLoaded] = useState(false)
   const resumeEditorRef = useRef<ResumeRichEditorHandle>(null)
 
+  // Cover letter state
+  const [coverLetterPrompt, setCoverLetterPrompt] = useState('')
+  const [generatedCoverLetter, setGeneratedCoverLetter] = useState<GeneratedCoverLetter | null>(null)
+  const [generatingCoverLetter, setGeneratingCoverLetter] = useState(false)
+  const coverLetterEditorRef = useRef<ResumeRichEditorHandle>(null)
+
   const handleResumeHtmlChange = useCallback((html: string) => {
     setGeneratedResume((prev) => (prev ? { ...prev, document_html: html } : prev))
+  }, [])
+
+  const handleCoverLetterHtmlChange = useCallback((html: string) => {
+    setGeneratedCoverLetter((prev) => (prev ? { ...prev, content_html: html } : prev))
   }, [])
 
   const exportResumePdfBlob = useCallback(async (): Promise<Blob> => {
@@ -482,6 +496,21 @@ export default function LeadForm() {
         const cj = docRow.content_json as GeneratedResume
         const html = (docRow.document_html as string | null) ?? cj.document_html ?? undefined
         setGeneratedResume(normalizeGeneratedResume({ ...cj, document_html: html ?? cj.document_html }))
+      }
+
+      const { data: clDocRow } = await supabase
+        .from('cover_letter_documents')
+        .select('content_json, content_html, prompt')
+        .eq('lead_id', editLeadId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (clDocRow?.content_json && typeof clDocRow.content_json === 'object') {
+        const clJson = clDocRow.content_json as GeneratedCoverLetter
+        const clHtml = (clDocRow.content_html as string | null) ?? clJson.content_html ?? undefined
+        setGeneratedCoverLetter({ ...clJson, content_html: clHtml ?? clJson.content_html })
+        if (clDocRow.prompt) setCoverLetterPrompt(String(clDocRow.prompt))
       }
 
       setAttemptType('follow_up')
@@ -751,6 +780,110 @@ export default function LeadForm() {
     }
   }
 
+  const generateCoverLetterPreview = async () => {
+    if (!currentOrg?.id || !selectedTemplate || !jobDescription.trim()) {
+      alert('Please choose a template and provide the job description first.')
+      return
+    }
+
+    setGeneratingCoverLetter(true)
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) throw new Error('No auth session available')
+
+      const prompt = [
+        ...coverLetterInstructionLines(),
+        '',
+        `Candidate name: ${selectedTemplate.candidate_name}`,
+        `Candidate location: ${selectedTemplate.location ?? 'N/A'}`,
+        `Candidate email: ${selectedTemplate.email ?? 'N/A'}`,
+        `Candidate phone: ${selectedTemplate.phone ?? 'N/A'}`,
+        `Candidate website: ${selectedTemplate.website ?? 'N/A'}`,
+        `Target company: ${targetCompanyName ?? 'N/A'}`,
+        `Target role: ${title}`,
+        '',
+        'JOB DESCRIPTION:',
+        jobDescription,
+        '',
+        ...(coverLetterPrompt.trim()
+          ? [
+              'SPECIFIC REQUIREMENTS / INSTRUCTIONS FROM THE USER:',
+              coverLetterPrompt.trim(),
+              '',
+              'Address ALL of the above requirements in the cover letter.',
+            ]
+          : []),
+        ...(generatedResume
+          ? [
+              '',
+              'CANDIDATE RESUME SUMMARY (for context — do not repeat verbatim):',
+              `Professional summary: ${generatedResume.candidate.summary ?? ''}`,
+              `Core skills: ${generatedResume.sections.core_skills_text}`,
+              `Experience companies: ${generatedResume.experience.map((e) => `${e.role_title} at ${e.company_name}`).join(', ')}`,
+            ]
+          : []),
+      ].join('\n')
+
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ message: prompt, orgId: currentOrg.id, history: [] }),
+      })
+      const data = await res.json()
+      if (data?.error) throw new Error(data.error)
+
+      const bodyText = String(data?.message ?? '').trim()
+
+      const cl: GeneratedCoverLetter = {
+        generated_at: new Date().toISOString(),
+        candidate: {
+          name: selectedTemplate.candidate_name,
+          email: selectedTemplate.email,
+          phone: selectedTemplate.phone,
+          website: selectedTemplate.website,
+          location: selectedTemplate.location,
+        },
+        target: {
+          company_name: targetCompanyName,
+          role_title: title,
+        },
+        job_description: jobDescription,
+        prompt: coverLetterPrompt,
+        content_text: bodyText,
+      }
+
+      setGeneratedCoverLetter({ ...cl, content_html: coverLetterToHtml(cl) })
+    } catch (err) {
+      console.error(err)
+      alert(`Could not generate cover letter: ${(err as Error).message}`)
+    } finally {
+      setGeneratingCoverLetter(false)
+    }
+  }
+
+  const downloadCoverLetterPdf = async () => {
+    if (!generatedCoverLetter) return
+    try {
+      const printRoot = coverLetterEditorRef.current?.getPrintRoot()
+      if (!printRoot) throw new Error('Editor not ready')
+      const blob = await buildCoverLetterPdfFromElement(printRoot)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${slugify(title)}-cover-letter.pdf`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert(`Could not build cover letter PDF: ${(e as Error).message}`)
+    }
+  }
+
   /** Insert or update lead + company/contact links + optional resume PDF. Returns lead id and resolved primary contact id. */
   const persistLeadFromWizard = async (existingLeadId: string | null): Promise<{ leadId: string; contactId: string | null }> => {
     if (!currentOrg?.id) throw new Error('No organization')
@@ -907,6 +1040,56 @@ export default function LeadForm() {
         created_by: userId,
       })
       if (resumeErr) throw resumeErr
+    }
+
+    if (generatedCoverLetter) {
+      const latestClHtml = coverLetterEditorRef.current?.getHtml() ?? generatedCoverLetter.content_html ?? null
+      const clSnapshot: GeneratedCoverLetter = { ...generatedCoverLetter, content_html: latestClHtml }
+
+      let clPdfBlob: Blob | null = null
+      const clPrintRoot = coverLetterEditorRef.current?.getPrintRoot()
+      if (clPrintRoot) {
+        try {
+          clPdfBlob = await buildCoverLetterPdfFromElement(clPrintRoot)
+        } catch (e) {
+          console.warn('Cover letter PDF export failed', e)
+        }
+      }
+
+      let clFilePath: string | null = null
+      let clFileUrl: string | null = null
+
+      if (clPdfBlob) {
+        const clTs = Date.now()
+        clFilePath = `${currentOrg.id}/${leadId}/${clTs}-${slugify(title)}-cover-letter.pdf`
+        const { error: clUploadErr } = await supabase.storage
+          .from('lead-cover-letters')
+          .upload(clFilePath, clPdfBlob, { contentType: 'application/pdf', upsert: false })
+        if (clUploadErr) console.warn('Cover letter upload error:', clUploadErr)
+        else {
+          const { data: clSigned } = await supabase.storage.from('lead-cover-letters').createSignedUrl(clFilePath, 60 * 60 * 24 * 7)
+          clFileUrl = clSigned?.signedUrl ?? null
+        }
+      }
+
+      const { error: clErr } = await supabase.from('cover_letter_documents').insert({
+        org_id: currentOrg.id,
+        lead_id: leadId,
+        template_id: selectedTemplateId || null,
+        candidate_name: clSnapshot.candidate.name,
+        company_name: clSnapshot.target.company_name,
+        role_title: clSnapshot.target.role_title,
+        job_description: clSnapshot.job_description,
+        prompt: clSnapshot.prompt || null,
+        content_text: clSnapshot.content_text,
+        content_html: latestClHtml,
+        render_format: 'pdf',
+        file_path: clFilePath,
+        file_url: clFileUrl,
+        content_json: clSnapshot,
+        created_by: userId,
+      })
+      if (clErr) console.warn('Cover letter document insert error:', clErr)
     }
 
     return { leadId, contactId }
@@ -1253,6 +1436,68 @@ export default function LeadForm() {
               </div>
             </div>
           )}
+
+          {/* Cover letter section */}
+          <div className="rounded-lg border border-border p-4 bg-surface-elevated/40 mt-6">
+            <div className="mb-3">
+              <div className="flex items-center gap-2 mb-1">
+                <FileText className="w-4 h-4 text-accent" />
+                <p className="text-sm text-gray-200 font-medium">Cover letter</p>
+              </div>
+              <p className="text-xs text-gray-500">
+                Optional — generate a cover letter tailored to the job description. Add specific requirements below (e.g., questions the employer wants answered).
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Prompt / requirements (optional)</label>
+                <textarea
+                  value={coverLetterPrompt}
+                  onChange={(e) => setCoverLetterPrompt(e.target.value)}
+                  rows={4}
+                  placeholder="e.g., Answer these questions: 1) Describe a UI change that was more complex than expected. 2) What front-end practice do you think is over-emphasized? Also mention your favorite hobby."
+                  className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white text-sm"
+                />
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void generateCoverLetterPreview()}
+                  disabled={generatingCoverLetter || !selectedTemplateId || !jobDescription.trim()}
+                  className="px-4 py-2.5 rounded-lg bg-accent text-accent-foreground font-medium disabled:opacity-50 text-sm"
+                >
+                  {generatingCoverLetter ? 'Generating…' : generatedCoverLetter ? 'Regenerate cover letter' : 'Generate cover letter'}
+                </button>
+              </div>
+
+              {generatedCoverLetter && (
+                <div className="pt-2">
+                  <div className="mb-2">
+                    <p className="text-xs text-gray-500">
+                      Edit the cover letter below. Download PDF is on the right end of the toolbar.
+                    </p>
+                  </div>
+                  <ResumeRichEditor
+                    ref={coverLetterEditorRef}
+                    remountKey={generatedCoverLetter.generated_at}
+                    initialHtml={generatedCoverLetter.content_html ?? coverLetterToHtml(generatedCoverLetter)}
+                    onHtmlChange={handleCoverLetterHtmlChange}
+                    toolbarTrailing={
+                      <button
+                        type="button"
+                        onClick={() => void downloadCoverLetterPdf()}
+                        className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-border text-gray-200 hover:bg-surface-muted text-sm font-medium"
+                      >
+                        <Download className="w-4 h-4" /> Download PDF
+                      </button>
+                    }
+                  />
+                </div>
+              )}
+            </div>
+          </div>
 
           <div className="flex justify-between">
             <button type="button" onClick={() => setStep(2)} className="px-4 py-2.5 rounded-lg border border-border text-gray-300">Back</button>
