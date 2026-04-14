@@ -46,6 +46,7 @@ import InvoicesList from '@/pages/invoices/InvoicesList'
 import InvoiceForm from '@/pages/invoices/InvoiceForm'
 import InvoiceDetail from '@/pages/invoices/InvoiceDetail'
 import ExpensesList from '@/pages/expenses/ExpensesList'
+import ExpenseForm from '@/pages/expenses/ExpenseForm'
 
 type AppMode = 'software' | 'chat'
 
@@ -343,6 +344,8 @@ export default function AppShell() {
               <Route path="/invoices/:id" element={<InvoiceDetail />} />
               <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
               <Route path="/expenses" element={<ExpensesList />} />
+              <Route path="/expenses/new" element={<ExpenseForm />} />
+              <Route path="/expenses/:id/edit" element={<ExpenseForm />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
