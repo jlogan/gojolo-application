@@ -85,15 +85,6 @@ const LEAD_STATUS_OPTIONS = [
   'not_interested',
 ] as const
 
-function slugify(input: string): string {
-  const s = input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80)
-  return s || 'resume'
-}
-
 function asSingle<T>(v: T | T[] | null): T | null {
   return Array.isArray(v) ? (v[0] ?? null) : v
 }
