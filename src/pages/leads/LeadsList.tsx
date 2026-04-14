@@ -66,7 +66,7 @@ function leadMatchesFilter(lead: LeadRow, stats: LeadActivityStats, filter: Lead
   const hasActivity = stats.count > 0
   const lastMs = stats.lastAt ? new Date(stats.lastAt).getTime() : 0
 
-  if (filter === 'untouched') return !hasActivity
+  if (filter === 'untouched') return !isClosed && !hasActivity
 
   if (filter === 'active') {
     if (isClosed || !hasActivity || !stats.lastAt) return false
