@@ -15,6 +15,10 @@ export type Project = {
   created_by: string | null
   created_at: string
   updated_at: string
+  billing_type: string | null
+  project_cost: number | null
+  hourly_rate: number | null
+  estimated_hours: number | null
 }
 
 
@@ -33,8 +37,8 @@ export default function ProjectsList() {
 
     const load = async () => {
       let query = supabase.from('projects').select('*').eq('org_id', currentOrg.id).order('updated_at', { ascending: false })
-      if (filter === 'active') query = query.in('status', ['active', 'on_hold'])
-      else query = query.in('status', ['completed', 'cancelled'])
+      if (filter === 'active') query = query.in('status', ['not_started', 'in_progress', 'on_hold'])
+      else query = query.in('status', ['finished', 'cancelled'])
       const { data, error } = await query
       if (!cancelled) {
         setProjects(error ? [] : (data as Project[]) ?? [])
@@ -95,11 +99,29 @@ export default function ProjectsList() {
                   <p className="font-medium text-white truncate">{p.name}</p>
                   {p.description && <p className="text-sm text-gray-400 truncate mt-0.5">{p.description}</p>}
                 </div>
+                <StatusBadge status={p.status} />
               </Link>
             </li>
           ))}
         </ul>
       )}
     </div>
+  )
+}
+
+const STATUS_CONFIG: Record<string, { label: string; classes: string }> = {
+  not_started: { label: 'Not Started', classes: 'bg-gray-500/20 text-gray-400 border-gray-500/30' },
+  in_progress: { label: 'In Progress', classes: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+  on_hold: { label: 'On Hold', classes: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+  finished: { label: 'Finished', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
+  cancelled: { label: 'Cancelled', classes: 'bg-slate-500/20 text-slate-400 border-slate-500/30' },
+}
+
+export function StatusBadge({ status }: { status: string }) {
+  const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.not_started
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border shrink-0 ${config.classes}`}>
+      {config.label}
+    </span>
   )
 }

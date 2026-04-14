@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase'
 import {
   ArrowLeft, Send, Plus, User,
   Paperclip, Key, Mail, ChevronRight,
-  FileText, Pencil, Trash2,
+  FileText, Pencil, Trash2, Play, Square,
 } from 'lucide-react'
 
 type Task = {
@@ -15,7 +15,7 @@ type Task = {
   assigned_to: string | null; created_at: string; status_changed_at: string | null
 }
 type TaskComment = { id: string; user_id: string; content: string; created_at: string; display_name?: string | null; avatar_url?: string | null }
-type TimeLog = { id: string; user_id: string; hours: number; minutes: number; work_date: string; description: string | null; comment: string | null; billed: boolean; display_name?: string | null }
+type TimeLog = { id: string; user_id: string; hours: number; minutes: number; work_date: string; description: string | null; comment: string | null; billed: boolean; hourly_rate: number | null; timer_started_at: string | null; timer_stopped_at: string | null; display_name?: string | null }
 type Artifact = { id: string; type: string; label: string | null; url: string | null; file_path: string | null; file_name: string | null; created_at: string }
 type StatusEntry = { id: string; from_status: string | null; to_status: string; changed_by: string | null; comment: string | null; created_at: string; display_name?: string | null }
 type LinkedThread = { thread_id: string; subject: string | null; last_message_at: string }
@@ -164,7 +164,12 @@ export default function TaskDetail() {
   const [logDate, setLogDate] = useState(new Date().toISOString().split('T')[0])
   const [logNotes, setLogNotes] = useState('')
   const [logBillable, setLogBillable] = useState(true)
+  const [logHourlyRate, setLogHourlyRate] = useState('')
   const [canEditBillable, setCanEditBillable] = useState(false)
+
+  // Timer
+  const [activeTimer, setActiveTimer] = useState<{ id: string; timer_started_at: string } | null>(null)
+  const [timerElapsed, setTimerElapsed] = useState('')
 
   // Artifact form
   const [showArtifactForm, setShowArtifactForm] = useState(false)
@@ -190,7 +195,7 @@ export default function TaskDetail() {
     // Parallel fetches
     const [cmtRes, tlRes, artRes, shRes, ttRes, smRes, taRes] = await Promise.all([
       supabase.from('task_comments').select('id, user_id, content, created_at').eq('task_id', taskId).order('created_at'),
-      supabase.from('time_logs').select('id, user_id, hours, minutes, work_date, description, comment, billed').eq('task_id', taskId).order('work_date', { ascending: false }),
+      supabase.from('time_logs').select('id, user_id, hours, minutes, work_date, description, comment, billed, hourly_rate, timer_started_at, timer_stopped_at').eq('task_id', taskId).order('work_date', { ascending: false }),
       supabase.from('task_artifacts').select('*').eq('task_id', taskId).order('created_at'),
       supabase.from('task_status_history').select('id, from_status, to_status, changed_by, comment, created_at').eq('task_id', taskId).order('created_at', { ascending: false }),
       supabase.from('task_threads').select('thread_id, inbox_threads(subject, last_message_at)').eq('task_id', taskId),
@@ -230,6 +235,14 @@ export default function TaskDetail() {
     setSlackMessages((smRes.data as SlackMsg[]) ?? [])
     setAssignees(taRows.map(a => ({ user_id: a.user_id, display_name: profileMap.get(a.user_id)?.display_name ?? null, avatar_url: profileMap.get(a.user_id)?.avatar_url ?? null })))
 
+    // Check for active timer for this user on this task
+    const runningTimer = tlRows.find(t => t.timer_started_at && !t.timer_stopped_at && t.hours === 0 && t.minutes === 0 && t.user_id === user?.id)
+    if (runningTimer) {
+      setActiveTimer({ id: runningTimer.id, timer_started_at: runningTimer.timer_started_at! })
+    } else {
+      setActiveTimer(null)
+    }
+
     // Vault creds
     const { data: tvcData } = await supabase.from('task_vault_credentials').select('id, credential_id, vault_credentials(label, url, username)').eq('task_id', taskId)
     setVaultCreds((tvcData ?? []).map((r: { id: string; credential_id: string; vault_credentials: { label: string; url: string | null; username: string | null } | { label: string; url: string | null; username: string | null }[] | null }) => {
@@ -260,6 +273,52 @@ export default function TaskDetail() {
         setOrgUsers((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => ({ user_id: p.id, display_name: p.display_name, avatar_url: p.avatar_url })))
       })
   }, [currentOrg?.id])
+
+  // Timer elapsed display
+  useEffect(() => {
+    if (!activeTimer) { setTimerElapsed(''); return }
+    const update = () => {
+      const start = new Date(activeTimer.timer_started_at).getTime()
+      const diff = Math.max(0, Math.floor((Date.now() - start) / 1000))
+      const h = Math.floor(diff / 3600)
+      const m = Math.floor((diff % 3600) / 60)
+      const s = diff % 60
+      setTimerElapsed(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`)
+    }
+    update()
+    const interval = setInterval(update, 1000)
+    return () => clearInterval(interval)
+  }, [activeTimer])
+
+  const handleStartTimer = async () => {
+    if (!taskId || !projectId || !user?.id) return
+    const { data } = await supabase.from('time_logs').insert({
+      task_id: taskId, project_id: projectId, user_id: user.id,
+      hours: 0, minutes: 0, work_date: new Date().toISOString().split('T')[0],
+      timer_started_at: new Date().toISOString(), billed: false,
+    }).select('id, timer_started_at').single()
+    if (data) {
+      setActiveTimer({ id: data.id, timer_started_at: data.timer_started_at })
+    }
+    fetchAll()
+  }
+
+  const handleStopTimer = async () => {
+    if (!activeTimer) return
+    const start = new Date(activeTimer.timer_started_at).getTime()
+    const diffMs = Date.now() - start
+    const totalMinutes = Math.max(1, Math.round(diffMs / 60000))
+    const h = Math.floor(totalMinutes / 60)
+    const m = totalMinutes % 60
+    await supabase.from('time_logs').update({
+      hours: h, minutes: m,
+      timer_stopped_at: new Date().toISOString(),
+      work_date: new Date().toISOString().split('T')[0],
+    }).eq('id', activeTimer.id)
+    setActiveTimer(null)
+    setTimerElapsed('')
+    fetchAll()
+  }
 
   const handleStatusChange = async (status: string) => {
     if (!taskId) return
@@ -333,8 +392,9 @@ export default function TaskDetail() {
       task_id: taskId, project_id: projectId, user_id: user.id,
       hours: h, minutes: m, work_date: logDate,
       description: logNotes.trim() || null, comment: null, billed: logBillable,
+      hourly_rate: logHourlyRate ? parseFloat(logHourlyRate) : null,
     })
-    setLogTime(''); setLogNotes(''); setShowTimeForm(false); fetchAll()
+    setLogTime(''); setLogNotes(''); setLogHourlyRate(''); setShowTimeForm(false); fetchAll()
   }
 
   const handleAddArtifact = async () => {
@@ -694,13 +754,26 @@ export default function TaskDetail() {
               <span className="text-gray-300">Total: <strong className="text-white">{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</strong></span>
               <span className="text-gray-400">Billable: <strong className="text-accent">{Math.floor(billableMinutes / 60)}h {billableMinutes % 60}m</strong></span>
             </div>
-            <button type="button" onClick={() => setShowTimeForm(!showTimeForm)}
-              className="text-xs text-accent hover:underline flex items-center gap-1"><Plus className="w-3 h-3" /> Log time</button>
+            <div className="flex items-center gap-2">
+              {activeTimer ? (
+                <button type="button" onClick={handleStopTimer}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/30 border border-red-500/30">
+                  <Square className="w-3 h-3 fill-current" /> Stop {timerElapsed}
+                </button>
+              ) : (
+                <button type="button" onClick={handleStartTimer}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/20 text-green-400 text-xs font-medium hover:bg-green-500/30 border border-green-500/30">
+                  <Play className="w-3 h-3 fill-current" /> Start Timer
+                </button>
+              )}
+              <button type="button" onClick={() => setShowTimeForm(!showTimeForm)}
+                className="text-xs text-accent hover:underline flex items-center gap-1"><Plus className="w-3 h-3" /> Log time</button>
+            </div>
           </div>
 
           {showTimeForm && (
             <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-4 space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Time (HH:MM)</label>
                   <input type="text" value={logTime} onChange={e => setLogTime(e.target.value)} placeholder="1:30"
@@ -723,6 +796,11 @@ export default function TaskDetail() {
                     <option value="non_billable">Non billable</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 mb-0.5">Hourly Rate</label>
+                  <input type="number" step="0.01" min="0" value={logHourlyRate} onChange={e => setLogHourlyRate(e.target.value)} placeholder="0.00"
+                    className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+                </div>
               </div>
               <div>
                 <label className="block text-[10px] text-gray-500 mb-0.5">Notes</label>
@@ -744,18 +822,24 @@ export default function TaskDetail() {
                   <th className="text-left px-4 py-2">Time</th>
                   <th className="text-left px-4 py-2">Who</th>
                   <th className="text-left px-4 py-2">Description</th>
+                  <th className="text-right px-4 py-2">Rate</th>
                   <th className="text-center px-4 py-2">Billable</th>
                 </tr></thead>
                 <tbody className="divide-y divide-border">
                   {timeLogs.map(t => (
-                    <tr key={t.id} className="hover:bg-surface-muted/30">
+                    <tr key={t.id} className={`hover:bg-surface-muted/30${t.timer_started_at && !t.timer_stopped_at ? ' bg-green-500/5' : ''}`}>
                       <td className="px-4 py-2 text-gray-300">{t.work_date}</td>
-                      <td className="px-4 py-2 text-white font-medium">{String(t.hours).padStart(2, '0')}:{String(t.minutes).padStart(2, '0')}</td>
+                      <td className="px-4 py-2 text-white font-medium">
+                        {t.timer_started_at && !t.timer_stopped_at
+                          ? <span className="text-green-400 animate-pulse">⏱ Running</span>
+                          : `${String(t.hours).padStart(2, '0')}:${String(t.minutes).padStart(2, '0')}`}
+                      </td>
                       <td className="px-4 py-2 text-gray-400">{t.display_name ?? 'User'}</td>
                       <td className="px-4 py-2 text-gray-300">
                         {t.description}
                         {t.comment && <p className="text-xs text-gray-500 mt-0.5">{t.comment}</p>}
                       </td>
+                      <td className="px-4 py-2 text-right text-gray-400">{t.hourly_rate != null ? `$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'}</td>
                       <td className="px-4 py-2 text-center">{t.billed !== false ? <span className="text-accent">✓</span> : <span className="text-gray-600">—</span>}</td>
                     </tr>
                   ))}

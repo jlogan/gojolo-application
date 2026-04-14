@@ -1,8 +1,9 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, Plus, X } from 'lucide-react'
 
 type TimeLogRow = {
   id: string
@@ -14,71 +15,123 @@ type TimeLogRow = {
   work_date: string
   description: string | null
   billed: boolean
+  hourly_rate: number | null
   created_at: string
   project_name?: string | null
   task_title?: string | null
   display_name?: string | null
 }
 
+type ProjectOption = { id: string; name: string }
+type TaskOption = { id: string; title: string }
+
 export default function Timesheets() {
   const { currentOrg } = useOrg()
+  const { user } = useAuth()
   const [entries, setEntries] = useState<TimeLogRow[]>([])
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState<'date' | 'project' | 'user'>('date')
   const [sortDesc, setSortDesc] = useState(true)
 
-  useEffect(() => {
+  // Log time modal
+  const [showLogForm, setShowLogForm] = useState(false)
+  const [projects, setProjects] = useState<ProjectOption[]>([])
+  const [tasks, setTasks] = useState<TaskOption[]>([])
+  const [formProjectId, setFormProjectId] = useState('')
+  const [formTaskId, setFormTaskId] = useState('')
+  const [formHours, setFormHours] = useState('')
+  const [formMinutes, setFormMinutes] = useState('')
+  const [formDate, setFormDate] = useState(new Date().toISOString().split('T')[0])
+  const [formDescription, setFormDescription] = useState('')
+  const [formHourlyRate, setFormHourlyRate] = useState('')
+  const [formSubmitting, setFormSubmitting] = useState(false)
+
+  const loadEntries = useCallback(async () => {
     if (!currentOrg?.id) return
-    let cancelled = false
     setLoading(true)
 
-    const load = async () => {
-      const { data: projects } = await supabase.from('projects').select('id').eq('org_id', currentOrg.id)
-      const projectIds = (projects ?? []).map((p: { id: string }) => p.id)
-      if (projectIds.length === 0) {
-        if (!cancelled) setEntries([])
-        setLoading(false)
-        return
-      }
-
-      const { data: rows, error } = await supabase
-        .from('time_logs')
-        .select('id, task_id, project_id, user_id, hours, minutes, work_date, description, billed, created_at, projects(name), tasks(title)')
-        .in('project_id', projectIds)
-        .order('work_date', { ascending: false })
-
-      if (cancelled) return
-      if (error) {
-        setEntries([])
-        setLoading(false)
-        return
-      }
-
-      const rawRows = (rows ?? []) as unknown[]
-      const userIds = [...new Set((rawRows as { user_id: string }[]).map((r) => r.user_id))]
-      const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', userIds)
-      const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null }) => [p.id, p.display_name]))
-
-      const mapped: TimeLogRow[] = rawRows.map((r) => {
-        const row = r as TimeLogRow & { projects?: { name?: string } | null; tasks?: { title?: string } | null }
-        const proj = row.projects
-        const tsk = row.tasks
-        const projectName = proj && typeof proj === 'object' && 'name' in proj ? (proj.name ?? null) : null
-        const taskTitle = tsk && typeof tsk === 'object' && 'title' in tsk ? (tsk.title ?? null) : null
-        return {
-          ...row,
-          project_name: projectName,
-          task_title: taskTitle,
-          display_name: profileMap.get(row.user_id) ?? null,
-        }
-      })
-
-      setEntries(mapped)
+    const { data: projectRows } = await supabase.from('projects').select('id').eq('org_id', currentOrg.id)
+    const projectIds = (projectRows ?? []).map((p: { id: string }) => p.id)
+    if (projectIds.length === 0) {
+      setEntries([])
       setLoading(false)
+      return
     }
-    load()
-    return () => { cancelled = true }
+
+    const { data: rows, error } = await supabase
+      .from('time_logs')
+      .select('id, task_id, project_id, user_id, hours, minutes, work_date, description, billed, hourly_rate, created_at, projects(name), tasks(title)')
+      .in('project_id', projectIds)
+      .order('work_date', { ascending: false })
+
+    if (error) {
+      setEntries([])
+      setLoading(false)
+      return
+    }
+
+    const rawRows = (rows ?? []) as unknown[]
+    const userIds = [...new Set((rawRows as { user_id: string }[]).map((r) => r.user_id))]
+    const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', userIds)
+    const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null }) => [p.id, p.display_name]))
+
+    const mapped: TimeLogRow[] = rawRows.map((r) => {
+      const row = r as TimeLogRow & { projects?: { name?: string } | null; tasks?: { title?: string } | null }
+      const proj = row.projects
+      const tsk = row.tasks
+      const projectName = proj && typeof proj === 'object' && 'name' in proj ? (proj.name ?? null) : null
+      const taskTitle = tsk && typeof tsk === 'object' && 'title' in tsk ? (tsk.title ?? null) : null
+      return {
+        ...row,
+        project_name: projectName,
+        task_title: taskTitle,
+        display_name: profileMap.get(row.user_id) ?? null,
+      }
+    })
+
+    setEntries(mapped)
+    setLoading(false)
   }, [currentOrg?.id])
+
+  useEffect(() => { loadEntries() }, [loadEntries])
+
+  // Load projects for form
+  useEffect(() => {
+    if (!currentOrg?.id || !showLogForm) return
+    supabase.from('projects').select('id, name').eq('org_id', currentOrg.id).order('name')
+      .then(({ data }) => setProjects((data ?? []) as ProjectOption[]))
+  }, [currentOrg?.id, showLogForm])
+
+  // Load tasks when project selected
+  useEffect(() => {
+    if (!formProjectId) { setTasks([]); return }
+    supabase.from('tasks').select('id, title').eq('project_id', formProjectId).order('title')
+      .then(({ data }) => setTasks((data ?? []) as TaskOption[]))
+  }, [formProjectId])
+
+  const handleLogTime = async () => {
+    if (!formProjectId || !formTaskId || !user?.id) return
+    const h = parseInt(formHours) || 0
+    const m = parseInt(formMinutes) || 0
+    if (h === 0 && m === 0) return
+    setFormSubmitting(true)
+    await supabase.from('time_logs').insert({
+      task_id: formTaskId,
+      project_id: formProjectId,
+      user_id: user.id,
+      hours: h,
+      minutes: m,
+      work_date: formDate,
+      description: formDescription.trim() || null,
+      hourly_rate: formHourlyRate ? parseFloat(formHourlyRate) : null,
+      billed: false,
+    })
+    setFormSubmitting(false)
+    setShowLogForm(false)
+    setFormProjectId(''); setFormTaskId(''); setFormHours(''); setFormMinutes('')
+    setFormDate(new Date().toISOString().split('T')[0]); setFormDescription(''); setFormHourlyRate('')
+    loadEntries()
+  }
 
   const sorted = useMemo(() => {
     const list = [...entries]
@@ -93,6 +146,7 @@ export default function Timesheets() {
 
   const totalMinutes = entries.reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0)
   const billableMinutes = entries.filter((t) => t.billed !== false).reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0)
+  const hasRates = entries.some(t => t.hourly_rate != null)
 
   const toggleSort = (key: 'date' | 'project' | 'user') => {
     if (sortBy === key) setSortDesc((d) => !d)
@@ -101,7 +155,85 @@ export default function Timesheets() {
 
   return (
     <div className="p-4 md:p-6" data-testid="timesheets-page">
-      <h1 className="text-xl font-semibold text-white mb-4">Timesheets</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-semibold text-white">Timesheets</h1>
+        <button type="button" onClick={() => setShowLogForm(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90">
+          <Plus className="w-4 h-4" /> Log Time
+        </button>
+      </div>
+
+      {/* Log Time Modal */}
+      {showLogForm && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setShowLogForm(false)}>
+          <div className="w-full max-w-lg rounded-lg border border-border bg-surface-elevated p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-white">Log Time</h2>
+              <button type="button" onClick={() => setShowLogForm(false)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Project</label>
+                <select value={formProjectId} onChange={e => { setFormProjectId(e.target.value); setFormTaskId('') }}
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                  <option value="">Select project…</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Task</label>
+                <select value={formTaskId} onChange={e => setFormTaskId(e.target.value)} disabled={!formProjectId}
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50">
+                  <option value="">{formProjectId ? 'Select task…' : 'Select a project first'}</option>
+                  {tasks.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Hours</label>
+                  <input type="number" min="0" value={formHours} onChange={e => setFormHours(e.target.value)} placeholder="0"
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Minutes</label>
+                  <input type="number" min="0" max="59" value={formMinutes} onChange={e => setFormMinutes(e.target.value)} placeholder="0"
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Date</label>
+                  <input type="date" value={formDate} onChange={e => setFormDate(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Description</label>
+                <input type="text" value={formDescription} onChange={e => setFormDescription(e.target.value)} placeholder="What did you work on?"
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Hourly Rate (optional)</label>
+                <input type="number" step="0.01" min="0" value={formHourlyRate} onChange={e => setFormHourlyRate(e.target.value)} placeholder="0.00"
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setShowLogForm(false)}
+                className="px-4 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted">Cancel</button>
+              <button type="button" onClick={handleLogTime}
+                disabled={!formProjectId || !formTaskId || formSubmitting || ((parseInt(formHours) || 0) === 0 && (parseInt(formMinutes) || 0) === 0)}
+                className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                {formSubmitting ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-4 mb-4 text-sm">
         <span className="text-gray-300">
@@ -115,7 +247,7 @@ export default function Timesheets() {
       {loading ? (
         <p className="text-gray-500 text-sm">Loading…</p>
       ) : sorted.length === 0 ? (
-        <p className="text-gray-500 text-sm">No time entries yet. Log time from a task’s Time tab.</p>
+        <p className="text-gray-500 text-sm">No time entries yet. Use the "Log Time" button above or log time from a task.</p>
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">
           <table className="w-full text-sm">
@@ -138,6 +270,7 @@ export default function Timesheets() {
                 </th>
                 <th className="text-left px-4 py-2">Time</th>
                 <th className="text-left px-4 py-2">Notes</th>
+                {hasRates && <th className="text-right px-4 py-2">Rate</th>}
                 <th className="text-center px-4 py-2">Billable</th>
               </tr>
             </thead>
@@ -165,6 +298,11 @@ export default function Timesheets() {
                   <td className="px-4 py-2 text-gray-400 max-w-[200px] truncate" title={t.description ?? undefined}>
                     {t.description ?? '—'}
                   </td>
+                  {hasRates && (
+                    <td className="px-4 py-2 text-right text-gray-400">
+                      {t.hourly_rate != null ? `$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'}
+                    </td>
+                  )}
                   <td className="px-4 py-2 text-center">{t.billed !== false ? <span className="text-accent">✓</span> : <span className="text-gray-600">—</span>}</td>
                 </tr>
               ))}
