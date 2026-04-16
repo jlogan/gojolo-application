@@ -32,6 +32,8 @@ export default function Timesheets() {
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState<'date' | 'project' | 'user'>('date')
   const [sortDesc, setSortDesc] = useState(true)
+  const [billedFilter, setBilledFilter] = useState<'all' | 'billed' | 'unbilled'>('all')
+  const [togglingId, setTogglingId] = useState<string | null>(null)
 
   // Log time modal
   const [showLogForm, setShowLogForm] = useState(false)
@@ -133,8 +135,27 @@ export default function Timesheets() {
     loadEntries()
   }
 
+  /* ---------- Toggle billed status ---------- */
+  const toggleBilled = async (entry: TimeLogRow) => {
+    if (togglingId === entry.id) return
+    setTogglingId(entry.id)
+    const newBilled = !entry.billed
+    const { error } = await supabase
+      .from('time_logs')
+      .update({ billed: newBilled })
+      .eq('id', entry.id)
+    if (!error) {
+      setEntries((prev) => prev.map((e) => e.id === entry.id ? { ...e, billed: newBilled } : e))
+    }
+    setTogglingId(null)
+  }
+
   const sorted = useMemo(() => {
-    const list = [...entries]
+    const list = [...entries].filter((t) => {
+      if (billedFilter === 'billed') return t.billed === true
+      if (billedFilter === 'unbilled') return t.billed === false
+      return true
+    })
     const mult = sortDesc ? -1 : 1
     list.sort((a, b) => {
       if (sortBy === 'date') return mult * (new Date(b.work_date).getTime() - new Date(a.work_date).getTime())
@@ -142,10 +163,11 @@ export default function Timesheets() {
       return mult * ((a.display_name ?? '').localeCompare(b.display_name ?? ''))
     })
     return list
-  }, [entries, sortBy, sortDesc])
+  }, [entries, sortBy, sortDesc, billedFilter])
 
   const totalMinutes = entries.reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0)
-  const billableMinutes = entries.filter((t) => t.billed !== false).reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0)
+  const billedMinutes = entries.filter((t) => t.billed === true).reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0)
+  const unbilledMinutes = entries.filter((t) => t.billed === false).reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0)
   const hasRates = entries.some(t => t.hourly_rate != null)
 
   const toggleSort = (key: 'date' | 'project' | 'user') => {
@@ -235,19 +257,47 @@ export default function Timesheets() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-4 mb-4 text-sm">
-        <span className="text-gray-300">
-          Total: <strong className="text-white">{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</strong>
-        </span>
-        <span className="text-gray-400">
-          Billable: <strong className="text-accent">{Math.floor(billableMinutes / 60)}h {billableMinutes % 60}m</strong>
-        </span>
+      {/* Stats + filter bar */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <div className="flex flex-wrap items-center gap-4 text-sm flex-1">
+          <span className="text-gray-300">
+            Total: <strong className="text-white">{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</strong>
+          </span>
+          <span className="text-gray-400">
+            Billed: <strong className="text-green-400">{Math.floor(billedMinutes / 60)}h {billedMinutes % 60}m</strong>
+          </span>
+          <span className="text-gray-400">
+            Unbilled: <strong className="text-yellow-400">{Math.floor(unbilledMinutes / 60)}h {unbilledMinutes % 60}m</strong>
+          </span>
+        </div>
+
+        {/* Billed status filter */}
+        <div className="flex rounded-lg border border-border overflow-hidden text-xs">
+          {(['all', 'unbilled', 'billed'] as const).map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setBilledFilter(f)}
+              className={`px-3 py-1.5 capitalize transition-colors ${
+                billedFilter === f
+                  ? 'bg-accent text-white'
+                  : 'text-gray-400 hover:text-white hover:bg-surface-muted'
+              }`}
+            >
+              {f === 'all' ? 'All' : f === 'billed' ? '✓ Billed' : '○ Unbilled'}
+            </button>
+          ))}
+        </div>
       </div>
 
       {loading ? (
         <p className="text-gray-500 text-sm">Loading…</p>
       ) : sorted.length === 0 ? (
-        <p className="text-gray-500 text-sm">No time entries yet. Use the "Log Time" button above or log time from a task.</p>
+        <p className="text-gray-500 text-sm">
+          {billedFilter !== 'all'
+            ? `No ${billedFilter} time entries.`
+            : 'No time entries yet. Use the "Log Time" button above or log time from a task.'}
+        </p>
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">
           <table className="w-full text-sm">
@@ -271,7 +321,7 @@ export default function Timesheets() {
                 <th className="text-left px-4 py-2">Time</th>
                 <th className="text-left px-4 py-2">Notes</th>
                 {hasRates && <th className="text-right px-4 py-2">Rate</th>}
-                <th className="text-center px-4 py-2">Billable</th>
+                <th className="text-center px-4 py-2">Billed</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -303,7 +353,21 @@ export default function Timesheets() {
                       {t.hourly_rate != null ? `$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'}
                     </td>
                   )}
-                  <td className="px-4 py-2 text-center">{t.billed !== false ? <span className="text-accent">✓</span> : <span className="text-gray-600">—</span>}</td>
+                  <td className="px-4 py-2 text-center">
+                    <button
+                      type="button"
+                      onClick={() => toggleBilled(t)}
+                      disabled={togglingId === t.id}
+                      title={t.billed ? 'Mark as unbilled' : 'Mark as billed'}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-colors disabled:opacity-50 ${
+                        t.billed
+                          ? 'bg-green-500/20 text-green-400 hover:bg-red-500/20 hover:text-red-400'
+                          : 'bg-gray-500/20 text-gray-500 hover:bg-green-500/20 hover:text-green-400'
+                      }`}
+                    >
+                      {togglingId === t.id ? '…' : t.billed ? '✓ Billed' : '○ Unbilled'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
