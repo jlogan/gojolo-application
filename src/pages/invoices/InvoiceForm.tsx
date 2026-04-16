@@ -34,6 +34,7 @@ type TimeLogRow = {
   work_date: string
   description: string | null
   hourly_rate: number | null
+  billed: boolean
   user_display_name: string | null
   project_name?: string | null
   user_id?: string
@@ -361,6 +362,7 @@ export default function InvoiceForm() {
           work_date: row.work_date,
           description: row.description,
           hourly_rate: row.hourly_rate,
+          billed: (row as unknown as { billed?: boolean }).billed ?? false,
           user_display_name: vendorNameMap.get(row.user_id) ?? 'Unknown',
           project_name: (row as unknown as { projects?: { name?: string } | null }).projects?.name ?? null,
           user_id: row.user_id,
@@ -422,9 +424,8 @@ export default function InvoiceForm() {
     // Fetch unbilled time logs for the selected project
     const { data: rows } = await supabase
       .from('time_logs')
-      .select('id, task_id, hours, minutes, work_date, description, hourly_rate, tasks(title)')
+      .select('id, task_id, hours, minutes, work_date, description, hourly_rate, billed, tasks(title)')
       .eq('project_id', projectId)
-      .eq('billed', false)
       .order('work_date', { ascending: false })
 
     if (!rows || rows.length === 0) {
@@ -458,6 +459,7 @@ export default function InvoiceForm() {
         work_date: row.work_date,
         description: row.description,
         hourly_rate: row.hourly_rate,
+        billed: row.billed ?? false,
         user_display_name: profileMap.get(row.user_id ?? '') ?? null,
       }
     })
@@ -473,12 +475,14 @@ export default function InvoiceForm() {
           logs: [],
           totalHours: 0,
           rate: 0,
-          selected: true,
+          selected: !log.billed, // pre-select unbilled only
         }
         groupMap.set(log.task_id, g)
       }
       g.logs.push(log)
       g.totalHours += log.hours + log.minutes / 60
+      // If any log in the group is unbilled, keep selected=true
+      if (!log.billed) g.selected = g.selected || true
       // Use the latest non-null hourly_rate
       if (log.hourly_rate != null && log.hourly_rate > 0) {
         g.rate = log.hourly_rate
@@ -1428,16 +1432,21 @@ export default function InvoiceForm() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
                             <span className="font-medium text-white">{group.task_title}</span>
-                            <span className="text-sm text-gray-300 tabular-nums ml-2">
-                              {round2(group.totalHours).toFixed(2)} hrs
-                              {group.rate > 0 && (
-                                <span className="text-gray-500">
-                                  {' '}
-                                  × {currSymbol}
-                                  {group.rate.toFixed(2)}
-                                </span>
+                            <div className="flex items-center gap-2 ml-2">
+                              {group.logs.every((l) => l.billed) && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-900/50 text-yellow-400 border border-yellow-800">Already billed</span>
                               )}
-                            </span>
+                              <span className="text-sm text-gray-300 tabular-nums">
+                                {round2(group.totalHours).toFixed(2)} hrs
+                                {group.rate > 0 && (
+                                  <span className="text-gray-500">
+                                    {' '}
+                                    × {currSymbol}
+                                    {group.rate.toFixed(2)}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
                           </div>
                           <div className="mt-1 text-xs text-gray-500">
                             {group.logs.length} time{group.logs.length !== 1 ? ' entries' : ' entry'}
