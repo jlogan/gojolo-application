@@ -276,6 +276,25 @@ export default function InvoiceDetail() {
     setActionLoading(false)
   }
 
+  /* ---------- Delete invoice ---------- */
+
+  const handleDelete = async () => {
+    if (!id || actionLoading) return
+    if (!confirm(`Delete ${directionLabel} ${invoiceNumber}? This cannot be undone.`)) return
+    setActionLoading(true)
+    const { error } = await supabase
+      .from('invoices')
+      .delete()
+      .eq('id', id)
+    if (!error) {
+      // Redirect to invoices list
+      window.location.href = '/invoices'
+    } else {
+      console.error('Delete failed:', error)
+      setActionLoading(false)
+    }
+  }
+
   /* ---------- PDF download ---------- */
 
   const handleDownloadPdf = async () => {
@@ -319,6 +338,7 @@ export default function InvoiceDetail() {
   const canEdit = !isVendor && ['draft'].includes(invoice.status)
   const canMarkSent = !isVendor && ['draft'].includes(invoice.status)
   const canMarkCancelled = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
+  const canDelete = !isVendor && ['draft'].includes(invoice.status)
   const showStripeButton = isVendor && invoice.direction === 'inbound' && !['paid', 'cancelled'].includes(invoice.status)
   const canRecordPayment = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
 
@@ -380,6 +400,17 @@ export default function InvoiceDetail() {
             className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/20 disabled:opacity-50"
           >
             <XCircle size={14} /> Cancel
+          </button>
+        )}
+
+        {/* Delete (draft only) */}
+        {canDelete && (
+          <button
+            onClick={handleDelete}
+            disabled={actionLoading}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-red-600/50 bg-red-600/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-600/20 disabled:opacity-50"
+          >
+            <XCircle size={14} /> Delete
           </button>
         )}
 
