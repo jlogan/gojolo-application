@@ -164,6 +164,14 @@ export default function Timesheets() {
   /* ---------- Toggle billed status ---------- */
   const toggleBilled = async (entry: TimeLogRow) => {
     if (togglingId === entry.id) return
+    const action = entry.billed ? 'mark as unbilled' : 'mark as billed'
+    const confirmed = window.confirm(
+      `${entry.billed ? 'Unbill' : 'Bill'} this time log?\n\n` +
+      `${entry.project_name ?? 'Unknown project'} / ${entry.task_title ?? 'Unknown task'}\n` +
+      `${entry.work_date} · ${entry.hours}h ${entry.minutes}m · ${entry.display_name ?? 'Unknown'}\n\n` +
+      `Are you sure you want to ${action}?`
+    )
+    if (!confirmed) return
     setTogglingId(entry.id)
     const newBilled = !entry.billed
     const { error } = await supabase
