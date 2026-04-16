@@ -209,7 +209,32 @@ export default function Timesheets() {
 
     const selectedLogs = entries.filter((e) => selected.has(e.id))
 
-    // Group by task to build line items
+    // Determine dominant project (most logs)
+    const projectCounts = new Map<string, number>()
+    selectedLogs.forEach((l) => projectCounts.set(l.project_id, (projectCounts.get(l.project_id) ?? 0) + 1))
+    const dominantProjectId = [...projectCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+
+    // Fetch project details, linked company + contact, and default currency in parallel
+    const [projectRes, companyRes, contactRes, currencyRes] = await Promise.all([
+      dominantProjectId
+        ? supabase.from('projects').select('id, name, billing_type, hourly_rate').eq('id', dominantProjectId).single()
+        : Promise.resolve({ data: null }),
+      dominantProjectId
+        ? supabase.from('project_companies').select('company_id').eq('project_id', dominantProjectId).limit(1).single()
+        : Promise.resolve({ data: null }),
+      dominantProjectId
+        ? supabase.from('project_contacts').select('contact_id').eq('project_id', dominantProjectId).limit(1).single()
+        : Promise.resolve({ data: null }),
+      supabase.from('currencies').select('id').eq('org_id', currentOrg.id).eq('is_default', true).single(),
+    ])
+
+    const projectId = (projectRes.data as { id: string } | null)?.id ?? null
+    const companyId = (companyRes.data as { company_id: string } | null)?.company_id ?? null
+    const contactId = (contactRes.data as { contact_id: string } | null)?.contact_id ?? null
+    const currencyId = (currencyRes.data as { id: string } | null)?.id ?? null
+    const projectHourlyRate = (projectRes.data as { hourly_rate?: number | null } | null)?.hourly_rate ?? null
+
+    // Group by task to build line items — use project hourly rate as fallback
     const taskMap = new Map<string, { task_id: string; task_title: string; logs: TimeLogRow[]; totalHours: number; rate: number }>()
     selectedLogs.forEach((log) => {
       let g = taskMap.get(log.task_id)
@@ -219,7 +244,9 @@ export default function Timesheets() {
       }
       g.logs.push(log)
       g.totalHours += log.hours + log.minutes / 60
+      // Use log rate, fall back to project rate
       if (log.hourly_rate != null && log.hourly_rate > 0) g.rate = log.hourly_rate
+      else if (g.rate === 0 && projectHourlyRate != null && projectHourlyRate > 0) g.rate = projectHourlyRate
     })
 
     const lineItems = Array.from(taskMap.values()).map((g) => ({
@@ -234,13 +261,17 @@ export default function Timesheets() {
 
     const subtotal = lineItems.reduce((s, i) => s + i.quantity * i.unit_price, 0)
 
-    // Create the invoice
+    // Create the invoice with all auto-populated fields
     const { data: inv, error } = await supabase.from('invoices').insert({
       org_id: currentOrg.id,
       direction: 'outbound',
       prefix: 'INV-',
       status: 'draft',
       issue_date: new Date().toISOString().split('T')[0],
+      project_id: projectId,
+      company_id: companyId,
+      contact_id: contactId,
+      currency_id: currencyId,
       subtotal,
       tax_total: 0,
       discount_type: 'percent',
