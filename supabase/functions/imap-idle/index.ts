@@ -216,7 +216,11 @@ Deno.serve(async (req: Request) => {
             if (!newThread) continue
             threadId = newThread.id
           } else {
-            await service.from('inbox_threads').update({ last_message_at: date.toISOString(), updated_at: date.toISOString(), status: 'open' }).eq('id', threadId)
+            const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+              p_thread_id: threadId,
+              p_last_message_at: date.toISOString(),
+            })
+            if (touchErr) console.log('[imap-idle] touch_inbox_thread_on_new_message', threadId, touchErr.message)
           }
 
           // Upload inline images

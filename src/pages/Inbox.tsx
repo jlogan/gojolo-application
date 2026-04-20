@@ -464,82 +464,86 @@ export default function Inbox() {
       await supabase.from('inbox_thread_reads').upsert({ thread_id: tid, user_id: userId, last_read_at: new Date().toISOString() }, { onConflict: 'thread_id,user_id' })
     }
 
-    // Fetch bodies for all messages in thread (returns from DB when present, else fetches from IMAP)
+    // Lazy-load bodies from IMAP only when at least one row has no body/html in DB (avoids edge round-trip when data is already complete)
     if (msgs.length > 0) {
       const emptyBeforeBodies = msgs.filter(m => !m.body?.trim() && !m.html_body?.trim())
-      if (emptyBeforeBodies.length > 0) debugLog('fetchMessages', { event: 'empty_bodies_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), count: emptyBeforeBodies.length }, tid)
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session?.access_token) {
-        try {
-          const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-thread-bodies`
-          const t0 = performance.now()
-          console.log('[Inbox:fetch-thread-bodies] calling', { threadId: tid, messageCount: msgs.length, emptyCount: emptyBeforeBodies.length })
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-            body: JSON.stringify({ threadId: tid }),
-          })
-          const elapsed = Math.round(performance.now() - t0)
-          const result = await res.json().catch(() => ({}))
-          console.log('[Inbox:fetch-thread-bodies] response', { threadId: tid, elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
-          debugLog('fetchMessages', { event: 'fetch_thread_bodies_response', elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error, bodies: (result.messages ?? []).map((m: { id: string; body?: string | null; htmlBody?: string | null }) => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.htmlBody?.trim()) })) }, tid)
-          if (!res.ok) {
-            console.warn('[Inbox] fetch-thread-bodies HTTP error', { threadId: tid, status: res.status, error: (result as { error?: string }).error })
-            debugLog('fetchMessages', { event: 'fetch_thread_bodies_http_error', status: res.status, error: (result as { error?: string }).error }, tid)
-          }
-          if (result.messages?.length) {
-            if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
-            type BodyEntry = { body: string | null; html_body: string | null }
-            const bodyMap = new Map<string, BodyEntry>(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
-            const stillEmptyAfter = msgs.filter((pm) => {
-              const b = bodyMap.get(pm.id)
-              const bodyVal = b ? (b.body ?? pm.body) : pm.body
-              const htmlVal = b ? (b.html_body ?? pm.html_body) : pm.html_body
-              return !(bodyVal && String(bodyVal).trim()) && !(htmlVal && String(htmlVal).trim())
-            })
-            if (stillEmptyAfter.length > 0 && !result.hasMore) {
-              const details = stillEmptyAfter.map((m) => ({
-                id: m.id,
-                direction: m.direction,
-                external_uid: m.external_uid,
-                imap_account_id: m.imap_account_id,
-              }))
-              console.warn('[Inbox] After fetch-thread-bodies, some messages still have no body (see Edge Function logs / IMAP UID)', { threadId: tid, count: stillEmptyAfter.length, details })
-              debugLog('fetchMessages', { event: 'bodies_still_empty_after_fetch', threadId: tid, count: stillEmptyAfter.length, details }, tid)
-            }
-            setMessages(prev => {
-              const merged = prev.map(pm => {
-                const b = bodyMap.get(pm.id)
-                return b ? { ...pm, body: b.body ?? pm.body, html_body: b.html_body ?? pm.html_body } : pm
-              })
-              return merged.sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
-            })
-            fetchAttachments(tid)
-            if (result.hasMore) {
-              const retry = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }, body: JSON.stringify({ threadId: tid }) })
-                .then(r => r.json().catch(() => ({})))
-                .then(r => {
-                  if (selectedThreadIdRef.current !== tid) return // user switched thread, cancel retries
-                  if (r.messages?.length) {
-                    const m = new Map<string, BodyEntry>(r.messages.map((x: { id: string; body: string | null; htmlBody: string | null }) => [x.id, { body: x.body, html_body: x.htmlBody }]))
-                    setMessages(prev2 => prev2.map(p => {
-                      const entry = m.get(p.id)
-                      return entry ? { ...p, body: entry.body ?? p.body, html_body: entry.html_body ?? p.html_body } : p
-                    }).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
-                    fetchAttachments(tid)
-                    if (r.hasMore) setTimeout(retry, 800)
-                  }
-                })
-                .catch(() => {})
-              setTimeout(retry, 800)
-            }
-          }
-        } catch (err) {
-          console.error('[Inbox] Failed to fetch thread bodies:', err)
-        }
+      if (emptyBeforeBodies.length === 0) {
+        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'all_bodies_in_db', messageCount: msgs.length }, tid)
       } else {
-        console.log('[Inbox] Skipping fetch-thread-bodies: no session/access_token')
-        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_session' }, tid)
+        debugLog('fetchMessages', { event: 'empty_bodies_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), count: emptyBeforeBodies.length }, tid)
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session?.access_token) {
+          try {
+            const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-thread-bodies`
+            const t0 = performance.now()
+            console.log('[Inbox:fetch-thread-bodies] calling', { threadId: tid, messageCount: msgs.length, emptyCount: emptyBeforeBodies.length })
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+              body: JSON.stringify({ threadId: tid }),
+            })
+            const elapsed = Math.round(performance.now() - t0)
+            const result = await res.json().catch(() => ({}))
+            console.log('[Inbox:fetch-thread-bodies] response', { threadId: tid, elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
+            debugLog('fetchMessages', { event: 'fetch_thread_bodies_response', elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error, bodies: (result.messages ?? []).map((m: { id: string; body?: string | null; htmlBody?: string | null }) => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.htmlBody?.trim()) })) }, tid)
+            if (!res.ok) {
+              console.warn('[Inbox] fetch-thread-bodies HTTP error', { threadId: tid, status: res.status, error: (result as { error?: string }).error })
+              debugLog('fetchMessages', { event: 'fetch_thread_bodies_http_error', status: res.status, error: (result as { error?: string }).error }, tid)
+            }
+            if (result.messages?.length) {
+              if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
+              type BodyEntry = { body: string | null; html_body: string | null }
+              const bodyMap = new Map<string, BodyEntry>(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
+              const stillEmptyAfter = msgs.filter((pm) => {
+                const b = bodyMap.get(pm.id)
+                const bodyVal = b ? (b.body ?? pm.body) : pm.body
+                const htmlVal = b ? (b.html_body ?? pm.html_body) : pm.html_body
+                return !(bodyVal && String(bodyVal).trim()) && !(htmlVal && String(htmlVal).trim())
+              })
+              if (stillEmptyAfter.length > 0 && !result.hasMore) {
+                const details = stillEmptyAfter.map((m) => ({
+                  id: m.id,
+                  direction: m.direction,
+                  external_uid: m.external_uid,
+                  imap_account_id: m.imap_account_id,
+                }))
+                console.warn('[Inbox] After fetch-thread-bodies, some messages still have no body (see Edge Function logs / IMAP UID)', { threadId: tid, count: stillEmptyAfter.length, details })
+                debugLog('fetchMessages', { event: 'bodies_still_empty_after_fetch', threadId: tid, count: stillEmptyAfter.length, details }, tid)
+              }
+              setMessages(prev => {
+                const merged = prev.map(pm => {
+                  const b = bodyMap.get(pm.id)
+                  return b ? { ...pm, body: b.body ?? pm.body, html_body: b.html_body ?? pm.html_body } : pm
+                })
+                return merged.sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
+              })
+              fetchAttachments(tid)
+              if (result.hasMore) {
+                const retry = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }, body: JSON.stringify({ threadId: tid }) })
+                  .then(r => r.json().catch(() => ({})))
+                  .then(r => {
+                    if (selectedThreadIdRef.current !== tid) return // user switched thread, cancel retries
+                    if (r.messages?.length) {
+                      const m = new Map<string, BodyEntry>(r.messages.map((x: { id: string; body: string | null; htmlBody: string | null }) => [x.id, { body: x.body, html_body: x.htmlBody }]))
+                      setMessages(prev2 => prev2.map(p => {
+                        const entry = m.get(p.id)
+                        return entry ? { ...p, body: entry.body ?? p.body, html_body: entry.html_body ?? p.html_body } : p
+                      }).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
+                      fetchAttachments(tid)
+                      if (r.hasMore) setTimeout(retry, 800)
+                    }
+                  })
+                  .catch(() => {})
+                setTimeout(retry, 800)
+              }
+            }
+          } catch (err) {
+            console.error('[Inbox] Failed to fetch thread bodies:', err)
+          }
+        } else {
+          console.log('[Inbox] Skipping fetch-thread-bodies: no session/access_token')
+          debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_session' }, tid)
+        }
       }
     } else {
       console.log('[Inbox] Skipping fetch-thread-bodies: no messages', { threadId: tid })
@@ -692,9 +696,13 @@ export default function Inbox() {
     }
     debugLog('selectThread', { selectedThreadId, filter }, selectedThreadId ?? undefined)
     setExpandedMsgs(new Set()) // Reset accordion on thread change
-    fetchMessages(selectedThreadId); fetchComments(selectedThreadId); fetchThreadContacts(selectedThreadId); fetchAttachments(selectedThreadId)
+    // Use ref so this effect does not re-run when fetchMessages identity changes (e.g. debugLog after auth/org hydrate) — avoids duplicate fetch-thread-bodies
+    fetchMessagesRef.current(selectedThreadId)
+    fetchComments(selectedThreadId)
+    fetchThreadContacts(selectedThreadId)
+    fetchAttachments(selectedThreadId)
     supabase.rpc('match_thread_contacts', { p_thread_id: selectedThreadId }).then(() => fetchThreadContacts(selectedThreadId))
-  }, [selectedThreadId, fetchMessages, fetchComments, fetchThreadContacts, fetchAttachments, debugLog])
+  }, [selectedThreadId, fetchComments, fetchThreadContacts, fetchAttachments, debugLog])
 
   /** Outbound rows from imap-sync often have null bodies until lazy IMAP fetch; helps spot stuck rows (no external_uid = cannot fetch). */
   useEffect(() => {
