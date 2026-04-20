@@ -114,16 +114,54 @@ Deno.serve(async (req: Request) => {
   const result: { id: string; body: string | null; htmlBody: string | null; attachments: { file_name: string; file_path: string }[] }[] = []
 
   /** imap-sync inserts inbound + outbound with null bodies; bodies are lazy-loaded from IMAP by UID (same mailbox as sync: All Mail / INBOX). */
-  const needsImapBody = (m: { body: unknown; html_body: unknown; imap_account_id: string | null; external_uid: number | null }) => {
+  const isBodyEmpty = (m: { body: unknown; html_body: unknown }) => {
     const b = m.body
     const h = m.html_body
     const bodyEmpty = b == null || (typeof b === 'string' && !b.trim())
     const htmlEmpty = h == null || (typeof h === 'string' && !h.trim())
-    return bodyEmpty && htmlEmpty && !!m.imap_account_id && m.external_uid != null
+    return bodyEmpty && htmlEmpty
+  }
+
+  // For messages with null imap_account_id, resolve a fallback from the thread or org
+  let fallbackAccountId: string | null = null
+  const msgsNeedingAccount = messages.filter((m) => isBodyEmpty(m) && !m.imap_account_id && m.external_uid != null)
+  if (msgsNeedingAccount.length > 0) {
+    const { data: threadRow } = await service.from('inbox_threads')
+      .select('imap_account_id, org_id')
+      .eq('id', threadId)
+      .single()
+    fallbackAccountId = (threadRow as { imap_account_id: string | null } | null)?.imap_account_id ?? null
+    if (!fallbackAccountId) {
+      const orgId = (threadRow as { org_id: string } | null)?.org_id
+      if (orgId) {
+        const { data: accPick } = await service.from('imap_accounts')
+          .select('id').eq('org_id', orgId).eq('is_active', true).limit(1)
+        fallbackAccountId = (accPick as { id: string }[] | null)?.[0]?.id ?? null
+      }
+    }
+    console.log('[fetch-thread-bodies] messages with null imap_account_id need fallback', {
+      threadId,
+      count: msgsNeedingAccount.length,
+      fallbackAccountId,
+      messageIds: msgsNeedingAccount.map((m) => m.id),
+    })
+    if (fallbackAccountId) {
+      await service.from('inbox_messages')
+        .update({ imap_account_id: fallbackAccountId })
+        .in('id', msgsNeedingAccount.map((m) => m.id))
+      for (const m of messages) {
+        if (msgsNeedingAccount.some((n) => n.id === m.id)) {
+          (m as Record<string, unknown>).imap_account_id = fallbackAccountId
+        }
+      }
+      console.log('[fetch-thread-bodies] patched imap_account_id on', msgsNeedingAccount.length, 'messages to', fallbackAccountId)
+    }
   }
 
   // Messages that need IMAP fetch (limit per request to avoid 546 WORKER_LIMIT)
-  const needFetchRaw = messages.filter((m) => needsImapBody(m)) as {
+  const needFetchRaw = messages.filter((m) =>
+    isBodyEmpty(m) && !!m.imap_account_id && m.external_uid != null
+  ) as {
     id: string
     external_uid: number
     imap_account_id: string
@@ -133,12 +171,14 @@ Deno.serve(async (req: Request) => {
   const needFetch = needFetchRaw.slice(0, MAX_FETCH_PER_REQUEST)
 
   const outboundNeed = needFetchRaw.filter((m) => m.direction === 'outbound').length
+  const stillNoAccount = messages.filter((m) => isBodyEmpty(m) && !m.imap_account_id && m.external_uid != null)
   console.log('[fetch-thread-bodies] split', {
     threadId,
     needImapFetch: needFetch.length,
     totalNeed: needFetchRaw.length,
     outboundNeed,
     inboundNeed: needFetchRaw.length - outboundNeed,
+    stillNoAccount: stillNoAccount.length,
     needFetchIds: needFetch.map((m) => m.id),
     needFetchDirections: needFetch.map((m) => m.direction),
   })
@@ -225,8 +265,10 @@ Deno.serve(async (req: Request) => {
           const fetchMs = Math.round(performance.now() - tMsg)
           console.log('[fetch-thread-bodies] IMAP fetch', { threadId, msgId: msg.id, uid: msg.external_uid, sourceBytes: source?.byteLength ?? 0, fetchMs })
           if (!source) {
-            console.log('[fetch-thread-bodies] no source for message', { msgId: msg.id, uid: msg.external_uid })
-            result.push({ id: msg.id, body: null, htmlBody: null, attachments: [] })
+            console.log('[fetch-thread-bodies] no source for message — marking unavailable', { msgId: msg.id, uid: msg.external_uid })
+            const unavailableBody = '[Message no longer available on mail server]'
+            await service.from('inbox_messages').update({ body: unavailableBody }).eq('id', msg.id)
+            result.push({ id: msg.id, body: unavailableBody, htmlBody: null, attachments: [] })
             continue
           }
 

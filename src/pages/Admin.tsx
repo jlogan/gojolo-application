@@ -580,11 +580,18 @@ export default function Admin() {
             },
             body: JSON.stringify({ orgId: currentOrg.id, accountId, limit: 50 }),
           })
-          const bf = (await res.json().catch(() => ({}))) as { filled?: number; error?: string; message?: string }
+          const bf = (await res.json().catch(() => ({}))) as { filled?: number; skipped?: number; errored?: number; requested?: number; error?: string; message?: string }
           if (bf.error) {
             bodyParts.push(`Body backfill: ${bf.error}`)
-          } else if (typeof bf.filled === 'number' && bf.filled > 0) {
-            bodyParts.push(`${bf.filled} message body/bodies loaded from IMAP (batch of up to 50)`)
+          } else if (typeof bf.filled === 'number') {
+            const parts: string[] = []
+            if (bf.filled > 0) parts.push(`${bf.filled} body/bodies loaded`)
+            if (bf.skipped) parts.push(`${bf.skipped} skipped`)
+            if (bf.errored) parts.push(`${bf.errored} errored`)
+            if (bf.requested && bf.filled === 0 && !bf.skipped && !bf.errored) {
+              parts.push('no messages need body fetch')
+            }
+            if (parts.length) bodyParts.push(`Body backfill: ${parts.join(', ')}${bf.requested ? ` (of ${bf.requested} requested)` : ''}`)
           }
         } catch {
           // ignore backfill failure; sync result still shown
@@ -1097,6 +1104,7 @@ export default function Admin() {
                   </p>
                 )}
               </div>
+
             </>
           )}
 

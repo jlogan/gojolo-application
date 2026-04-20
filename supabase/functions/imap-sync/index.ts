@@ -595,6 +595,8 @@ serve(async (req) => {
 
       // Batch insert rows (with ON CONFLICT skip for dedup via unique index)
       const insertRows: Record<string, unknown>[] = []
+      // Track thread IDs created fresh in this batch so we can delete them if insert fails
+      const newlyCreatedThreadIds = new Set<string>()
 
       for (const p of parsed) {
         if (p.uid > highestUid) highestUid = p.uid
@@ -615,12 +617,15 @@ serve(async (req) => {
           if (threadErr || !newThread) { errors.push(`${acc.imap_username}: thread: ${threadErr?.message}`); continue }
           threadId = newThread.id
           threadsCreated++
+          newlyCreatedThreadIds.add(threadId)
           const norm = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
           if (norm) subjectThreadMap.set(norm, threadId)
         } else {
-          await service.from('inbox_threads')
-            .update({ last_message_at: p.date.toISOString(), updated_at: p.date.toISOString(), status: 'open' })
-            .eq('id', threadId)
+          const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+            p_thread_id: threadId,
+            p_last_message_at: p.date.toISOString(),
+          })
+          if (touchErr) console.log('[imap-sync] touch_inbox_thread_on_new_message', threadId, touchErr.message)
         }
 
         // Track for future reference lookups within this batch
@@ -670,6 +675,12 @@ serve(async (req) => {
           console.log('[imap-sync] account', acc.id, 'batch insert error:', batchErr.message, 'code=', batchErr.code)
           errors.push(`${acc.imap_username}: batch insert: ${batchErr.message}`)
           highestUid = lastUid
+          // Clean up newly-created threads that now have no messages — prevents orphan accumulation
+          if (newlyCreatedThreadIds.size > 0) {
+            const orphanIds = [...newlyCreatedThreadIds]
+            console.log('[imap-sync] account', acc.id, 'rolling back', orphanIds.length, 'newly-created orphan threads')
+            await service.from('inbox_threads').delete().in('id', orphanIds)
+          }
         } else {
           messagesInserted = count ?? insertRows.length
           insertedRows = (insertedData ?? []) as { id: string; external_uid: number; thread_id: string }[]

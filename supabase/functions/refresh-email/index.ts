@@ -408,10 +408,11 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         const norm = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
         if (norm && threadId) subjectThreadMap.set(norm, threadId)
       } else {
-        await service
-          .from('inbox_threads')
-          .update({ last_message_at: p.date.toISOString(), updated_at: p.date.toISOString(), status: 'open' })
-          .eq('id', threadId!)
+        const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+          p_thread_id: threadId!,
+          p_last_message_at: p.date.toISOString(),
+        })
+        if (touchErr) console.log('[refresh-email] touch_inbox_thread_on_new_message', threadId, touchErr.message)
       }
 
       if (!threadId) continue
