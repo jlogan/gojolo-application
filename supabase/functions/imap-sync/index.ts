@@ -523,6 +523,17 @@ serve(async (req) => {
         }
       }
 
+      // ImapFlow / some servers can return multiple envelope rows for the same UID — would violate idx_inbox_messages_imap_dedup
+      {
+        const uidSeen = new Set<number>()
+        newMsgs = newMsgs.filter((m) => {
+          const uid = Number(m.uid)
+          if (Number.isNaN(uid) || uidSeen.has(uid)) return false
+          uidSeen.add(uid)
+          return true
+        })
+      }
+
       console.log('[imap-sync] account', acc.id, 'envelopes=', envelopes.length, 'newMsgs=', newMsgs.length, 'lastUid=', lastUid)
 
       if (newMsgs.length === 0) {
@@ -566,6 +577,15 @@ serve(async (req) => {
         }
       })
 
+      const parsedUids = [...new Set(parsed.map((p) => p.uid))]
+      const { data: uidRowsAlreadyInDb } = parsedUids.length > 0
+        ? await service.from('inbox_messages')
+          .select('external_uid')
+          .eq('imap_account_id', acc.id)
+          .in('external_uid', parsedUids)
+        : { data: [] as { external_uid: number }[] }
+      const uidsAlreadyInDb = new Set((uidRowsAlreadyInDb ?? []).map((r: { external_uid: number }) => r.external_uid))
+
       // Batch pre-fetch: all reference IDs → thread mapping (1 query)
       const allRefIds = [...new Set(parsed.flatMap(p => [p.messageId, p.inReplyTo, ...p.refsList].filter(Boolean) as string[]))]
       const refMap = new Map<string, string>()
@@ -593,13 +613,18 @@ serve(async (req) => {
       let threadsCreated = 0
       let messagesInserted = 0
 
-      // Batch insert rows (with ON CONFLICT skip for dedup via unique index)
+      // Batch insert rows (dedupe by UID + skip UIDs already in DB — idx_inbox_messages_imap_dedup)
       const insertRows: Record<string, unknown>[] = []
       // Track thread IDs created fresh in this batch so we can delete them if insert fails
       const newlyCreatedThreadIds = new Set<string>()
 
       for (const p of parsed) {
         if (p.uid > highestUid) highestUid = p.uid
+
+        if (uidsAlreadyInDb.has(p.uid)) {
+          console.log('[imap-sync] account', acc.id, 'skip envelope: UID already in DB (cursor catch-up)', p.uid)
+          continue
+        }
 
         // Thread matching: references → subject → new thread
         let threadId: string | undefined
@@ -662,14 +687,23 @@ serve(async (req) => {
         })
       }
 
-      // Batch insert all messages (unique index on imap_account_id+external_uid handles dedup)
-      const inboundCount = insertRows.filter((r) => r.direction === 'inbound').length
-      const outboundCount = insertRows.filter((r) => r.direction === 'outbound').length
+      // Last-line defense: same external_uid twice in insertRows would violate idx_inbox_messages_imap_dedup
+      const seenInsertUid = new Set<number>()
+      const rowsToInsert = insertRows.filter((r) => {
+        const u = r.external_uid as number
+        if (seenInsertUid.has(u)) return false
+        seenInsertUid.add(u)
+        return true
+      })
+
+      const inboundCount = rowsToInsert.filter((r) => r.direction === 'inbound').length
+      const outboundCount = rowsToInsert.filter((r) => r.direction === 'outbound').length
       let insertedRows: { id: string; external_uid: number; thread_id: string }[] = []
-      if (insertRows.length > 0) {
-        console.log('[imap-sync] account', acc.id, 'batch insert: rows=', insertRows.length, 'inbound=', inboundCount, 'outbound=', outboundCount)
+      if (rowsToInsert.length > 0) {
+        const dedupNote = insertRows.length !== rowsToInsert.length ? ` deduped from ${insertRows.length}` : ''
+        console.log(`[imap-sync] account ${acc.id} batch insert: rows=${rowsToInsert.length}${dedupNote} inbound=${inboundCount} outbound=${outboundCount}`)
         const { data: insertedData, error: batchErr, count } = await service.from('inbox_messages')
-          .insert(insertRows, { count: 'exact' })
+          .insert(rowsToInsert, { count: 'exact' })
           .select('id, external_uid, thread_id')
         if (batchErr) {
           console.log('[imap-sync] account', acc.id, 'batch insert error:', batchErr.message, 'code=', batchErr.code)
@@ -682,7 +716,7 @@ serve(async (req) => {
             await service.from('inbox_threads').delete().in('id', orphanIds)
           }
         } else {
-          messagesInserted = count ?? insertRows.length
+          messagesInserted = count ?? rowsToInsert.length
           insertedRows = (insertedData ?? []) as { id: string; external_uid: number; thread_id: string }[]
           console.log('[imap-sync] account', acc.id, 'inserted threads=', threadsCreated, 'messages=', messagesInserted)
 
