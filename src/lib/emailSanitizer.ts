@@ -47,14 +47,43 @@ function removeTrackingLinks(html: string): string {
   })
 }
 
+/** Remove script tags including malformed / nested; repeat until stable. */
+function stripAllScripts(html: string): string {
+  let out = html
+  for (let i = 0; i < 12; i++) {
+    const next = out
+      .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/<script\b[^>]*\/>/gi, '')
+      .replace(/<script\b[^>]*>/gi, '')
+      .replace(/<\/script>/gi, '')
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+
+/** Block javascript: / vbscript: / data:html in navigable URLs inside HTML. */
+function neutralizeDangerousUrls(html: string): string {
+  return html
+    .replace(
+      /\b(href|src|xlink:href)\s*=\s*(["'])\s*(?:javascript|vbscript|data:text\/html)\s*:([^"']*)\2/gi,
+      '$1=$2about:blank$2',
+    )
+    .replace(
+      /\b(href|src|xlink:href)\s*=\s*(?!["'])(?:javascript|vbscript|data:text\/html)\s*:[^\s>]+/gi,
+      '$1="about:blank"',
+    )
+}
+
 export function sanitizeEmailHtml(rawHtml: string): string {
   let html = rawHtml
 
-  // Remove scripts
-  html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+  html = stripAllScripts(html)
 
   // Remove event handlers
   html = html.replace(/\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+
+  html = neutralizeDangerousUrls(html)
 
   // Remove meta refresh
   html = html.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, '')

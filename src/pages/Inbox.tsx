@@ -19,7 +19,7 @@ type InboxThread = {
   subject: string | null; last_message_at: string; created_at: string
   from_address: string | null; imap_account_id: string | null
   inbox_thread_assignments?: ThreadAssignment[] | null
-  /** Populated when select includes inbox_messages(count) */
+  /** Message count (from mergeInboxMessageCounts / inbox_message_counts_by_thread RPC) */
   inbox_messages?: { count: number }[] | null
 }
 type InboxMessage = {
@@ -39,6 +39,44 @@ type InboxUser = { user_id: string; display_name: string | null; email: string |
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
 type ContactMatch = { contact_id: string; name: string; email: string | null }
 type ReadStatus = { thread_id: string; last_read_at: string }
+
+/** PostgREST list select without embedded inbox_messages(count) — counts come from inbox_message_counts_by_thread RPC. */
+const INBOX_THREAD_LIST_SELECT =
+  'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)' as const
+
+function isTransientPostgrestError(err: { message?: string } | null): boolean {
+  if (!err?.message) return false
+  const m = err.message.toLowerCase()
+  return (
+    m.includes('504') ||
+    m.includes('522') ||
+    m.includes('523') ||
+    m.includes('502') ||
+    m.includes('503') ||
+    m.includes('gateway') ||
+    m.includes('timeout') ||
+    m.includes('fetch failed') ||
+    m.includes('network') ||
+    m.includes('failed to fetch') ||
+    m.includes('access-control-allow-origin')
+  )
+}
+
+/** Single grouped count query (RLS on inbox_messages); avoids slow embedded aggregates that can 504. */
+async function mergeInboxMessageCounts(threads: InboxThread[]): Promise<InboxThread[]> {
+  if (threads.length === 0) return threads
+  const { data: countRows, error } = await supabase.rpc('inbox_message_counts_by_thread', {
+    p_thread_ids: threads.map((t) => t.id),
+  })
+  if (error) {
+    console.warn('[Inbox] inbox_message_counts_by_thread:', error.message)
+    return threads.map((t) => ({ ...t, inbox_messages: [{ count: 1 }] }))
+  }
+  const map = new Map(
+    (countRows as { thread_id: string; msg_count: number | string }[]).map((r) => [r.thread_id, Number(r.msg_count)]),
+  )
+  return threads.map((t) => ({ ...t, inbox_messages: [{ count: map.get(t.id) ?? 0 }] }))
+}
 
 const FILTERS: { id: InboxFilter; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'inbox', label: 'Inbox', icon: InboxIcon },
@@ -161,9 +199,16 @@ export default function Inbox() {
       return
     }
     supabase.from('inbox_threads')
-      .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id), inbox_messages(count)')
+      .select(INBOX_THREAD_LIST_SELECT)
       .eq('id', selectedThreadId).eq('org_id', currentOrg.id).single()
-      .then(({ data }) => setSelectedThreadFallback((data as InboxThread) ?? null), () => setSelectedThreadFallback(null))
+      .then(async ({ data, error }) => {
+        if (error || !data) {
+          setSelectedThreadFallback(null)
+          return
+        }
+        const merged = await mergeInboxMessageCounts([data as InboxThread])
+        setSelectedThreadFallback(merged[0] ?? null)
+      }, () => setSelectedThreadFallback(null))
   }, [selectedThreadId, threads, currentOrg?.id])
 
   // When navigating to a thread via URL, switch filter only if the thread isn't already in the list
@@ -325,22 +370,39 @@ export default function Inbox() {
     if (!initialLoadDone.current) setLoading(true)
     try {
       debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, pageSize })
-      let query = supabase.from('inbox_threads')
-        .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id), inbox_messages(count)')
-        .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
-      if (filter === 'inbox') {
-        query = query.eq('status', 'open')
-      } else if (filter === 'assigned') {
+
+      let assignedTids: string[] | undefined
+      if (filter === 'assigned') {
         const { data: assigned, error: assignErr } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
         debugLog('fetchThreads', { event: 'assigned_query', userId, count: (assigned ?? []).length, tids: (assigned ?? []).map((a: { thread_id: string }) => a.thread_id), error: assignErr?.message })
-        const tids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
-        if (!tids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
-        query = query.in('id', tids)
-      } else if (filter === 'closed') query = query.eq('status', 'closed')
-      else if (filter === 'trash') query = query.eq('status', 'archived')
-      else if (filter === 'all') query = query.neq('status', 'archived')
-      const { data, error: threadsErr } = await query
+        assignedTids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
+        if (!assignedTids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
+      }
+
+      const buildThreadsListQuery = () => {
+        let q = supabase.from('inbox_threads')
+          .select(INBOX_THREAD_LIST_SELECT)
+          .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
+        if (filter === 'inbox') q = q.eq('status', 'open')
+        else if (filter === 'assigned') q = q.in('id', assignedTids!)
+        else if (filter === 'closed') q = q.eq('status', 'closed')
+        else if (filter === 'trash') q = q.eq('status', 'archived')
+        else if (filter === 'all') q = q.neq('status', 'archived')
+        return q
+      }
+
+      let data: InboxThread[] | null = null
+      let threadsErr: { message: string } | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await buildThreadsListQuery()
+        data = res.data as InboxThread[] | null
+        threadsErr = res.error
+        if (!threadsErr || !isTransientPostgrestError(threadsErr)) break
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+      }
+
       let result = (data as InboxThread[]) ?? []
+      result = await mergeInboxMessageCounts(result)
       // Hide orphan threads (no inbox_messages rows) — they break fetch-thread-bodies and confuse the UI
       const beforeOrphans = result.length
       result = result.filter((t) => {
@@ -366,9 +428,13 @@ export default function Inbox() {
       const sid = selectedThreadIdRef.current
       if (sid && !result.some(t => t.id === sid)) {
         const { data: single } = await supabase.from('inbox_threads')
-          .select('id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id), inbox_messages(count)')
+          .select(INBOX_THREAD_LIST_SELECT)
           .eq('id', sid).eq('org_id', currentOrg!.id).single()
-        const thread = single as InboxThread | null
+        let thread = single as InboxThread | null
+        if (thread) {
+          const merged = await mergeInboxMessageCounts([thread])
+          thread = merged[0] ?? null
+        }
         if (thread && (filter !== 'all' || thread.status !== 'archived')) {
           result = [thread, ...result]
           debugLog('fetchThreads', { event: 'prepended_selected_thread', threadId: sid })

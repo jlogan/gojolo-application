@@ -281,6 +281,16 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       }
     }
 
+    {
+      const uidSeen = new Set<number>()
+      newMsgs = newMsgs.filter((m) => {
+        const uid = Number(m.uid)
+        if (Number.isNaN(uid) || uidSeen.has(uid)) return false
+        uidSeen.add(uid)
+        return true
+      })
+    }
+
     n = newMsgs.length
     console.log('[refresh-email] new messages (uid >', lastUid, '):', n)
 
@@ -339,6 +349,15 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       }
     })
 
+    const parsedUids = [...new Set(parsed.map((p) => p.uid))]
+    const { data: uidRowsAlreadyInDb } = parsedUids.length > 0
+      ? await service.from('inbox_messages')
+        .select('external_uid')
+        .eq('imap_account_id', acc.id)
+        .in('external_uid', parsedUids)
+      : { data: [] as { external_uid: number }[] }
+    const uidsAlreadyInDb = new Set((uidRowsAlreadyInDb ?? []).map((r: { external_uid: number }) => r.external_uid))
+
     const allRefIds = [...new Set(parsed.flatMap((p) => [p.messageId, p.inReplyTo, ...p.refsList].filter(Boolean) as string[]))]
     const refMap = new Map<string, string>()
     if (allRefIds.length > 0) {
@@ -373,6 +392,11 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
     for (const p of parsed) {
       if (p.uid > highestUid) highestUid = p.uid
+
+      if (uidsAlreadyInDb.has(p.uid)) {
+        console.log('[refresh-email] skip envelope: UID already in DB', p.uid)
+        continue
+      }
 
       let threadId: string | undefined
       for (const refId of [p.inReplyTo, ...p.refsList]) {
@@ -460,15 +484,24 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       })
     }
 
-    if (insertRows.length > 0) {
-      const inboundCount = insertRows.filter((r) => r.direction === 'inbound').length
-      const outboundCount = insertRows.filter((r) => r.direction === 'outbound').length
-      console.log('[refresh-email] batch insert: rows=', insertRows.length, 'inbound=', inboundCount, 'outbound=', outboundCount)
-      const { error: batchErr, count } = await service.from('inbox_messages').insert(insertRows, { count: 'exact' })
+    const seenInsertUid = new Set<number>()
+    const rowsToInsert = insertRows.filter((r) => {
+      const u = r.external_uid as number
+      if (seenInsertUid.has(u)) return false
+      seenInsertUid.add(u)
+      return true
+    })
+
+    if (rowsToInsert.length > 0) {
+      const inboundCount = rowsToInsert.filter((r) => r.direction === 'inbound').length
+      const outboundCount = rowsToInsert.filter((r) => r.direction === 'outbound').length
+      const dedupNote = insertRows.length !== rowsToInsert.length ? ` (deduped from ${insertRows.length})` : ''
+      console.log(`[refresh-email] batch insert: rows=${rowsToInsert.length}${dedupNote} inbound=${inboundCount} outbound=${outboundCount}`)
+      const { error: batchErr, count } = await service.from('inbox_messages').insert(rowsToInsert, { count: 'exact' })
       if (batchErr) {
         console.log('[refresh-email] batch insert error:', batchErr.message, 'code=', batchErr.code)
       } else {
-        messagesInserted = count ?? insertRows.length
+        messagesInserted = count ?? rowsToInsert.length
         console.log('[refresh-email] inserted', messagesInserted, 'message(s),', threadsCreated, 'new thread(s)')
       }
     }
