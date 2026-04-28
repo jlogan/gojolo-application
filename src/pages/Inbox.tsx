@@ -435,11 +435,11 @@ export default function Inbox() {
           const merged = await mergeInboxMessageCounts([thread])
           thread = merged[0] ?? null
         }
-        const prependOk =
-          !!thread
+        if (
+          thread
           && (filter !== 'all' || thread.status !== 'archived')
           && (filter !== 'assigned' || thread.status === 'open')
-        if (prependOk) {
+        ) {
           result = [thread, ...result]
           debugLog('fetchThreads', { event: 'prepended_selected_thread', threadId: sid })
         }
