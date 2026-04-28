@@ -422,11 +422,15 @@ serve(async (req) => {
                     return t > max ? t : max
                   }, 0)
                   const lastMsgAt = latestReceived > 0 ? new Date(latestReceived).toISOString() : new Date().toISOString()
-                  await service.from('inbox_threads').update({
-                    last_message_at: lastMsgAt,
-                    updated_at: lastMsgAt,
-                    ...(bt.imap_account_id == null ? { imap_account_id: acc.id } : {}),
-                  }).eq('id', backfillThreadId)
+                  const { error: touchBfErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+                    p_thread_id: backfillThreadId,
+                    p_last_message_at: lastMsgAt,
+                    p_is_inbound: backfillInbound > 0,
+                  })
+                  if (touchBfErr) console.log('[imap-sync] backfill touch_inbox_thread_on_new_message', touchBfErr.message)
+                  if (bt.imap_account_id == null) {
+                    await service.from('inbox_threads').update({ imap_account_id: acc.id }).eq('id', backfillThreadId)
+                  }
                 }
               } else {
                 console.log('[imap-sync] backfill found no matching messages in range', backfillRange)
@@ -635,6 +639,8 @@ serve(async (req) => {
           const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
           if (normSubject) threadId = subjectThreadMap.get(normSubject)
         }
+        const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+
         if (!threadId) {
           const { data: newThread, error: threadErr } = await service.from('inbox_threads')
             .insert({ org_id: acc.org_id, channel: 'email', status: 'open', subject: p.subject || '(No subject)', last_message_at: p.date.toISOString(), imap_account_id: acc.id, from_address: p.fromAddr })
@@ -649,6 +655,7 @@ serve(async (req) => {
           const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
             p_thread_id: threadId,
             p_last_message_at: p.date.toISOString(),
+            p_is_inbound: direction === 'inbound',
           })
           if (touchErr) console.log('[imap-sync] touch_inbox_thread_on_new_message', threadId, touchErr.message)
         }
@@ -656,7 +663,6 @@ serve(async (req) => {
         // Track for future reference lookups within this batch
         if (p.messageId) refMap.set(p.messageId, threadId)
 
-        const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
         // Skip outbound if we already have it from inbox-send-reply (app insert has no external_uid)
         if (direction === 'outbound' && threadId) {
           const cutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
@@ -674,6 +680,12 @@ serve(async (req) => {
             await service.from('inbox_messages')
               .update({ external_id: p.externalId, external_uid: p.uid })
               .eq('id', existingId)
+            const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+              p_thread_id: threadId,
+              p_last_message_at: p.date.toISOString(),
+              p_is_inbound: false,
+            })
+            if (touchDedupErr) console.log('[imap-sync] touch_inbox_thread_on_new_message (outbound dedup)', threadId, touchDedupErr.message)
             continue
           }
         }

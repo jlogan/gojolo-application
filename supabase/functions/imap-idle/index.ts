@@ -219,6 +219,7 @@ Deno.serve(async (req: Request) => {
             const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
               p_thread_id: threadId,
               p_last_message_at: date.toISOString(),
+              p_is_inbound: true,
             })
             if (touchErr) console.log('[imap-idle] touch_inbox_thread_on_new_message', threadId, touchErr.message)
           }

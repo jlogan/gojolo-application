@@ -376,7 +376,7 @@ export default function Inbox() {
           .select(INBOX_THREAD_LIST_SELECT)
           .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
         if (filter === 'inbox') q = q.eq('status', 'open')
-        else if (filter === 'assigned') q = q.in('id', assignedTids!)
+        else if (filter === 'assigned') q = q.in('id', assignedTids!).eq('status', 'open')
         else if (filter === 'closed') q = q.eq('status', 'closed')
         else if (filter === 'trash') q = q.eq('status', 'archived')
         else if (filter === 'all') q = q.neq('status', 'archived')
@@ -427,7 +427,11 @@ export default function Inbox() {
           const merged = await mergeInboxMessageCounts([thread])
           thread = merged[0] ?? null
         }
-        if (thread && (filter !== 'all' || thread.status !== 'archived')) {
+        const prependOk =
+          !!thread
+          && (filter !== 'all' || thread.status !== 'archived')
+          && (filter !== 'assigned' || thread.status === 'open')
+        if (prependOk) {
           result = [thread, ...result]
           debugLog('fetchThreads', { event: 'prepended_selected_thread', threadId: sid })
         }
@@ -816,7 +820,8 @@ export default function Inbox() {
     if (filter === 'all') return t.status !== 'archived'
     if (filter === 'closed') return t.status === 'closed'
     if (filter === 'inbox') return t.status === 'open'
-    return true // assigned - fetchThreads already filtered
+    if (filter === 'assigned') return t.status === 'open'
+    return true
   }
 
   // Filtered threads by search; include selectedThreadFallback when not in list so it can be highlighted in sidebar

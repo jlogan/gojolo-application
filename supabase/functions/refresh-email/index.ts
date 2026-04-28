@@ -409,6 +409,9 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
         if (normSubject) threadId = subjectThreadMap.get(normSubject)
       }
+
+      const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+
       if (!threadId) {
         const { data: newThread, error: threadErr } = await service
           .from('inbox_threads')
@@ -435,6 +438,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
           p_thread_id: threadId!,
           p_last_message_at: p.date.toISOString(),
+          p_is_inbound: direction === 'inbound',
         })
         if (touchErr) console.log('[refresh-email] touch_inbox_thread_on_new_message', threadId, touchErr.message)
       }
@@ -444,7 +448,6 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       const tid = threadId as string
       if (p.messageId) refMap.set(p.messageId, tid)
 
-      const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
       // Skip outbound insert if we already have it from inbox-send-reply (app insert has no external_uid)
       if (direction === 'outbound') {
         const cutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
@@ -464,6 +467,12 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
             .from('inbox_messages')
             .update({ external_id: p.externalId, external_uid: p.uid })
             .eq('id', existingId)
+          const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+            p_thread_id: tid,
+            p_last_message_at: p.date.toISOString(),
+            p_is_inbound: false,
+          })
+          if (touchDedupErr) console.log('[refresh-email] touch_inbox_thread_on_new_message (outbound dedup)', touchDedupErr.message)
           continue
         }
       }
