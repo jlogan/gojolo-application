@@ -4,7 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
-  Inbox as InboxIcon, Mail, MessageSquare, Check, Archive,
+  Inbox as InboxIcon, Mail, MessageSquare, Check, Archive, ArchiveRestore,
   List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
   RotateCcw, Send, RefreshCw, Paperclip, Download,
   Search, User, Link2,
@@ -1007,7 +1007,7 @@ export default function Inbox() {
     toast(`Assigned ${rows.length} thread(s) to ${getUserName(uid)}`)
   }
 
-  const handleUpdateStatus = async (status: string) => {
+  const handleUpdateStatus = async (status: string, opts?: { restoreFromTrash?: boolean }) => {
     if (!selectedThreadId) return
     setActionLoading(true)
     await supabase.from('inbox_threads').update({ status, updated_at: new Date().toISOString() }).eq('id', selectedThreadId)
@@ -1033,7 +1033,7 @@ export default function Inbox() {
       setSelectedThreadId(nextId)
       toast(status === 'archived' ? 'Moved to trash' : 'Thread closed')
     } else {
-      toast('Thread re-opened')
+      toast(opts?.restoreFromTrash ? 'Restored from trash' : 'Thread re-opened')
     }
   }
 
@@ -1766,8 +1766,12 @@ export default function Inbox() {
                   <button type="button" onClick={() => openReply('forward')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Forward className="w-3 h-3" /> Fwd</button>
                   <div className="w-px h-4 bg-border mx-0.5" />
                   {selectedThread.status === 'open' && <button type="button" onClick={() => handleUpdateStatus('closed')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><Check className="w-3 h-3" /> Close</button>}
-                  {(selectedThread.status === 'closed' || selectedThread.status === 'archived') && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
-                  {selectedThread.status !== 'archived' && <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>}
+                  {selectedThread.status === 'closed' && <button type="button" onClick={() => handleUpdateStatus('open')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"><RotateCcw className="w-3 h-3" /> Re-open</button>}
+                  {selectedThread.status === 'archived' ? (
+                    <button type="button" onClick={() => handleUpdateStatus('open', { restoreFromTrash: true })} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-green-500/10 text-green-400 hover:bg-green-500/20 disabled:opacity-50"><ArchiveRestore className="w-3 h-3" /> Restore</button>
+                  ) : (
+                    <button type="button" onClick={() => handleUpdateStatus('archived')} disabled={actionLoading} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"><Archive className="w-3 h-3" /> Trash</button>
+                  )}
                   <div className="w-px h-4 bg-border mx-0.5" />
                   <div className="relative">
                     <button type="button" onClick={() => { setShowAssignPopover(v => !v); setSelectedAssignUserIds(new Set()) }} disabled={actionLoading}
