@@ -303,6 +303,11 @@ export default function Inbox() {
   const [selectedAssignUserIds, setSelectedAssignUserIds] = useState<Set<string>>(new Set())
 
   const userId = user?.id ?? null
+  const threadMatchesAssignmentScope = useCallback((thread: InboxThread) => {
+    if (!userId) return false
+    const assigns = Array.isArray(thread.inbox_thread_assignments) ? thread.inbox_thread_assignments : []
+    return assigns.length === 0 || assigns.some((a) => a.user_id === userId)
+  }, [userId])
   const timelineEndRef = useRef<HTMLDivElement>(null)
   const replyFileRef = useRef<HTMLInputElement>(null)
   const sendingReplyRef = useRef(false)
@@ -417,8 +422,8 @@ export default function Inbox() {
       if (filter === 'inbox' || filter === 'closed') {
         const before = result.length
         result = result.filter(t => {
+          const show = threadMatchesAssignmentScope(t)
           const assigns = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []
-          const show = assigns.length === 0 || assigns.some(a => a.user_id === userId)
           if (!show) debugLog('fetchThreads', { event: 'HIDDEN_assignment_filter', threadId: t.id, subject: t.subject, assigns, userId, filter })
           return show
         })
@@ -437,8 +442,11 @@ export default function Inbox() {
         }
         if (
           thread
+          && (filter !== 'inbox' || (thread.status === 'open' && threadMatchesAssignmentScope(thread)))
+          && (filter !== 'closed' || (thread.status === 'closed' && threadMatchesAssignmentScope(thread)))
           && (filter !== 'all' || thread.status !== 'archived')
           && (filter !== 'assigned' || thread.status === 'open')
+          && (filter !== 'trash' || thread.status === 'archived')
         ) {
           result = [thread, ...result]
           debugLog('fetchThreads', { event: 'prepended_selected_thread', threadId: sid })
@@ -456,7 +464,7 @@ export default function Inbox() {
       if (fetchFilterRef.current === filter && !initialLoadDone.current) setThreads([])
     }
     setLoading(false)
-  }, [currentOrg?.id, filter, userId, debugLog])
+  }, [currentOrg?.id, filter, userId, debugLog, threadMatchesAssignmentScope])
 
   const fetchAttachments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
@@ -1286,12 +1294,28 @@ export default function Inbox() {
         .eq('org_id', currentOrg.id)
     }
 
+    const sentThreadId = selectedThreadId
+    const shouldAdvanceSelection = !!sentThreadId && replyMode !== 'compose' && (filter === 'inbox' || filter === 'assigned')
+    if (sentThreadId && replyMode !== 'compose') {
+      setThreads(prev => prev.map(t => t.id === sentThreadId ? { ...t, status: 'closed' } : t))
+    }
+
+    if (shouldAdvanceSelection && sentThreadId) {
+      const visible = threads
+      const idx = visible.findIndex(t => t.id === sentThreadId)
+      const next = idx >= 0
+        ? (visible[idx + 1] ?? visible[idx - 1] ?? null)
+        : null
+      setSelectedThreadId(next?.id ?? null)
+    }
+
     setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
-    console.log('[Inbox] handleSendReply:', sendId, 'success, fetching threads and messages')
-    toast('Sent'); fetchThreads()
-    if (selectedThreadId) {
-      fetchMessages(selectedThreadId)
-      fetchAttachments(selectedThreadId)
+    console.log('[Inbox] handleSendReply:', sendId, 'success, refreshing thread list')
+    toast('Sent')
+    await fetchThreads()
+    if (sentThreadId && !shouldAdvanceSelection) {
+      fetchMessages(sentThreadId)
+      fetchAttachments(sentThreadId)
     }
   }
 
