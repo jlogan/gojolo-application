@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0'
 import { corsHeaders } from '../_shared/cors.ts'
+import { logThreadArchiveDebug } from '../_shared/inboxThreadArchiveLog.ts'
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -441,6 +442,21 @@ async function executeTool(name: string, args: Record<string, string>, orgId: st
     }
     case 'update_thread_status': {
       const { error } = await admin.from('inbox_threads').update({ status: args.status, updated_at: new Date().toISOString() }).eq('id', args.thread_id).eq('org_id', orgId)
+      if (!error && args.status === 'archived') {
+        await logThreadArchiveDebug(
+          admin,
+          {
+            thread_id: args.thread_id,
+            org_id: orgId,
+            payload: {
+              source: 'ai_chat',
+              reason: 'update_thread_status_tool',
+              requesting_user_id: userId,
+            },
+          },
+          '[ai-chat]',
+        )
+      }
       return error ? { error: error.message } : { success: true, message: `Thread ${args.status === 'open' ? 're-opened' : args.status}` }
     }
     case 'add_thread_note': {

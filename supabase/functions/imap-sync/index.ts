@@ -6,6 +6,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
+import { logThreadArchiveDebug } from '../_shared/inboxThreadArchiveLog.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -595,16 +596,18 @@ serve(async (req) => {
       const refMap = new Map<string, string>()
       if (allRefIds.length > 0) {
         const { data: refRows } = await service.from('inbox_messages')
-          .select('external_id, thread_id').eq('imap_account_id', acc.id)
+          .select('external_id, thread_id, inbox_threads(imap_account_id)').eq('imap_account_id', acc.id)
           .in('external_id', allRefIds.slice(0, 200))
-        for (const r of (refRows ?? []) as { external_id: string; thread_id: string }[]) {
+        for (const r of (refRows ?? []) as { external_id: string; thread_id: string; inbox_threads: { imap_account_id: string | null } | null }[]) {
+          const threadAccId = r.inbox_threads?.imap_account_id
+          if (threadAccId != null && threadAccId !== acc.id) continue
           refMap.set(r.external_id, r.thread_id)
         }
       }
 
-      // Batch pre-fetch: recent threads for subject matching (1 query)
+      // Batch pre-fetch: recent threads for subject matching (same IMAP account only — avoid cross-mailbox collisions)
       const { data: recentThreads } = await service.from('inbox_threads')
-        .select('id, subject').eq('org_id', acc.org_id).eq('channel', 'email')
+        .select('id, subject').eq('org_id', acc.org_id).eq('channel', 'email').eq('imap_account_id', acc.id)
         .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
         .order('last_message_at', { ascending: false }).limit(100)
       const subjectThreadMap = new Map<string, string>()
@@ -833,6 +836,21 @@ serve(async (req) => {
               const check = await client.fetchAll(String(uid), { uid: true }, { uid: true })
               if (check.length === 0) {
                 await service.from('inbox_threads').update({ status: 'archived', updated_at: new Date().toISOString() }).eq('id', t.id)
+                await logThreadArchiveDebug(
+                  service,
+                  {
+                    thread_id: t.id,
+                    org_id: acc.org_id,
+                    payload: {
+                      source: 'imap_sync',
+                      reason: 'imap_uid_missing_from_mailbox',
+                      imap_account_id: acc.id,
+                      mailbox: getMailboxPath(acc.host),
+                      external_uid_checked: uid,
+                    },
+                  },
+                  '[imap-sync]',
+                )
               }
             } catch { /* UID might be out of range — skip */ }
           }
@@ -878,10 +896,27 @@ serve(async (req) => {
                   .limit(1)
               : { data: null }
             if (existingByMsgId?.[0]?.thread_id) {
+              const tid = existingByMsgId[0].thread_id as string
               await service
                 .from('inbox_threads')
                 .update({ status: 'archived', updated_at: date.toISOString(), last_message_at: date.toISOString() })
-                .eq('id', existingByMsgId[0].thread_id)
+                .eq('id', tid)
+              await logThreadArchiveDebug(
+                service,
+                {
+                  thread_id: tid,
+                  org_id: acc.org_id,
+                  payload: {
+                    source: 'imap_sync',
+                    reason: 'imap_trash_message_id_match',
+                    imap_account_id: acc.id,
+                    trash_mailbox: trashPath,
+                    trash_imap_uid: uid,
+                    message_id: messageId,
+                  },
+                },
+                '[imap-sync]',
+              )
               continue
             }
             const { data: existingTrash } = await service
@@ -922,6 +957,22 @@ serve(async (req) => {
             if (!msgErr) {
               totalThreads++
               totalMessages++
+              await logThreadArchiveDebug(
+                service,
+                {
+                  thread_id: newThread.id,
+                  org_id: acc.org_id,
+                  payload: {
+                    source: 'imap_sync',
+                    reason: 'new_archived_thread_from_trash_folder',
+                    imap_account_id: acc.id,
+                    trash_mailbox: trashPath,
+                    trash_imap_uid: uid,
+                    external_id: messageId ?? externalId,
+                  },
+                },
+                '[imap-sync]',
+              )
             }
           }
           await service
