@@ -242,7 +242,15 @@ Deno.serve(async (req: Request) => {
       const { error: attErr } = await service.from('inbox_attachments').insert(rows)
       if (attErr) return jsonRes({ error: 'Email sent, but failed to save attachments metadata' })
     }
-    await service.from('inbox_threads').update({ last_message_at: now, updated_at: now }).eq('id', saveThreadId)
+    const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+      p_thread_id: saveThreadId,
+      p_last_message_at: now,
+      p_is_inbound: false,
+    })
+    if (touchErr) {
+      console.log(`[inbox-send-reply] ${reqId} touch_inbox_thread_on_new_message failed:`, touchErr.message)
+      return jsonRes({ error: 'Failed to update thread' })
+    }
   }
 
   console.log(`[inbox-send-reply] ${reqId} success: threadId=${saveThreadId}`)

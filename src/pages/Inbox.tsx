@@ -413,16 +413,16 @@ export default function Inbox() {
         debugLog('fetchThreads', { event: 'orphan_threads_hidden', before: beforeOrphans, after: result.length })
       }
       debugLog('fetchThreads', { event: 'threads_raw', count: result.length, error: threadsErr?.message, threads: result.map(t => ({ id: t.id, subject: t.subject?.slice(0, 30), status: t.status, assigns: (t.inbox_thread_assignments ?? []).map((a: { user_id: string }) => a.user_id) })) })
-      // For inbox filter: only show threads assigned to me or unassigned
-      if (filter === 'inbox') {
+      // For inbox/closed filters: only show threads assigned to me or unassigned
+      if (filter === 'inbox' || filter === 'closed') {
         const before = result.length
         result = result.filter(t => {
           const assigns = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []
           const show = assigns.length === 0 || assigns.some(a => a.user_id === userId)
-          if (!show) debugLog('fetchThreads', { event: 'HIDDEN_inbox_filter', threadId: t.id, subject: t.subject, assigns, userId })
+          if (!show) debugLog('fetchThreads', { event: 'HIDDEN_assignment_filter', threadId: t.id, subject: t.subject, assigns, userId, filter })
           return show
         })
-        if (before !== result.length) debugLog('fetchThreads', { event: 'inbox_filter_applied', before, after: result.length })
+        if (before !== result.length) debugLog('fetchThreads', { event: 'assignment_filter_applied', before, after: result.length, filter })
       }
       // Ensure selected thread is always in list (may be missing when filter='all' returns top 50 and our thread is older)
       const sid = selectedThreadIdRef.current
