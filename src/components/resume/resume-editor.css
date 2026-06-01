@@ -1,0 +1,138 @@
+/* Toolbar + page share the same column width (feels like one control) */
+.resume-editor-sheet {
+  width: 100%;
+  max-width: 210mm;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* A4 page shell — Jay Logan–style résumé: black/gray type, uppercase section rules */
+.resume-a4-page {
+  width: 100%;
+  min-height: 260mm;
+  margin: 0;
+  background: #ffffff;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+  color: #1a1a1a;
+}
+
+.resume-a4-page .ProseMirror {
+  outline: none;
+  padding: 14mm 16mm 18mm;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.resume-a4-page .ProseMirror h1.resume-name,
+.resume-a4-page .ProseMirror h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.15;
+  margin: 0 0 0.2rem;
+  letter-spacing: -0.02em;
+  color: #0a0a0a;
+}
+
+.resume-a4-page .ProseMirror .resume-headline {
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.35;
+  margin: 0 0 0.35rem;
+  color: #2d2d2d;
+}
+
+.resume-a4-page .ProseMirror .resume-contact-line:last-of-type {
+  margin-bottom: 0.35rem;
+}
+
+.resume-a4-page .ProseMirror .resume-contact-line {
+  margin: 0 0 0.15rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: #3f3f3f;
+}
+
+.resume-a4-page .ProseMirror h2 {
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #111111;
+  margin: 1.65rem 0 0.55rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid #c8c8c8;
+}
+
+.resume-a4-page .ProseMirror h2:first-of-type {
+  margin-top: 1rem;
+}
+
+.resume-a4-page .ProseMirror p {
+  margin: 0 0 0.4rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: #1a1a1a;
+}
+
+/* First job under “Professional experience” */
+.resume-a4-page .ProseMirror h2 + p.resume-job-title {
+  margin: 0.85rem 0 0.1rem;
+}
+
+/* Extra space before each subsequent job */
+.resume-a4-page .ProseMirror ul + p.resume-job-title {
+  margin-top: 1.35rem;
+}
+
+.resume-a4-page .ProseMirror .resume-job-title {
+  margin: 0.55rem 0 0.1rem;
+}
+
+.resume-a4-page .ProseMirror .resume-job-title strong {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #0a0a0a;
+}
+
+.resume-a4-page .ProseMirror .resume-job-meta {
+  margin: 0 0 0.25rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #404040;
+}
+
+.resume-a4-page .ProseMirror hr {
+  border: none;
+  border-top: 1px solid #d4d4d4;
+  margin: 0.5rem 0;
+}
+
+.resume-a4-page .ProseMirror ul,
+.resume-a4-page .ProseMirror ol {
+  margin: 0.2rem 0 0.65rem 1rem;
+  padding: 0;
+  font-size: 0.8125rem;
+  line-height: 1.42;
+  color: #1a1a1a;
+}
+
+.resume-a4-page .ProseMirror li {
+  margin-bottom: 0.22rem;
+}
+
+.resume-a4-page .ProseMirror li p {
+  margin: 0;
+}
+
+/* Inline images (e.g. pasted) — keep small if present */
+.resume-a4-page .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+}
+
+.resume-a4-page .ProseMirror strong {
+  font-weight: 600;
+}
+
+.resume-a4-page .ProseMirror em {
+  font-style: italic;
+}

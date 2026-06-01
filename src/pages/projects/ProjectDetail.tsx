@@ -5,9 +5,9 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   FolderKanban, Pencil, ArrowLeft, Plus, Trash2, Users, Building2, User,
-  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash,
+  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign,
 } from 'lucide-react'
-import type { Project } from './ProjectsList'
+import { type Project, StatusBadge } from './ProjectsList'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -278,6 +278,7 @@ export default function ProjectDetail() {
             <div>
               <h1 className="text-xl font-semibold text-white">{project.name}</h1>
               {project.description && <p className="text-gray-400 text-sm mt-0.5">{project.description}</p>}
+              <div className="mt-2"><StatusBadge status={project.status} /></div>
             </div>
           </div>
           <button type="button" onClick={() => navigate(`/projects/${project.id}/edit`)}
@@ -406,6 +407,35 @@ export default function ProjectDetail() {
 
         {/* Sidebar (1/3) */}
         <div className="space-y-6">
+          {/* Billing Summary */}
+          <section className="rounded-lg border border-border bg-surface-elevated p-4">
+            <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3"><DollarSign className="w-4 h-4" /> Billing</h2>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Type</span>
+                <span className="text-white">{project.billing_type === 'fixed' ? 'Fixed Rate' : project.billing_type === 'project_hours' ? 'Project Hours' : project.billing_type === 'task_hours' ? 'Task Hours' : 'Fixed Rate'}</span>
+              </div>
+              {project.billing_type === 'fixed' && project.project_cost != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Project Cost</span>
+                  <span className="text-white">${Number(project.project_cost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+              )}
+              {project.billing_type !== 'fixed' && project.hourly_rate != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Hourly Rate</span>
+                  <span className="text-white">${Number(project.hourly_rate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/hr</span>
+                </div>
+              )}
+              {project.estimated_hours != null && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Estimated Hours</span>
+                  <span className="text-white">{project.estimated_hours}h</span>
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* Team */}
           <section className="rounded-lg border border-border bg-surface-elevated p-4">
             <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3"><Users className="w-4 h-4" /> Team ({members.length})</h2>

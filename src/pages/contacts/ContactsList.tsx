@@ -8,6 +8,7 @@ export type Contact = {
   id: string; org_id: string; company_id: string | null; type: string
   name: string; email: string | null; phone: string | null
   meta: Record<string, unknown> | null; created_at: string
+  sourced_from_lead?: boolean | null
 }
 
 type Company = {
@@ -17,7 +18,10 @@ type Company = {
   industry: string | null
   meta: Record<string, unknown> | null
   created_at: string
+  sourced_from_lead?: boolean | null
 }
+
+type SourceFilter = 'all' | 'customers' | 'leads'
 
 function getInitials(name: string): string {
   return name.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase()
@@ -29,24 +33,34 @@ export default function ContactsList() {
   const { currentOrg } = useOrg()
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTab = searchParams.get('tab') === 'contacts' ? 'contacts' : 'companies'
+  const sourceParam = searchParams.get('source') as SourceFilter | null
+  const sourceFilter: SourceFilter =
+    sourceParam === 'customers' || sourceParam === 'leads' ? sourceParam : 'all'
   const [contacts, setContacts] = useState<Contact[]>([])
   const [companies, setCompanies] = useState<Company[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+
+  const setSourceFilter = (next: SourceFilter) => {
+    const nextParams = new URLSearchParams(searchParams)
+    if (next === 'all') nextParams.delete('source')
+    else nextParams.set('source', next)
+    setSearchParams(nextParams)
+  }
 
   useEffect(() => {
     if (!currentOrg?.id) return
     let cancelled = false
     setLoading(true)
     supabase.from('contacts')
-      .select('id, org_id, company_id, type, name, email, phone, meta, created_at')
+      .select('id, org_id, company_id, type, name, email, phone, meta, created_at, sourced_from_lead')
       .eq('org_id', currentOrg.id).order('name')
       .then(async ({ data, error }) => {
         if (cancelled) return
         setContacts(error ? [] : (data as Contact[]) ?? [])
         const { data: companyData, error: companyError } = await supabase
           .from('companies')
-          .select('id, org_id, name, industry, meta, created_at')
+          .select('id, org_id, name, industry, meta, created_at, sourced_from_lead')
           .eq('org_id', currentOrg.id)
           .order('name')
         if (!cancelled) setCompanies(companyError ? [] : (companyData as Company[]) ?? [])
@@ -55,9 +69,15 @@ export default function ContactsList() {
     return () => { cancelled = true }
   }, [currentOrg?.id])
 
-  const filtered = search.trim()
+  const bySource = (c: Contact) => {
+    if (sourceFilter === 'all') return true
+    const leadish = c.sourced_from_lead === true || c.type === 'lead'
+    return sourceFilter === 'leads' ? leadish : !leadish
+  }
+  const filtered = (search.trim()
     ? contacts.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || c.email?.toLowerCase().includes(search.toLowerCase()))
     : contacts
+  ).filter(bySource)
 
   return (
     <div className="p-4 md:p-6" data-testid="contacts-page">
@@ -72,18 +92,42 @@ export default function ContactsList() {
       <div className="flex gap-1 mb-4 border-b border-border">
         <button
           type="button"
-          onClick={() => setSearchParams({ tab: 'companies' })}
+          onClick={() => {
+            const p = new URLSearchParams(searchParams)
+            p.set('tab', 'companies')
+            setSearchParams(p)
+          }}
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'companies' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
         >
           Companies
         </button>
         <button
           type="button"
-          onClick={() => setSearchParams({ tab: 'contacts' })}
+          onClick={() => {
+            const p = new URLSearchParams(searchParams)
+            p.set('tab', 'contacts')
+            setSearchParams(p)
+          }}
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'contacts' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}
         >
           Contacts
         </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-4">
+        <span className="text-xs text-gray-500 self-center mr-1">Show:</span>
+        {(['all', 'customers', 'leads'] as const).map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setSourceFilter(key)}
+            className={`px-3 py-1 rounded-lg text-xs font-medium border transition-colors ${
+              sourceFilter === key ? 'border-accent text-accent bg-accent/10' : 'border-border text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            {key === 'all' ? 'All' : key === 'customers' ? 'Customers' : 'Lead prospects'}
+          </button>
+        ))}
       </div>
 
       {/* Search */}
@@ -119,9 +163,14 @@ export default function ContactsList() {
         )
       ) : (
         (() => {
+          const companiesBySource = companies.filter((c) => {
+            if (sourceFilter === 'all') return true
+            const leadCo = c.sourced_from_lead === true
+            return sourceFilter === 'leads' ? leadCo : !leadCo
+          })
           const filteredCompanies = search.trim()
-            ? companies.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || (c.industry ?? '').toLowerCase().includes(search.toLowerCase()))
-            : companies
+            ? companiesBySource.filter(c => c.name.toLowerCase().includes(search.toLowerCase()) || (c.industry ?? '').toLowerCase().includes(search.toLowerCase()))
+            : companiesBySource
           if (filteredCompanies.length === 0) {
             return (
               <div className="rounded-lg border border-border bg-surface-muted/50 p-8 text-center text-gray-400">

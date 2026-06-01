@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
+import ResumeTemplatesPage from '@/pages/leads/ResumeTemplatesPage'
 import {
   ArrowLeft,
   Mail,
@@ -17,6 +18,8 @@ import {
   Trash2,
   Check,
   Hash,
+  FileText,
+  CreditCard,
 } from 'lucide-react'
 
 type Role = { id: string; name: string }
@@ -69,13 +72,15 @@ type SlackConfig = {
   notify_on_mention: boolean; notify_on_thread_close: boolean
   notify_on_task_created?: boolean; notify_on_task_status_change?: boolean; notify_on_task_comment?: boolean
 }
-type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'settings'
+type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'resume_templates' | 'payments' | 'settings'
 
 const SECTIONS: { id: AdminSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'users', label: 'Users & Roles', icon: Users },
   { id: 'imap', label: 'Email accounts', icon: Inbox },
   { id: 'slack', label: 'Slack', icon: Hash },
   { id: 'phone_numbers', label: 'Phone numbers', icon: Phone },
+  { id: 'resume_templates', label: 'Resume Templates', icon: FileText },
+  { id: 'payments', label: 'Payments', icon: CreditCard },
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
@@ -83,13 +88,16 @@ const ALL_PERMISSIONS = [
   { module: 'Projects', perms: ['projects.view', 'projects.create', 'projects.update', 'projects.delete'] },
   { module: 'Contacts', perms: ['contacts.view', 'contacts.create', 'contacts.update', 'contacts.delete'] },
   { module: 'Companies', perms: ['companies.view', 'companies.create', 'companies.update', 'companies.delete'] },
+  { module: 'Leads', perms: ['leads.view', 'leads.create', 'leads.update', 'leads.delete'] },
   { module: 'Inbox', perms: ['inbox.view', 'inbox.message', 'inbox.delete'] },
   { module: 'Timesheets', perms: ['timesheets.view', 'timesheets.billable_status'] },
 ]
 
 export default function Admin() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const { isPlatformAdmin, currentOrg, isOrgAdmin } = useOrg()
-  const [section, setSection] = useState<AdminSection>('users')
+  const [section, setSection] = useState<AdminSection>(location.pathname.includes('/admin/resume-templates') ? 'resume_templates' : 'users')
   const [roles, setRoles] = useState<Role[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
   const [invitations, setInvitations] = useState<Invitation[]>([])
@@ -161,9 +169,37 @@ export default function Admin() {
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
+  // Payments (Stripe)
+  const [stripePublishableKey, setStripePublishableKey] = useState('')
+  const [stripeSecretKey, setStripeSecretKey] = useState('')
+  const [stripeSaving, setStripeSaving] = useState(false)
+  const [stripeMessage, setStripeMessage] = useState<string | null>(null)
+  const [stripeTestLoading, setStripeTestLoading] = useState(false)
+  const [stripeTestMessage, setStripeTestMessage] = useState<string | null>(null)
+
   useEffect(() => {
     if (section === 'imap') setImapView('list')
   }, [section])
+
+  // Load Stripe keys when payments section is selected
+  useEffect(() => {
+    if (section !== 'payments' || !currentOrg?.id) return
+    const settings = currentOrg.settings as Record<string, unknown> | null
+    setStripePublishableKey((settings?.stripe_publishable_key as string) ?? '')
+    setStripeSecretKey((settings?.stripe_secret_key as string) ?? '')
+    setStripeMessage(null)
+    setStripeTestMessage(null)
+  }, [section, currentOrg?.id, currentOrg?.settings])
+
+  useEffect(() => {
+    if (location.pathname.includes('/admin/resume-templates')) {
+      setSection('resume_templates')
+      return
+    }
+    if (location.pathname === '/admin') {
+      setSection((prev) => (prev === 'resume_templates' ? 'users' : prev))
+    }
+  }, [location.pathname])
 
   const loadSlackUsersAndMappings = useCallback(async () => {
     if (!currentOrg?.id) return
@@ -783,7 +819,15 @@ export default function Admin() {
               <button
                 key={id}
                 type="button"
-                onClick={() => setSection(id)}
+                onClick={() => {
+                  if (id === 'resume_templates') {
+                    setSection('resume_templates')
+                    navigate('/admin/resume-templates')
+                    return
+                  }
+                  setSection(id)
+                  if (location.pathname !== '/admin') navigate('/admin')
+                }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                   section === id
                     ? 'bg-surface-muted text-white'
@@ -801,7 +845,7 @@ export default function Admin() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto min-w-0">
-        <div className="p-4 md:p-6 max-w-3xl">
+        <div className={`p-4 md:p-6 ${section === 'resume_templates' ? 'max-w-6xl' : 'max-w-3xl'}`}>
           {currentOrg && (
             <p className="text-sm text-gray-500 mb-4">
               Managing: <span className="text-gray-300 font-medium">{currentOrg.name}</span>
@@ -1689,6 +1733,114 @@ export default function Admin() {
                 {slackSaving ? 'Saving…' : 'Save Slack Configuration'}
                 </button>
               )}
+            </>
+          )}
+
+          {section === 'resume_templates' && (
+            <ResumeTemplatesPage embeddedInAdmin />
+          )}
+
+          {section === 'payments' && (
+            <>
+              <h2 className="text-xl font-semibold text-white mb-2">Payment Configuration</h2>
+              <p className="text-gray-400 text-sm mb-6">
+                Configure Stripe keys for your organization to accept payments on invoices. Keys are stored securely per organization.
+              </p>
+              <div className="rounded-lg border border-border bg-surface-elevated p-6 max-w-lg space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Stripe Publishable Key</label>
+                  <input
+                    type="text"
+                    value={stripePublishableKey}
+                    onChange={e => setStripePublishableKey(e.target.value)}
+                    placeholder="pk_live_... or pk_test_..."
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Stripe Secret Key</label>
+                  <input
+                    type="password"
+                    value={stripeSecretKey}
+                    onChange={e => setStripeSecretKey(e.target.value)}
+                    placeholder="sk_live_... or sk_test_..."
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Your secret key is stored in your organization settings. Never share it publicly.</p>
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={stripeSaving}
+                    onClick={async () => {
+                      if (!currentOrg?.id) return
+                      setStripeSaving(true)
+                      setStripeMessage(null)
+                      const existingSettings = (currentOrg.settings as Record<string, unknown>) ?? {}
+                      const newSettings = {
+                        ...existingSettings,
+                        stripe_publishable_key: stripePublishableKey.trim() || null,
+                        stripe_secret_key: stripeSecretKey.trim() || null,
+                      }
+                      const { error } = await supabase
+                        .from('organizations')
+                        .update({ settings: newSettings })
+                        .eq('id', currentOrg.id)
+                      setStripeSaving(false)
+                      if (error) {
+                        setStripeMessage(error.message)
+                      } else {
+                        setStripeMessage('Stripe keys saved.')
+                        setTimeout(() => setStripeMessage(null), 3000)
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                  >
+                    {stripeSaving ? 'Saving…' : 'Save Keys'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={stripeTestLoading || !stripeSecretKey.trim()}
+                    onClick={async () => {
+                      setStripeTestLoading(true)
+                      setStripeTestMessage(null)
+                      try {
+                        const res = await fetch('https://api.stripe.com/v1/balance', {
+                          headers: {
+                            'Authorization': `Bearer ${stripeSecretKey.trim()}`,
+                          },
+                        })
+                        const data = await res.json()
+                        if (res.ok && data.object === 'balance') {
+                          setStripeTestMessage('✓ Connection successful — Stripe API key is valid.')
+                        } else {
+                          setStripeTestMessage(`✗ ${data.error?.message || 'Invalid API key.'}`)
+                        }
+                      } catch (err) {
+                        setStripeTestMessage(`✗ ${(err as Error).message}`)
+                      } finally {
+                        setStripeTestLoading(false)
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg border border-border text-gray-300 text-sm font-medium hover:bg-surface-muted disabled:opacity-50"
+                  >
+                    {stripeTestLoading ? 'Testing…' : 'Test Connection'}
+                  </button>
+                </div>
+
+                {stripeMessage && (
+                  <p className={`text-sm ${stripeMessage.includes('saved') ? 'text-accent' : 'text-red-400'}`}>
+                    {stripeMessage}
+                  </p>
+                )}
+                {stripeTestMessage && (
+                  <p className={`text-sm ${stripeTestMessage.startsWith('✓') ? 'text-accent' : 'text-red-400'}`}>
+                    {stripeTestMessage}
+                  </p>
+                )}
+              </div>
             </>
           )}
 

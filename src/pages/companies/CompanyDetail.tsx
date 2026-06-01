@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { Users, Pencil, ArrowLeft, X } from 'lucide-react'
+import { Users, Pencil, ArrowLeft, X, Trash2 } from 'lucide-react'
 import type { Company } from './CompaniesList'
 
 type ContactRow = { id: string; name: string; email: string | null; phone: string | null }
@@ -22,6 +22,8 @@ export default function CompanyDetail() {
   const [searchResults, setSearchResults] = useState<SearchContact[]>([])
   const [showSearch, setShowSearch] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchContainerRef = useRef<HTMLDivElement>(null)
 
@@ -136,6 +138,18 @@ export default function CompanyDetail() {
     fetchContacts()
   }
 
+  const handleDeleteCompany = async () => {
+    if (!id || !currentOrg?.id || !company) return
+    setDeleting(true)
+    const { error } = await supabase.from('companies').delete().eq('id', id).eq('org_id', currentOrg.id)
+    setDeleting(false)
+    if (error) {
+      alert(`Could not delete company: ${error.message}`)
+      return
+    }
+    navigate('/contacts?tab=companies')
+  }
+
   if (loading) {
     return (
       <div className="p-4 md:p-6" data-testid="company-detail-loading">
@@ -173,15 +187,26 @@ export default function CompanyDetail() {
               <p className="text-surface-muted text-sm mt-0.5">{company.industry}</p>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => navigate(`/companies/${company.id}/edit`)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-surface-muted"
-            data-testid="company-edit"
-          >
-            <Pencil className="w-4 h-4" />
-            Edit
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate(`/companies/${company.id}/edit`)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border hover:bg-surface-muted"
+              data-testid="company-edit"
+            >
+              <Pencil className="w-4 h-4" />
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={() => setDeleteOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-red-500/40 text-red-400 hover:bg-red-500/10"
+              data-testid="company-delete"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete
+            </button>
+          </div>
         </div>
       </div>
 
@@ -301,6 +326,42 @@ export default function CompanyDetail() {
           </div>
         </form>
       </section>
+
+      {deleteOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-company-title"
+        >
+          <div className="bg-surface-elevated border border-border rounded-xl max-w-md w-full p-5 shadow-xl">
+            <h2 id="delete-company-title" className="text-lg font-semibold text-white">
+              Delete this company?
+            </h2>
+            <p className="text-sm text-gray-400 mt-2">
+              This removes the company record. Contacts stay in your org but are unlinked from this company. Leads linked to this company lose the company association. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2 mt-6">
+              <button
+                type="button"
+                onClick={() => setDeleteOpen(false)}
+                disabled={deleting}
+                className="px-4 py-2 rounded-lg border border-border text-gray-200 hover:bg-surface-muted text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteCompany}
+                disabled={deleting}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50"
+              >
+                {deleting ? 'Deleting…' : 'Delete company'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

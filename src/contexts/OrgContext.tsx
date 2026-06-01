@@ -22,6 +22,8 @@ type OrgState = {
   loading: boolean
   isPlatformAdmin: boolean | null
   isOrgAdmin: boolean
+  isVendor: boolean
+  currentRole: string | null
   setCurrentOrg: (org: Organization | null) => void
   refetch: () => Promise<void>
   allOrganizations: Organization[]
@@ -163,6 +165,8 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
 
   const currentMembership = currentOrg ? memberships.find((m) => m.org.id === currentOrg.id) : null
   const isOrgAdmin = currentMembership?.role_name === 'admin' || isPlatformAdmin === true
+  const isVendor = currentMembership?.role_name === 'vendor'
+  const currentRole = currentMembership?.role_name ?? null
 
   const value: OrgState = {
     memberships,
@@ -170,6 +174,8 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
     loading,
     isPlatformAdmin,
     isOrgAdmin,
+    isVendor,
+    currentRole,
     setCurrentOrg,
     refetch: fetchOrgs,
     allOrganizations,

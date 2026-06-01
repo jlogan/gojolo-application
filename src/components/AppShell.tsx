@@ -16,6 +16,8 @@ import {
   FolderKanban,
   Plus,
   Clock,
+  Target,
+  FileText,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -36,6 +38,13 @@ import ProjectDetail from '@/pages/projects/ProjectDetail'
 import ProjectForm from '@/pages/projects/ProjectForm'
 import TaskDetail from '@/pages/projects/TaskDetail'
 import Timesheets from '@/pages/Timesheets'
+import LeadsList from '@/pages/leads/LeadsList'
+import LeadForm from '@/pages/leads/LeadForm'
+import LeadDetail from '@/pages/leads/LeadDetail'
+import InvoicesList from '@/pages/invoices/InvoicesList'
+import InvoiceForm from '@/pages/invoices/InvoiceForm'
+import InvoiceDetail from '@/pages/invoices/InvoiceDetail'
+// Expenses module hidden for now — tables remain in DB for future use
 
 type AppMode = 'software' | 'chat'
 
@@ -43,13 +52,21 @@ const NAV = [
   { to: '/', label: 'Home', icon: LayoutGrid, testId: 'nav-home' },
   { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
+  { to: '/leads', label: 'Leads', icon: Target, testId: 'nav-leads' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
+  { to: '/invoices', label: 'Invoices', icon: FileText, testId: 'nav-invoices' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
+]
+
+const VENDOR_NAV = [
+  { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
+  { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
+  { to: '/invoices', label: 'Bills', icon: FileText, testId: 'nav-bills' },
 ]
 
 export default function AppShell() {
   const { signOut } = useAuth()
-  const { currentOrg, isPlatformAdmin, isOrgAdmin } = useOrg()
+  const { currentOrg, isPlatformAdmin, isOrgAdmin, isVendor } = useOrg()
   const location = useLocation()
   const navigate = useNavigate()
   const [mode, setMode] = useState<AppMode>(() => {
@@ -143,7 +160,7 @@ export default function AppShell() {
         {mode === 'software' && (
           <nav className="flex-1 overflow-y-auto py-2">
             <ul className="space-y-0.5 px-2">
-              {NAV.map(({ to, label, icon: Icon, testId }) => (
+              {(isVendor ? VENDOR_NAV : NAV).map(({ to, label, icon: Icon, testId }) => (
                 <li key={to}>
                   <Link
                     to={to}
@@ -218,17 +235,19 @@ export default function AppShell() {
 
         {/* Org / Workspace link, then Admin, Profile, Sign out */}
         <div className="border-t border-border p-2 space-y-0.5">
-          <Link
-            to="/organizations"
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 hover:bg-surface-muted hover:text-white transition-colors"
-            data-testid="nav-organizations"
-            title="Organizations"
-            onClick={() => setSidebarOpen(false)}
-          >
-            <Building2 className="w-4 h-4 shrink-0" />
-            <span className="truncate">{currentOrg?.name ?? 'Organizations'}</span>
-          </Link>
-          {(isPlatformAdmin || isOrgAdmin) && (
+          {!isVendor && (
+            <Link
+              to="/organizations"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-gray-300 hover:bg-surface-muted hover:text-white transition-colors"
+              data-testid="nav-organizations"
+              title="Organizations"
+              onClick={() => setSidebarOpen(false)}
+            >
+              <Building2 className="w-4 h-4 shrink-0" />
+              <span className="truncate">{currentOrg?.name ?? 'Organizations'}</span>
+            </Link>
+          )}
+          {!isVendor && (isPlatformAdmin || isOrgAdmin) && (
             <Link
               to="/admin"
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -311,7 +330,16 @@ export default function AppShell() {
               <Route path="/projects/:id" element={<ProjectDetail />} />
               <Route path="/projects/:id/edit" element={<ProjectForm />} />
               <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetail />} />
+              <Route path="/leads" element={<LeadsList />} />
+              <Route path="/leads/new" element={<LeadForm />} />
+              <Route path="/leads/:leadId/edit" element={<LeadForm />} />
+              <Route path="/leads/:id" element={<LeadDetail />} />
+              <Route path="/leads/templates" element={<Navigate to="/admin/resume-templates" replace />} />
               <Route path="/timesheets" element={<Timesheets />} />
+              <Route path="/invoices" element={<InvoicesList />} />
+              <Route path="/invoices/new" element={<InvoiceForm />} />
+              <Route path="/invoices/:id" element={<InvoiceDetail />} />
+              <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
@@ -321,14 +349,14 @@ export default function AppShell() {
               <Route path="/profile" element={<Profile />} />
               <Route path="/settings" element={<OrgSettings />} />
               <Route path="/organizations" element={<OrganizationsList />} />
-              <Route path="/admin" element={<Admin />} />
+              <Route path="/admin/*" element={<Admin />} />
             </Routes>
           </main>
 
           {/* Mobile bottom nav */}
           <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 border-t border-border bg-surface-elevated/95 backdrop-blur" aria-label="Mobile navigation">
-            <ul className="grid h-16" style={{ gridTemplateColumns: `repeat(${NAV.length}, minmax(0, 1fr))` }}>
-              {NAV.map(({ to, label, icon: Icon, testId }) => {
+            <ul className="grid h-16" style={{ gridTemplateColumns: `repeat(${(isVendor ? VENDOR_NAV : NAV).length}, minmax(0, 1fr))` }}>
+              {(isVendor ? VENDOR_NAV : NAV).map(({ to, label, icon: Icon, testId }) => {
                 const active = location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
                 return (
                   <li key={`mobile-${to}`}>

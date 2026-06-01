@@ -13,25 +13,33 @@ export default function ProjectForm() {
   const isEdit = Boolean(id)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [status, setStatus] = useState('active')
+  const [status, setStatus] = useState('not_started')
   const [dueDate, setDueDate] = useState('')
+  const [billingType, setBillingType] = useState('fixed')
+  const [projectCost, setProjectCost] = useState('')
+  const [hourlyRate, setHourlyRate] = useState('')
+  const [estimatedHours, setEstimatedHours] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!id || !currentOrg?.id) return
     supabase
       .from('projects')
-      .select('name, description, status, due_date')
+      .select('name, description, status, due_date, billing_type, project_cost, hourly_rate, estimated_hours')
       .eq('id', id)
       .eq('org_id', currentOrg.id)
       .single()
       .then(({ data }) => {
         if (data) {
-          const d = data as { name: string; description: string | null; status: string; due_date: string | null }
+          const d = data as { name: string; description: string | null; status: string; due_date: string | null; billing_type: string | null; project_cost: number | null; hourly_rate: number | null; estimated_hours: number | null }
           setName(d.name ?? '')
           setDescription(d.description ?? '')
-          setStatus(d.status ?? 'active')
+          setStatus(d.status ?? 'not_started')
           setDueDate(d.due_date ?? '')
+          setBillingType(d.billing_type ?? 'fixed')
+          setProjectCost(d.project_cost != null ? String(d.project_cost) : '')
+          setHourlyRate(d.hourly_rate != null ? String(d.hourly_rate) : '')
+          setEstimatedHours(d.estimated_hours != null ? String(d.estimated_hours) : '')
         }
       })
   }, [id, currentOrg?.id])
@@ -46,6 +54,10 @@ export default function ProjectForm() {
       description: description.trim() || null,
       status,
       due_date: dueDate || null,
+      billing_type: billingType,
+      project_cost: billingType === 'fixed' && projectCost ? parseFloat(projectCost) : null,
+      hourly_rate: billingType !== 'fixed' && hourlyRate ? parseFloat(hourlyRate) : null,
+      estimated_hours: estimatedHours ? parseFloat(estimatedHours) : null,
       updated_at: new Date().toISOString(),
     }
     if (isEdit && id) {
@@ -114,11 +126,68 @@ export default function ProjectForm() {
             onChange={(e) => setStatus(e.target.value)}
             className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-accent"
           >
-            <option value="active">Active</option>
-            <option value="on_hold">On hold</option>
-            <option value="completed">Completed</option>
+            <option value="not_started">Not Started</option>
+            <option value="in_progress">In Progress</option>
+            <option value="on_hold">On Hold</option>
+            <option value="finished">Finished</option>
             <option value="cancelled">Cancelled</option>
           </select>
+        </div>
+        <div>
+          <label htmlFor="project-billing-type" className="block text-sm font-medium text-gray-300 mb-1">Billing Type</label>
+          <select
+            id="project-billing-type"
+            value={billingType}
+            onChange={(e) => setBillingType(e.target.value)}
+            className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-accent"
+          >
+            <option value="fixed">Fixed Rate</option>
+            <option value="project_hours">Project Hours</option>
+            <option value="task_hours">Task Hours</option>
+          </select>
+        </div>
+        {billingType === 'fixed' && (
+          <div>
+            <label htmlFor="project-cost" className="block text-sm font-medium text-gray-300 mb-1">Project Cost ($)</label>
+            <input
+              id="project-cost"
+              type="number"
+              step="0.01"
+              min="0"
+              value={projectCost}
+              onChange={(e) => setProjectCost(e.target.value)}
+              className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+              placeholder="0.00"
+            />
+          </div>
+        )}
+        {billingType !== 'fixed' && (
+          <div>
+            <label htmlFor="hourly-rate" className="block text-sm font-medium text-gray-300 mb-1">Hourly Rate ($)</label>
+            <input
+              id="hourly-rate"
+              type="number"
+              step="0.01"
+              min="0"
+              value={hourlyRate}
+              onChange={(e) => setHourlyRate(e.target.value)}
+              className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+              placeholder="0.00"
+            />
+          </div>
+        )}
+        <div>
+          <label htmlFor="estimated-hours" className="block text-sm font-medium text-gray-300 mb-1">Estimated Hours</label>
+          <input
+            id="estimated-hours"
+            type="number"
+            step="0.5"
+            min="0"
+            value={estimatedHours}
+            onChange={(e) => setEstimatedHours(e.target.value)}
+            className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+            placeholder="0"
+          />
         </div>
         <div className="flex gap-3 pt-2">
           <button
