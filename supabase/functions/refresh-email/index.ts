@@ -363,10 +363,12 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
     if (allRefIds.length > 0) {
       const { data: refRows } = await service
         .from('inbox_messages')
-        .select('external_id, thread_id')
+        .select('external_id, thread_id, inbox_threads(imap_account_id)')
         .eq('imap_account_id', acc.id)
         .in('external_id', allRefIds.slice(0, 200))
-      for (const r of (refRows ?? []) as { external_id: string; thread_id: string }[]) {
+      for (const r of (refRows ?? []) as { external_id: string; thread_id: string; inbox_threads: { imap_account_id: string | null } | null }[]) {
+        const threadAccId = r.inbox_threads?.imap_account_id
+        if (threadAccId != null && threadAccId !== acc.id) continue
         refMap.set(r.external_id, r.thread_id)
       }
       console.log('[refresh-email] refMap size:', refMap.size)
@@ -377,6 +379,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       .select('id, subject')
       .eq('org_id', acc.org_id)
       .eq('channel', 'email')
+      .eq('imap_account_id', acc.id)
       .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
       .order('last_message_at', { ascending: false })
       .limit(100)

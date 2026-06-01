@@ -1002,7 +1002,32 @@ export default function Inbox() {
   const handleUpdateStatus = async (status: string, opts?: { restoreFromTrash?: boolean }) => {
     if (!selectedThreadId) return
     setActionLoading(true)
-    await supabase.from('inbox_threads').update({ status, updated_at: new Date().toISOString() }).eq('id', selectedThreadId)
+    const previousStatus =
+      threads.find((t) => t.id === selectedThreadId)?.status ??
+      selectedThreadFallback?.status ??
+      null
+    const { error: statusErr } = await supabase
+      .from('inbox_threads')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', selectedThreadId)
+    if (!statusErr && status === 'archived' && currentOrg?.id && user?.id) {
+      void supabase
+        .from('inbox_debug_log')
+        .insert({
+          user_id: user.id,
+          org_id: currentOrg.id,
+          thread_id: selectedThreadId,
+          tag: 'thread_archived',
+          payload: {
+            source: 'inbox_ui',
+            reason: 'single_thread_trash',
+            previous_status: previousStatus,
+          },
+        })
+        .then(({ error: logErr }) => {
+          if (logErr) console.warn('[Inbox] thread_archived debug log failed', logErr)
+        })
+    }
 
     // Sync flags back to IMAP server
     const { data: { session } } = await supabase.auth.getSession()
@@ -1569,10 +1594,30 @@ export default function Inbox() {
             <div className="px-3 py-2 border-b border-border bg-surface-elevated flex items-center gap-2">
               <span className="text-xs text-gray-300">{selectedIds.size} selected</span>
               <button type="button" onClick={async () => {
-                for (const tid of selectedIds) {
-                  await supabase.from('inbox_threads').update({ status: 'archived', updated_at: new Date().toISOString() }).eq('id', tid)
+                const ids = [...selectedIds]
+                const bulkCount = ids.length
+                for (const tid of ids) {
+                  const { error } = await supabase.from('inbox_threads').update({ status: 'archived', updated_at: new Date().toISOString() }).eq('id', tid)
+                  if (!error && currentOrg?.id && user?.id) {
+                    void supabase
+                      .from('inbox_debug_log')
+                      .insert({
+                        user_id: user.id,
+                        org_id: currentOrg.id,
+                        thread_id: tid,
+                        tag: 'thread_archived',
+                        payload: {
+                          source: 'inbox_ui',
+                          reason: 'bulk_thread_trash',
+                          bulk_selection_count: bulkCount,
+                        },
+                      })
+                      .then(({ error: logErr }) => {
+                        if (logErr) console.warn('[Inbox] thread_archived debug log failed', logErr)
+                      })
+                  }
                 }
-                setSelectedIds(new Set()); fetchThreads(); toast(`${selectedIds.size} thread(s) trashed`)
+                setSelectedIds(new Set()); fetchThreads(); toast(`${bulkCount} thread(s) trashed`)
               }} className="px-2 py-1 rounded text-[11px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30">Trash</button>
               <button type="button" onClick={async () => {
                 for (const tid of selectedIds) {

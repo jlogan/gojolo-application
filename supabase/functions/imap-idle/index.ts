@@ -189,15 +189,22 @@ Deno.serve(async (req: Request) => {
           let threadId: string | undefined
           const refIds = [inReplyTo, ...refsList].filter(Boolean)
           for (const refId of refIds) {
-            const { data: refMsg } = await service.from('inbox_messages').select('thread_id').eq('imap_account_id', acc.id).eq('external_id', refId!).limit(1)
-            if (refMsg?.[0]?.thread_id) { threadId = refMsg[0].thread_id; break }
+            const { data: refMsg } = await service.from('inbox_messages')
+              .select('thread_id, inbox_threads(imap_account_id)')
+              .eq('imap_account_id', acc.id).eq('external_id', refId!).limit(1)
+            const row = refMsg?.[0] as { thread_id: string; inbox_threads: { imap_account_id: string | null } | null } | undefined
+            if (!row?.thread_id) continue
+            const threadAccId = row.inbox_threads?.imap_account_id
+            if (threadAccId != null && threadAccId !== acc.id) continue
+            threadId = row.thread_id
+            break
           }
 
           if (!threadId && subject) {
             const normSubject = subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
             if (normSubject) {
               const { data: recentThreads } = await service.from('inbox_threads').select('id, subject')
-                .eq('org_id', acc.org_id).eq('channel', 'email')
+                .eq('org_id', acc.org_id).eq('channel', 'email').eq('imap_account_id', acc.id)
                 .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
                 .order('last_message_at', { ascending: false }).limit(50)
               for (const t of recentThreads ?? []) {
