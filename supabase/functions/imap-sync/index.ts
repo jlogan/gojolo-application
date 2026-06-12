@@ -97,6 +97,21 @@ function parseBodyFromSourceRaw(source: Uint8Array | Buffer): string {
 
 const MAX_BODY_LENGTH = 50000
 
+/**
+ * Make a filename safe for a Supabase Storage object key. Spaces / special chars
+ * silently break uploads (e.g. "Screenshot 2026 at 2.22 PM.png"). Original name is
+ * still kept in inbox_attachments.file_name for display.
+ */
+function sanitizeStorageName(name: string): string {
+  const base = (name || 'attachment')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^[._-]+/, '')
+    .trim()
+  const safe = base.length === 0 ? 'attachment' : base
+  return safe.length > 180 ? safe.slice(0, 180) : safe
+}
+
 /** Max message bodies to fetch per sync to stay under Gmail IMAP quota (~2.5GB/day). Only new messages get body fetch. */
 const MAX_BODY_FETCH_PER_SYNC = 25
 
@@ -501,8 +516,8 @@ serve(async (req) => {
       }
       console.log('[imap-sync] account', acc.id, 'fetch range:', range)
 
-      // Fetch headers only — no body/source download
-      const envelopes = await client.fetchAll(range, { envelope: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }, { uid: true })
+      // Fetch headers only — no body/source download. flags needed to skip Gmail draft autosaves.
+      const envelopes = await client.fetchAll(range, { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }, { uid: true })
 
       let newMsgs = envelopes
         .filter((m) => {
@@ -554,6 +569,8 @@ serve(async (req) => {
       // Pre-parse all message metadata in one pass (CPU only, no DB)
       const parsed = newMsgs.map(msg => {
         const uid = msg.uid as number
+        const flags = msg.flags as Set<string> | undefined
+        const isDraft = flags instanceof Set ? flags.has('\\Draft') : false
         const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
         // ImapFlow returns headers as a Buffer of raw header lines
         const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
@@ -573,6 +590,7 @@ serve(async (req) => {
         return {
           uid, messageId, inReplyTo, refsList,
           fromAddr,
+          isDraft,
           toAddr: envelope?.to?.[0]?.address ?? '',
           ccAddr: ccRaw?.trim() || null,
           bccAddr: bccRaw?.trim() || null,
@@ -630,6 +648,13 @@ serve(async (req) => {
 
         if (uidsAlreadyInDb.has(p.uid)) {
           console.log('[imap-sync] account', acc.id, 'skip envelope: UID already in DB (cursor catch-up)', p.uid)
+          continue
+        }
+
+        // Skip Gmail draft autosaves — each draft revision is a separate UID/Message-ID in All Mail
+        // and would otherwise be ingested as duplicate outbound messages. The real sent copy has no \Draft flag.
+        if (p.isDraft) {
+          console.log('[imap-sync] account', acc.id, 'skip draft envelope', p.uid)
           continue
         }
 
@@ -751,18 +776,21 @@ serve(async (req) => {
                 // Inline images (CID)
                 if (htmlBody && parsed.attachments.length > 0) {
                   const inlineAtts = parsed.attachments.filter((a) => a.cid)
-                  for (const att of inlineAtts) {
-                    const path = `${acc.org_id}/${row.thread_id}/${Date.now()}-${att.filename}`
+                  for (let i = 0; i < inlineAtts.length; i++) {
+                    const att = inlineAtts[i]
+                    const safeName = sanitizeStorageName(att.filename)
+                    const path = `${acc.org_id}/${row.thread_id}/${Date.now()}-${i}-${safeName}`
                     const { error: upErr } = await service.storage
                       .from('inbox-attachments')
-                      .upload(path, att.content, { contentType: att.contentType })
+                      .upload(path, att.content, { contentType: att.contentType, upsert: true })
+                    console.log('[imap-sync] account', acc.id, 'inline attachment', { msgId: row.id, filename: att.filename, safeName, bytes: att.content.length, uploadError: upErr?.message ?? null })
                     if (!upErr) {
                       const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
                       htmlBody = htmlBody!.replace(
                         new RegExp(`cid:${att.cid!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'),
                         urlData.publicUrl
                       )
-                      await service.from('inbox_attachments').insert({
+                      const { error: insErr } = await service.from('inbox_attachments').insert({
                         message_id: row.id,
                         thread_id: row.thread_id,
                         file_name: att.filename,
@@ -770,19 +798,23 @@ serve(async (req) => {
                         file_size: att.content.length,
                         content_type: att.contentType,
                       })
+                      if (insErr) console.log('[imap-sync] account', acc.id, 'inline insert error', { msgId: row.id, filename: att.filename, error: insErr.message })
                     }
                   }
                 }
 
                 // File attachments (no CID)
                 const fileAtts = parsed.attachments.filter((a) => !a.cid)
-                for (const att of fileAtts) {
-                  const path = `${acc.org_id}/${row.thread_id}/${Date.now()}-${att.filename}`
+                for (let i = 0; i < fileAtts.length; i++) {
+                  const att = fileAtts[i]
+                  const safeName = sanitizeStorageName(att.filename)
+                  const path = `${acc.org_id}/${row.thread_id}/${Date.now()}-${i}-${safeName}`
                   const { error: upErr } = await service.storage
                     .from('inbox-attachments')
-                    .upload(path, att.content, { contentType: att.contentType })
+                    .upload(path, att.content, { contentType: att.contentType, upsert: true })
+                  console.log('[imap-sync] account', acc.id, 'file attachment', { msgId: row.id, filename: att.filename, safeName, bytes: att.content.length, uploadError: upErr?.message ?? null })
                   if (!upErr) {
-                    await service.from('inbox_attachments').insert({
+                    const { error: insErr } = await service.from('inbox_attachments').insert({
                       message_id: row.id,
                       thread_id: row.thread_id,
                       file_name: att.filename,
@@ -790,6 +822,7 @@ serve(async (req) => {
                       file_size: att.content.length,
                       content_type: att.contentType,
                     })
+                    if (insErr) console.log('[imap-sync] account', acc.id, 'file insert error', { msgId: row.id, filename: att.filename, error: insErr.message })
                   }
                 }
 

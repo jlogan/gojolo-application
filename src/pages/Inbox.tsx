@@ -1424,15 +1424,46 @@ export default function Inbox() {
   const getAttachmentHref = (a: Attachment) => a.signedUrl ?? getDownloadUrl(a.file_path)
 
   const handleReloadFromImap = useCallback(async (m: InboxMessage) => {
-    if (!m.imap_account_id || m.external_uid == null) return
+    const reloadId = crypto.randomUUID().slice(0, 8)
+    console.log('[Inbox:imap-reload] click', {
+      reloadId,
+      messageId: m.id,
+      threadId: m.thread_id,
+      direction: m.direction,
+      externalUid: m.external_uid,
+      imapAccountId: m.imap_account_id,
+      hadBody: !!(m.body?.trim()),
+      hadHtmlBody: !!(m.html_body?.trim()),
+    })
+    debugLog('imapReload', {
+      event: 'START',
+      reloadId,
+      messageId: m.id,
+      externalUid: m.external_uid,
+      imapAccountId: m.imap_account_id,
+      direction: m.direction,
+    }, m.thread_id)
+
+    if (!m.imap_account_id || m.external_uid == null) {
+      console.warn('[Inbox:imap-reload] skipped — no IMAP reference', { reloadId, messageId: m.id })
+      debugLog('imapReload', { event: 'SKIP', reloadId, reason: 'no_imap_reference', messageId: m.id }, m.thread_id)
+      return
+    }
+
     setImapReloadingId(m.id)
+    const t0 = performance.now()
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) {
+        console.warn('[Inbox:imap-reload] no session', { reloadId, messageId: m.id })
+        debugLog('imapReload', { event: 'ERROR', reloadId, reason: 'no_session', messageId: m.id }, m.thread_id)
         setToastMsg('Sign in to reload from mail server')
         setTimeout(() => setToastMsg(null), 3000)
         return
       }
+
+      const payload = { messageId: m.id, forceRefresh: true }
+      console.log('[Inbox:imap-reload] calling imap-fetch-body', { reloadId, payload })
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-fetch-body`, {
         method: 'POST',
         headers: {
@@ -1440,30 +1471,106 @@ export default function Inbox() {
           Authorization: `Bearer ${session.access_token}`,
           apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify({ messageId: m.id, forceRefresh: true }),
+        body: JSON.stringify(payload),
       })
-      const data = await res.json().catch(() => ({})) as { error?: string; body?: string | null; htmlBody?: string | null; attachmentCount?: number }
+      const data = await res.json().catch(() => ({})) as {
+        error?: string
+        body?: string | null
+        htmlBody?: string | null
+        attachmentCount?: number
+        fromCache?: boolean
+        fromImap?: boolean
+        forceRefresh?: boolean
+      }
+      const elapsedMs = Math.round(performance.now() - t0)
+      console.log('[Inbox:imap-reload] response', {
+        reloadId,
+        messageId: m.id,
+        status: res.status,
+        ok: res.ok,
+        elapsedMs,
+        error: data.error ?? null,
+        attachmentCount: data.attachmentCount ?? null,
+        fromCache: data.fromCache ?? null,
+        fromImap: data.fromImap ?? null,
+        forceRefresh: data.forceRefresh ?? null,
+        bodyLen: data.body?.length ?? 0,
+        htmlLen: data.htmlBody?.length ?? 0,
+      })
+      debugLog('imapReload', {
+        event: 'RESPONSE',
+        reloadId,
+        messageId: m.id,
+        status: res.status,
+        ok: res.ok,
+        elapsedMs,
+        error: data.error ?? null,
+        attachmentCount: data.attachmentCount ?? null,
+        bodyLen: data.body?.length ?? 0,
+        htmlLen: data.htmlBody?.length ?? 0,
+      }, m.thread_id)
+
       if (!res.ok || data.error) {
+        console.error('[Inbox:imap-reload] failed', { reloadId, messageId: m.id, status: res.status, error: data.error })
         setToastMsg(data.error || `Reload failed (${res.status})`)
         setTimeout(() => setToastMsg(null), 4000)
         return
       }
+
       setMessages((prev) =>
         prev.map((x) =>
           x.id === m.id ? { ...x, body: data.body ?? null, html_body: data.htmlBody ?? null } : x
         )
       )
       await fetchAttachments(m.thread_id)
+
+      const { data: attRows } = await supabase
+        .from('inbox_attachments')
+        .select('id, file_name, file_size, content_type')
+        .eq('message_id', m.id)
+      console.log('[Inbox:imap-reload] attachments in DB after refresh', {
+        reloadId,
+        messageId: m.id,
+        threadId: m.thread_id,
+        count: attRows?.length ?? 0,
+        files: (attRows ?? []).map((a) => ({
+          id: a.id,
+          name: a.file_name,
+          size: a.file_size,
+          type: a.content_type,
+        })),
+      })
+      debugLog('imapReload', {
+        event: 'DONE',
+        reloadId,
+        messageId: m.id,
+        attachmentCountFromFunction: data.attachmentCount ?? null,
+        attachmentRowsInDb: attRows?.length ?? 0,
+        files: (attRows ?? []).map((a) => a.file_name),
+      }, m.thread_id)
+
       const ac = typeof data.attachmentCount === 'number' ? `${data.attachmentCount} file(s) from IMAP. ` : ''
       setToastMsg(`${ac}Reloaded from mail server.`)
       setTimeout(() => setToastMsg(null), 3500)
-    } catch {
+    } catch (err) {
+      console.error('[Inbox:imap-reload] exception', {
+        reloadId,
+        messageId: m.id,
+        elapsedMs: Math.round(performance.now() - t0),
+        error: err instanceof Error ? err.message : String(err),
+      })
+      debugLog('imapReload', {
+        event: 'EXCEPTION',
+        reloadId,
+        messageId: m.id,
+        error: err instanceof Error ? err.message : String(err),
+      }, m.thread_id)
       setToastMsg('Could not reload from mail server')
       setTimeout(() => setToastMsg(null), 3000)
     } finally {
       setImapReloadingId(null)
     }
-  }, [fetchAttachments])
+  }, [fetchAttachments, debugLog])
 
   const attachmentsByMessageId = useMemo(() => {
     const m = new Map<string, Attachment[]>()
@@ -1964,7 +2071,16 @@ export default function Inbox() {
                                   type="button"
                                   title="Reload body & attachments from mail server (IMAP)"
                                   disabled={imapReloadingId === m.id}
-                                  onClick={(e) => { e.stopPropagation(); handleReloadFromImap(m) }}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    console.log('[Inbox:imap-reload] button clicked', {
+                                      messageId: m.id,
+                                      threadId: m.thread_id,
+                                      externalUid: m.external_uid,
+                                      direction: m.direction,
+                                    })
+                                    void handleReloadFromImap(m)
+                                  }}
                                   className="p-1 rounded text-gray-500 hover:text-accent hover:bg-surface-muted disabled:opacity-40 shrink-0"
                                 >
                                   <RefreshCw className={`w-3.5 h-3.5 ${imapReloadingId === m.id ? 'animate-spin' : ''}`} />

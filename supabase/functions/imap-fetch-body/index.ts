@@ -25,6 +25,22 @@ async function decrypt(ct: string, keyHex: string): Promise<string> {
   )
 }
 
+/**
+ * Make a filename safe for use in a Supabase Storage object key.
+ * Storage rejects/garbles keys with spaces and many special characters, which
+ * silently breaks inline-image (CID) and file-attachment uploads. The original
+ * name is still stored in inbox_attachments.file_name for display/download.
+ */
+function sanitizeStorageName(name: string): string {
+  const base = (name || 'attachment')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^[._-]+/, '')
+    .trim()
+  const safe = base.length === 0 ? 'attachment' : base
+  return safe.length > 180 ? safe.slice(0, 180) : safe
+}
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -156,15 +172,18 @@ Deno.serve(async (req: Request) => {
 
       let attachmentCount = 0
       if (htmlBody && inlineAtts.length > 0) {
-        for (const att of inlineAtts) {
+        for (let i = 0; i < inlineAtts.length; i++) {
+          const att = inlineAtts[i]
           const cid = att.contentId!.replace(/^<|>$/g, '')
           const fname = att.filename ?? `inline-${cid}`
-          const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
+          const safeName = sanitizeStorageName(fname)
+          const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${i}-${safeName}`
           const raw = att.content
           const contentBytes = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? new Uint8Array(raw) : new Uint8Array((raw as ArrayBuffer) ?? [])
           const { error: upErr } = await service.storage
             .from('inbox-attachments')
-            .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
+            .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream', upsert: true })
+          console.log('[imap-fetch-body] inline attachment', { messageId, index: i, filename: fname, safeName, bytes: contentBytes.length, uploadError: upErr?.message ?? null })
           if (!upErr) {
             const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
             htmlBody = htmlBody!.replace(
@@ -179,7 +198,8 @@ Deno.serve(async (req: Request) => {
               file_size: contentBytes.length,
               content_type: att.mimeType,
             })
-            if (!insErr) attachmentCount++
+            if (insErr) console.log('[imap-fetch-body] inline insert error', { messageId, filename: fname, error: insErr.message })
+            else attachmentCount++
           }
         }
       }
@@ -189,11 +209,12 @@ Deno.serve(async (req: Request) => {
         const raw = att.content
         const contentBytes = raw instanceof Uint8Array ? raw : Array.isArray(raw) ? new Uint8Array(raw) : new Uint8Array((raw as ArrayBuffer) ?? [])
         const fname = att.filename ?? `attachment-${Date.now()}`
-        const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
+        const safeName = sanitizeStorageName(fname)
+        const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${i}-${safeName}`
         const { error: upErr } = await service.storage
           .from('inbox-attachments')
-          .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
-        console.log('[imap-fetch-body] file attachment', { messageId, index: i, filename: fname, bytes: contentBytes.length, uploadError: upErr?.message ?? null })
+          .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream', upsert: true })
+        console.log('[imap-fetch-body] file attachment', { messageId, index: i, filename: fname, safeName, bytes: contentBytes.length, uploadError: upErr?.message ?? null })
         if (!upErr) {
           const { error: insErr } = await service.from('inbox_attachments').insert({
             message_id: msg.id,

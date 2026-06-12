@@ -36,6 +36,20 @@ function normalizeMessageId(id: string | null): string | null {
   return id.trim().replace(/^</, '').replace(/>$/, '').trim() || null
 }
 
+/**
+ * Make a filename safe for a Supabase Storage object key. Spaces / special chars
+ * silently break uploads. Original name kept in inbox_attachments.file_name.
+ */
+function sanitizeStorageName(name: string): string {
+  const base = (name || 'attachment')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^[._-]+/, '')
+    .trim()
+  const safe = base.length === 0 ? 'attachment' : base
+  return safe.length > 180 ? safe.slice(0, 180) : safe
+}
+
 function getHeader(source: Uint8Array | Buffer, name: string): string | null {
   const raw = typeof source === 'string' ? source : new TextDecoder().decode(source)
   const lower = name.toLowerCase()
@@ -140,11 +154,18 @@ Deno.serve(async (req: Request) => {
         let inserted = 0
 
         for (const envMsg of batch) {
-          const fullMsgs = await client.fetchAll(String(envMsg.uid), { envelope: true, source: true, uid: true }, { uid: true })
+          const fullMsgs = await client.fetchAll(String(envMsg.uid), { envelope: true, flags: true, source: true, uid: true }, { uid: true })
           const msg = fullMsgs[0]
           if (!msg) continue
           const uid = msg.uid as number
           if (uid > highestUid) highestUid = uid
+
+          // Skip Gmail draft autosaves — they would be ingested as duplicate outbound messages
+          const flags = msg.flags as Set<string> | undefined
+          if (flags instanceof Set && flags.has('\\Draft')) {
+            console.log('[imap-idle] account', acc.id, 'skip draft envelope', uid)
+            continue
+          }
 
           const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
           const source = msg.source as Uint8Array | Buffer | undefined
@@ -231,14 +252,20 @@ Deno.serve(async (req: Request) => {
             if (touchErr) console.log('[imap-idle] touch_inbox_thread_on_new_message', threadId, touchErr.message)
           }
 
-          // Upload inline images
+          // Upload inline images (CID). Rewrite htmlBody now; defer the inbox_attachments
+          // insert until after the message row exists (need message_id).
+          const uploadedInline: { filename: string; path: string; contentType: string; size: number }[] = []
           if (htmlBody && inlineAtts.length > 0) {
-            for (const att of inlineAtts) {
-              const path = `${acc.org_id}/${threadId}/${Date.now()}-${att.filename}`
-              const { error } = await service.storage.from('inbox-attachments').upload(path, att.content, { contentType: att.contentType })
+            for (let i = 0; i < inlineAtts.length; i++) {
+              const att = inlineAtts[i]
+              const safeName = sanitizeStorageName(att.filename)
+              const path = `${acc.org_id}/${threadId}/${Date.now()}-${i}-${safeName}`
+              const { error } = await service.storage.from('inbox-attachments').upload(path, att.content, { contentType: att.contentType, upsert: true })
+              console.log('[imap-idle] account', acc.id, 'inline attachment', { uid, filename: att.filename, safeName, bytes: att.content.length, uploadError: error?.message ?? null })
               if (!error) {
                 const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
                 htmlBody = htmlBody!.replace(new RegExp(`cid:${att.cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'gi'), urlData.publicUrl)
+                uploadedInline.push({ filename: att.filename, path, contentType: att.contentType, size: att.content.length })
               }
             }
           }
@@ -253,15 +280,30 @@ Deno.serve(async (req: Request) => {
             imap_account_id: acc.id, received_at: date.toISOString(),
           }).select('id').single()
 
+          // Persist inline-image attachment rows (previously uploaded but never recorded)
+          if (insertedMsg) {
+            for (const up of uploadedInline) {
+              const { error: insErr } = await service.from('inbox_attachments').insert({
+                message_id: insertedMsg.id, thread_id: threadId, file_name: up.filename,
+                file_path: up.path, file_size: up.size, content_type: up.contentType,
+              })
+              if (insErr) console.log('[imap-idle] account', acc.id, 'inline insert error', { uid, filename: up.filename, error: insErr.message })
+            }
+          }
+
           // File attachments
-          for (const att of fileAtts) {
-            const path = `${acc.org_id}/${threadId}/${Date.now()}-${att.filename}`
-            const { error } = await service.storage.from('inbox-attachments').upload(path, att.content, { contentType: att.contentType })
+          for (let i = 0; i < fileAtts.length; i++) {
+            const att = fileAtts[i]
+            const safeName = sanitizeStorageName(att.filename)
+            const path = `${acc.org_id}/${threadId}/${Date.now()}-${i}-${safeName}`
+            const { error } = await service.storage.from('inbox-attachments').upload(path, att.content, { contentType: att.contentType, upsert: true })
+            console.log('[imap-idle] account', acc.id, 'file attachment', { uid, filename: att.filename, safeName, bytes: att.content.length, uploadError: error?.message ?? null })
             if (!error && insertedMsg) {
-              await service.from('inbox_attachments').insert({
+              const { error: insErr } = await service.from('inbox_attachments').insert({
                 message_id: insertedMsg.id, thread_id: threadId, file_name: att.filename,
                 file_path: path, file_size: att.content.length, content_type: att.contentType,
               })
+              if (insErr) console.log('[imap-idle] account', acc.id, 'file insert error', { uid, filename: att.filename, error: insErr.message })
             }
           }
 

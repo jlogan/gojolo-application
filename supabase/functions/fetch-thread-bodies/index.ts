@@ -41,6 +41,20 @@ function jsonRes(data: unknown, status: number) {
   })
 }
 
+/**
+ * Make a filename safe for a Supabase Storage object key. Spaces / special chars
+ * silently break uploads. Original name kept in inbox_attachments.file_name.
+ */
+function sanitizeStorageName(name: string): string {
+  const base = (name || 'attachment')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^[._-]+/, '')
+    .trim()
+  const safe = base.length === 0 ? 'attachment' : base
+  return safe.length > 180 ? safe.slice(0, 180) : safe
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
 
@@ -287,21 +301,24 @@ Deno.serve(async (req: Request) => {
           const newAtts: { file_name: string; file_path: string }[] = []
           if (htmlBody && inlineAtts.length > 0) {
             const tInline = performance.now()
-            for (const att of inlineAtts) {
+            for (let i = 0; i < inlineAtts.length; i++) {
+              const att = inlineAtts[i]
               const cid = att.contentId!.replace(/^<|>$/g, '')
               const fname = att.filename ?? `inline-${cid}`
-              const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
+              const safeName = sanitizeStorageName(fname)
+              const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${i}-${safeName}`
               const contentBytes = rawToBytes(att.content)
               const { error: upErr } = await service.storage
                 .from('inbox-attachments')
-                .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
+                .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream', upsert: true })
+              console.log('[fetch-thread-bodies] inline attachment', { threadId, msgId: msg.id, filename: fname, safeName, bytes: contentBytes.length, uploadError: upErr?.message ?? null })
               if (!upErr) {
                 const { data: urlData } = service.storage.from('inbox-attachments').getPublicUrl(path)
                 htmlBody = htmlBody!.replace(
                   new RegExp('cid:' + cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
                   urlData.publicUrl
                 )
-                await service.from('inbox_attachments').insert({
+                const { error: insErr } = await service.from('inbox_attachments').insert({
                   message_id: msg.id,
                   thread_id: msg.thread_id,
                   file_name: fname,
@@ -309,7 +326,8 @@ Deno.serve(async (req: Request) => {
                   file_size: contentBytes.length,
                   content_type: att.mimeType,
                 })
-                newAtts.push({ file_name: fname, file_path: path })
+                if (insErr) console.log('[fetch-thread-bodies] inline insert error', { threadId, msgId: msg.id, filename: fname, error: insErr.message })
+                else newAtts.push({ file_name: fname, file_path: path })
               }
             }
             console.log('[fetch-thread-bodies] inline atts done', { threadId, msgId: msg.id, count: inlineAtts.length, inlineMs: Math.round(performance.now() - tInline) })
@@ -318,15 +336,18 @@ Deno.serve(async (req: Request) => {
           // File attachments (no contentId)
           const fileAtts = (parsed.attachments ?? []).filter((a: { contentId?: string }) => !a.contentId)
           const tFile = performance.now()
-          for (const att of fileAtts) {
+          for (let i = 0; i < fileAtts.length; i++) {
+            const att = fileAtts[i]
             const fname = att.filename ?? `attachment-${Date.now()}`
-            const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${fname}`
+            const safeName = sanitizeStorageName(fname)
+            const path = `${acc.org_id}/${msg.thread_id}/${Date.now()}-${i}-${safeName}`
             const contentBytes = rawToBytes(att.content)
             const { error: upErr } = await service.storage
               .from('inbox-attachments')
-              .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream' })
+              .upload(path, contentBytes, { contentType: att.mimeType ?? 'application/octet-stream', upsert: true })
+            console.log('[fetch-thread-bodies] file attachment', { threadId, msgId: msg.id, filename: fname, safeName, bytes: contentBytes.length, uploadError: upErr?.message ?? null })
             if (!upErr) {
-              await service.from('inbox_attachments').insert({
+              const { error: insErr } = await service.from('inbox_attachments').insert({
                 message_id: msg.id,
                 thread_id: msg.thread_id,
                 file_name: fname,
@@ -334,7 +355,8 @@ Deno.serve(async (req: Request) => {
                 file_size: contentBytes.length,
                 content_type: att.mimeType,
               })
-              newAtts.push({ file_name: fname, file_path: path })
+              if (insErr) console.log('[fetch-thread-bodies] file insert error', { threadId, msgId: msg.id, filename: fname, error: insErr.message })
+              else newAtts.push({ file_name: fname, file_path: path })
             }
           }
           if (fileAtts.length > 0) {
