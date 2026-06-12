@@ -260,6 +260,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
     const envelopes = await client.fetchAll(range, {
       envelope: true,
+      flags: true,
       headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'],
       uid: true,
     }, { uid: true })
@@ -315,10 +316,13 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       subject: string
       date: Date
       externalId: string
+      isDraft: boolean
     }
 
     const parsed: ParsedMeta[] = newMsgs.map((msg) => {
       const uid = msg.uid as number
+      const flags = msg.flags as Set<string> | undefined
+      const isDraft = flags instanceof Set ? flags.has('\\Draft') : false
       const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
       const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
       const getHdr = (name: string): string | null => {
@@ -346,6 +350,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         subject: envelope?.subject ?? '',
         date: envelope?.date ? new Date(envelope.date) : new Date(),
         externalId: messageId ?? `uid-${acc.id}-${uid}`,
+        isDraft,
       }
     })
 
@@ -398,6 +403,12 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
       if (uidsAlreadyInDb.has(p.uid)) {
         console.log('[refresh-email] skip envelope: UID already in DB', p.uid)
+        continue
+      }
+
+      // Skip Gmail draft autosaves — they would be ingested as duplicate outbound messages
+      if (p.isDraft) {
+        console.log('[refresh-email] skip draft envelope', p.uid)
         continue
       }
 
