@@ -279,6 +279,7 @@ export default function Inbox() {
   const [sendingReply, setSendingReply] = useState(false)
   const [showCcBcc, setShowCcBcc] = useState(false)
   const [selectedAccountId, setSelectedAccountId] = useState('')
+  const [selectedFromAddress, setSelectedFromAddress] = useState('')
   const [replyAttachments, setReplyAttachments] = useState<File[]>([])
 
   // Comment
@@ -677,10 +678,11 @@ export default function Inbox() {
         const accs = (data as ImapAccount[]) ?? []
         setImapAccounts(accs)
         if (accs.length > 0 && !selectedAccountId) setSelectedAccountId(accs[0].id)
+        if (accs.length > 0 && !selectedFromAddress) setSelectedFromAddress(accs[0].email)
       })
     supabase.from('contacts').select('id, name, email').eq('org_id', currentOrg.id).order('name')
       .then(({ data }) => setAllContacts((data as { id: string; name: string; email: string | null }[]) ?? []))
-  }, [currentOrg?.id])
+  }, [currentOrg?.id, selectedAccountId, selectedFromAddress])
 
   useEffect(() => {
     if (!userId) return
@@ -1072,11 +1074,18 @@ export default function Inbox() {
 
   const getSendableAddresses = (): { accountId: string; email: string; label: string }[] => {
     const addrs: { accountId: string; email: string; label: string }[] = []
+    const seen = new Set<string>()
     for (const acc of imapAccounts) {
-      addrs.push({ accountId: acc.id, email: acc.email, label: acc.label ? `${acc.label} <${acc.email}>` : acc.email })
+      const primary = acc.email.trim()
+      if (primary && !seen.has(primary.toLowerCase())) {
+        seen.add(primary.toLowerCase())
+        addrs.push({ accountId: acc.id, email: primary, label: acc.label ? `${acc.label} <${primary}>` : primary })
+      }
       for (const alias of acc.addresses ?? []) {
-        if (alias.toLowerCase() !== acc.email.toLowerCase())
-          addrs.push({ accountId: acc.id, email: alias, label: `${acc.label ?? 'Alias'} <${alias}>` })
+        const email = alias.trim()
+        if (!email || seen.has(email.toLowerCase())) continue
+        seen.add(email.toLowerCase())
+        addrs.push({ accountId: acc.id, email, label: `${acc.label ?? 'Alias'} <${email}>` })
       }
     }
     return addrs
@@ -1089,9 +1098,9 @@ export default function Inbox() {
     return m ? m[1].trim().toLowerCase() : s.trim().toLowerCase()
   }
 
-  // Find which IMAP account to use based on our address in the last message
-  // Inbound: we're in to_identifier or cc. Outbound: we're in from_identifier
-  const findFromAccountForReply = (lastMsg: InboxMessage): string => {
+  // Find which sendable address to use based on our address in the last message.
+  // Inbound: we're in to_identifier or cc. Outbound: we're in from_identifier.
+  const findFromAddressForReply = (lastMsg: InboxMessage): { accountId: string; email: string } | null => {
     const ourAddresses: string[] = []
     if (lastMsg.direction === 'inbound') {
       const to = parseEmail(lastMsg.to_identifier)
@@ -1106,11 +1115,13 @@ export default function Inbox() {
     }
     for (const addr of ourAddresses) {
       for (const acc of imapAccounts) {
-        const accEmails = [acc.email.toLowerCase(), ...(acc.addresses ?? []).map(a => a.toLowerCase())]
-        if (accEmails.includes(addr)) return acc.id
+        const accEmails = [acc.email, ...(acc.addresses ?? [])]
+        const match = accEmails.find((email) => email.trim().toLowerCase() === addr)
+        if (match) return { accountId: acc.id, email: match.trim() }
       }
     }
-    return selectedAccountId
+    const selected = getSendableAddresses().find((a) => a.email.toLowerCase() === selectedFromAddress.toLowerCase())
+    return selected ?? null
   }
 
   // Collect all unique addresses in the thread (from, to, cc) excluding any address that appears in the From dropdown; for Reply All
@@ -1152,7 +1163,11 @@ export default function Inbox() {
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
     } else if (selectedThread && messages.length > 0) {
       const last = messages[messages.length - 1]
-      setSelectedAccountId(findFromAccountForReply(last))
+      const fromAddress = findFromAddressForReply(last)
+      if (fromAddress) {
+        setSelectedAccountId(fromAddress.accountId)
+        setSelectedFromAddress(fromAddress.email)
+      }
       if (mode === 'reply_all') {
         const { to, cc } = getThreadRecipientsForReplyAll(null)
         setReplyTo(to)
@@ -1248,10 +1263,13 @@ export default function Inbox() {
         console.log('[Inbox:attachment] upload ok', { sendId, path, name: file.name })
       }
     }
+    const selectedSendable = getSendableAddresses().find((a) => a.email.toLowerCase() === selectedFromAddress.toLowerCase())
+      ?? getSendableAddresses().find((a) => a.accountId === selectedAccountId)
     const payload: Record<string, unknown> = {
       body: bodyForApi, subject: replySubject, to: replyTo.trim(),
       cc: replyCc.trim() || undefined, bcc: replyBcc.trim() || undefined,
-      isHtml: true, accountId: selectedAccountId || undefined,
+      isHtml: true, accountId: selectedSendable?.accountId || selectedAccountId || undefined,
+      fromAddress: selectedSendable?.email || selectedFromAddress || undefined,
       attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
     }
     if (selectedThreadId && replyMode !== 'compose') payload.threadId = selectedThreadId
@@ -1623,9 +1641,14 @@ export default function Inbox() {
       <div className="space-y-2">
         {sendableAddresses.length > 1 && (
           <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">From</label>
-            <select value={selectedAccountId} onChange={e => setSelectedAccountId(e.target.value)}
+            <select value={selectedFromAddress} onChange={e => {
+              const email = e.target.value
+              const addr = sendableAddresses.find((a) => a.email === email)
+              setSelectedFromAddress(email)
+              if (addr) setSelectedAccountId(addr.accountId)
+            }}
               className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
-              {sendableAddresses.map((a, i) => <option key={i} value={a.accountId}>{a.label}</option>)}
+              {sendableAddresses.map((a) => <option key={`${a.accountId}:${a.email}`} value={a.email}>{a.label}</option>)}
             </select>
           </div>
         )}
@@ -2087,13 +2110,15 @@ export default function Inbox() {
                                 </button>
                               )}
                               <button type="button" title="Reply" onClick={(e) => { e.stopPropagation()
-                                setSelectedAccountId(findFromAccountForReply(m))
+                                const fromAddress = findFromAddressForReply(m)
+                                if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
                                 setReplyTo(m.from_identifier); setReplyCc(''); setReplyBcc('')
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
                                 setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><Reply className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Reply All" onClick={(e) => { e.stopPropagation()
-                                setSelectedAccountId(findFromAccountForReply(m))
+                                const fromAddress = findFromAddressForReply(m)
+                                if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
                                 const { to, cc } = getThreadRecipientsForReplyAll(m)
                                 setReplyTo(to)
                                 setReplyCc(cc)
@@ -2103,7 +2128,8 @@ export default function Inbox() {
                                 setReplyHtml(''); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply_all')
                               }} className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted"><ReplyAll className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Forward" onClick={(e) => { e.stopPropagation()
-                                setSelectedAccountId(findFromAccountForReply(m))
+                                const fromAddress = findFromAddressForReply(m)
+                                if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
                                 setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
                                 const { content: fwdContent } = cleanMessageBody(m)
