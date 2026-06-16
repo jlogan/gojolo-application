@@ -31,6 +31,7 @@ interface ReqBody {
   isHtml?: boolean
   compose?: boolean
   accountId?: string
+  fromAddress?: string
   attachments?: { fileName: string; filePath: string; contentType?: string; fileSize?: number }[]
 }
 
@@ -57,10 +58,10 @@ Deno.serve(async (req: Request) => {
     return jsonRes({ error: 'Invalid JSON' })
   }
 
-  const { body: bodyContent, subject: reqSubject, to: reqTo, cc, bcc, isHtml, compose, accountId, attachments: attachmentRefs } = body
+  const { body: bodyContent, subject: reqSubject, to: reqTo, cc, bcc, isHtml, compose, accountId, fromAddress, attachments: attachmentRefs } = body
   const threadId = body.threadId?.trim() || null
   const attNames = attachmentRefs?.map((a) => a.fileName).join(', ') ?? ''
-  console.log(`[inbox-send-reply] ${reqId} body: threadId=${threadId ?? 'null'}, compose=${!!compose}, to=${reqTo ?? '(empty)'}, accountId=${accountId ?? 'auto'}, attachments=${attachmentRefs?.length ?? 0}${attNames ? ` (${attNames})` : ''}`)
+  console.log(`[inbox-send-reply] ${reqId} body: threadId=${threadId ?? 'null'}, compose=${!!compose}, to=${reqTo ?? '(empty)'}, accountId=${accountId ?? 'auto'}, fromAddress=${fromAddress ?? 'auto'}, attachments=${attachmentRefs?.length ?? 0}${attNames ? ` (${attNames})` : ''}`)
 
   const hasAttachments = (attachmentRefs?.length ?? 0) > 0
   const bodyTrim = bodyContent?.trim() ?? ''
@@ -131,11 +132,23 @@ Deno.serve(async (req: Request) => {
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) return jsonRes({ error: 'ENCRYPTION_KEY not configured' })
 
   const { data: account, error: accErr } = await service.from('imap_accounts')
-    .select('id, org_id, email, label, smtp_host, smtp_port, smtp_use_tls, smtp_username, smtp_credentials_encrypted, credentials_encrypted')
+    .select('id, org_id, email, label, addresses, smtp_host, smtp_port, smtp_use_tls, smtp_username, smtp_credentials_encrypted, credentials_encrypted')
     .eq('id', imapAccountId).single()
   if (accErr || !account) {
     console.log(`[inbox-send-reply] ${reqId} IMAP account not found:`, accErr?.message ?? 'no data')
     return jsonRes({ error: 'IMAP account not found' })
+  }
+
+  const requestedFromAddress = fromAddress?.trim()
+  const allowedFromAddresses = [account.email as string, ...(((account.addresses as string[] | null) ?? []))]
+    .map((email) => email.trim())
+    .filter(Boolean)
+  const effectiveFromAddress = requestedFromAddress
+    ? allowedFromAddresses.find((email) => email.toLowerCase() === requestedFromAddress.toLowerCase())
+    : (account.email as string)
+  if (!effectiveFromAddress) {
+    console.log(`[inbox-send-reply] ${reqId} rejected: fromAddress not allowed for account`, { accountId: account.id, fromAddress: requestedFromAddress })
+    return jsonRes({ error: 'Selected From address is not available for this email account' })
   }
 
   let smtpPass: string
@@ -153,7 +166,7 @@ Deno.serve(async (req: Request) => {
   })
 
   const mailOpts: Record<string, unknown> = {
-    from: account.label ? `${account.label} <${account.email}>` : account.email,
+    from: account.label ? `${account.label} <${effectiveFromAddress}>` : effectiveFromAddress,
     to: toAddress, subject,
     inReplyTo, references,
   }
@@ -203,7 +216,7 @@ Deno.serve(async (req: Request) => {
     const { data: newThread, error: threadErr } = await service.from('inbox_threads').insert({
       org_id: orgId, channel: 'email', status: 'closed', subject,
       last_message_at: now, imap_account_id: imapAccountId,
-      from_address: account.email as string,
+      from_address: effectiveFromAddress,
     }).select('id').single()
     if (threadErr) console.log(`[inbox-send-reply] ${reqId} thread insert error:`, threadErr.message)
     saveThreadId = (newThread as { id: string })?.id ?? null
@@ -212,7 +225,7 @@ Deno.serve(async (req: Request) => {
   if (saveThreadId) {
     const msgPayload: Record<string, unknown> = {
       thread_id: saveThreadId, channel: 'email', direction: 'outbound',
-      from_identifier: account.email, to_identifier: toAddress,
+      from_identifier: effectiveFromAddress, to_identifier: toAddress,
       cc: cc?.trim() || null, bcc: bcc?.trim() || null, imap_account_id: account.id, received_at: now,
     }
     if (isHtml) { msgPayload.html_body = effectiveBody; msgPayload.body = stripHtml(effectiveBody) }
