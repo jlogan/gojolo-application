@@ -171,6 +171,13 @@ export default function TaskDetail() {
   const [activeTimer, setActiveTimer] = useState<{ id: string; timer_started_at: string } | null>(null)
   const [timerElapsed, setTimerElapsed] = useState('')
 
+  // Time log inline editing
+  const [editingTimeLogId, setEditingTimeLogId] = useState<string | null>(null)
+  const [editTimeLogHours, setEditTimeLogHours] = useState('')
+  const [editTimeLogMinutes, setEditTimeLogMinutes] = useState('')
+  const [editTimeLogDate, setEditTimeLogDate] = useState('')
+  const [editTimeLogDesc, setEditTimeLogDesc] = useState('')
+
   // Artifact form
   const [showArtifactForm, setShowArtifactForm] = useState(false)
   const [showAttachmentForm, setShowAttachmentForm] = useState(false)
@@ -323,6 +330,33 @@ export default function TaskDetail() {
   const handleStatusChange = async (status: string) => {
     if (!taskId) return
     await supabase.from('tasks').update({ status, updated_at: new Date().toISOString() }).eq('id', taskId)
+    fetchAll()
+  }
+
+  const handleEditTimeLog = (t: TimeLog) => {
+    setEditingTimeLogId(t.id)
+    const hStr = String(t.hours).padStart(2, '0')
+    const mStr = String(t.minutes).padStart(2, '0')
+    setEditTimeLogHours(hStr)
+    setEditTimeLogMinutes(mStr)
+    setEditTimeLogDate(t.work_date)
+    setEditTimeLogDesc(t.description ?? '')
+  }
+
+  const handleSaveTimeLog = async () => {
+    if (!editingTimeLogId) return
+    const h = parseInt(editTimeLogHours) || 0
+    const m = parseInt(editTimeLogMinutes) || 0
+    await supabase.from('time_logs').update({
+      hours: h, minutes: m, work_date: editTimeLogDate, description: editTimeLogDesc || null,
+    }).eq('id', editingTimeLogId)
+    setEditingTimeLogId(null)
+    fetchAll()
+  }
+
+  const handleDeleteTimeLog = async (id: string) => {
+    if (!window.confirm('Delete this time log?')) return
+    await supabase.from('time_logs').delete().eq('id', id)
     fetchAll()
   }
 
@@ -500,6 +534,13 @@ export default function TaskDetail() {
                   <span>Created: {new Date(task.created_at).toLocaleDateString()}</span>
                 </div>
               </div>
+              <button
+                type="button"
+                onClick={handleStartEdit}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-xs text-gray-500 hover:text-accent hover:border-accent/30 shrink-0"
+              >
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
               <select value={task.status} onChange={e => handleStatusChange(e.target.value)}
                 className={`rounded-lg px-3 py-2 text-xs font-medium border-0 focus:outline-none focus:ring-2 focus:ring-accent shrink-0 ${currentStatusInfo.color}`}>
                 {STATUS_FLOW.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -581,12 +622,7 @@ export default function TaskDetail() {
           </div>
         )}
 
-        {artifacts.filter(a => a.type !== 'file').length === 0 && !showArtifactForm && (
-          <button type="button" onClick={() => setShowArtifactForm(true)}
-            className="text-xs text-gray-500 hover:text-accent flex items-center gap-1 mb-4">
-            <Plus className="w-3 h-3" /> Add resources (Loom, links)
-          </button>
-        )}
+
 
         {/* Attachments: file list + Add button to show upload form */}
         <div className="mb-4">
@@ -818,23 +854,70 @@ export default function TaskDetail() {
                   <th className="text-left px-4 py-2">Who</th>
                   <th className="text-left px-4 py-2">Description</th>
                   <th className="text-center px-4 py-2">Billable</th>
+                  <th className="text-right px-4 py-2">Actions</th>
                 </tr></thead>
                 <tbody className="divide-y divide-border">
                   {timeLogs.map(t => (
-                    <tr key={t.id} className={`hover:bg-surface-muted/30${t.timer_started_at && !t.timer_stopped_at ? ' bg-green-500/5' : ''}`}>
-                      <td className="px-4 py-2 text-gray-300">{t.work_date}</td>
-                      <td className="px-4 py-2 text-white font-medium">
-                        {t.timer_started_at && !t.timer_stopped_at
-                          ? <span className="text-green-400 animate-pulse">⏱ Running</span>
-                          : `${String(t.hours).padStart(2, '0')}:${String(t.minutes).padStart(2, '0')}`}
-                      </td>
-                      <td className="px-4 py-2 text-gray-400">{t.display_name ?? 'User'}</td>
-                      <td className="px-4 py-2 text-gray-300">
-                        {t.description}
-                        {t.comment && <p className="text-xs text-gray-500 mt-0.5">{t.comment}</p>}
-                      </td>
-                      <td className="px-4 py-2 text-center">{t.billed !== false ? <span className="text-accent">✓</span> : <span className="text-gray-600">—</span>}</td>
-                    </tr>
+                    editingTimeLogId === t.id ? (
+                      <tr key={t.id} className="bg-surface-muted/40">
+                        <td className="px-4 py-2">
+                          <input type="date" value={editTimeLogDate} onChange={e => setEditTimeLogDate(e.target.value)}
+                            className="bg-surface-elevated border border-border rounded px-2 py-1 text-xs text-white w-full" />
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-1">
+                            <input type="number" min="0" max="23" value={editTimeLogHours} onChange={e => setEditTimeLogHours(e.target.value)}
+                              className="bg-surface-elevated border border-border rounded px-2 py-1 text-xs text-white w-12" placeholder="HH" />
+                            <span className="text-gray-500">:</span>
+                            <input type="number" min="0" max="59" value={editTimeLogMinutes} onChange={e => setEditTimeLogMinutes(e.target.value)}
+                              className="bg-surface-elevated border border-border rounded px-2 py-1 text-xs text-white w-12" placeholder="MM" />
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 text-gray-400">{t.display_name ?? 'User'}</td>
+                        <td className="px-4 py-2">
+                          <input type="text" value={editTimeLogDesc} onChange={e => setEditTimeLogDesc(e.target.value)}
+                            className="bg-surface-elevated border border-border rounded px-2 py-1 text-xs text-white w-full" placeholder="Description" />
+                        </td>
+                        <td className="px-4 py-2 text-center">{t.billed !== false ? <span className="text-accent">✓</span> : <span className="text-gray-600">—</span>}</td>
+                        <td className="px-4 py-2 text-right">
+                          <span className="flex items-center gap-1 justify-end">
+                            <button type="button" onClick={handleSaveTimeLog}
+                              className="px-2 py-1 rounded text-xs bg-accent text-white hover:bg-accent/80">Save</button>
+                            <button type="button" onClick={() => setEditingTimeLogId(null)}
+                              className="px-2 py-1 rounded text-xs text-gray-500 hover:text-white">Cancel</button>
+                          </span>
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={t.id} className={`hover:bg-surface-muted/30${t.timer_started_at && !t.timer_stopped_at ? ' bg-green-500/5' : ''}`}>
+                        <td className="px-4 py-2 text-gray-300">{t.work_date}</td>
+                        <td className="px-4 py-2 text-white font-medium">
+                          {t.timer_started_at && !t.timer_stopped_at
+                            ? <span className="text-green-400 animate-pulse">⏱ Running</span>
+                            : `${String(t.hours).padStart(2, '0')}:${String(t.minutes).padStart(2, '0')}`}
+                        </td>
+                        <td className="px-4 py-2 text-gray-400">{t.display_name ?? 'User'}</td>
+                        <td className="px-4 py-2 text-gray-300">
+                          {t.description}
+                          {t.comment && <p className="text-xs text-gray-500 mt-0.5">{t.comment}</p>}
+                        </td>
+                        <td className="px-4 py-2 text-center">{t.billed !== false ? <span className="text-accent">✓</span> : <span className="text-gray-600">—</span>}</td>
+                        <td className="px-4 py-2 text-right">
+                          {!t.billed && t.user_id === user?.id && (
+                            <span className="flex items-center gap-1 justify-end">
+                              <button type="button" onClick={() => handleEditTimeLog(t)}
+                                className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted" title="Edit">
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                              <button type="button" onClick={() => handleDeleteTimeLog(t.id)}
+                                className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-surface-muted" title="Delete">
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    )
                   ))}
                 </tbody>
               </table>

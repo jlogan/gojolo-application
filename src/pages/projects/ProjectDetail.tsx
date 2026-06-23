@@ -172,14 +172,18 @@ export default function ProjectDetail() {
     if (newTaskId && taskFiles.length > 0) {
       for (const file of taskFiles) {
         const path = `${currentOrg!.id}/${id}/${newTaskId}/${Date.now()}-${file.name}`
-        const { error: upErr } = await supabase.storage.from('task-attachments').upload(path, file)
+        const { error: upErr } = await supabase.storage.from('task-artifacts').upload(path, file)
         if (!upErr) {
-          await supabase.from('task_attachments').insert({
-            task_id: newTaskId, file_name: file.name, file_path: path,
-            file_size: file.size, content_type: file.type, uploaded_by: user?.id ?? null,
+          await supabase.from('task_artifacts').insert({
+            task_id: newTaskId, type: 'file', label: file.name, file_name: file.name,
+            file_path: path, content_type: file.type, uploaded_by: user?.id ?? null,
           })
         }
       }
+    }
+    // Assign team member via join table
+    if (newTaskId && taskAssigned) {
+      await supabase.from('task_assignees').upsert({ task_id: newTaskId, user_id: taskAssigned }, { onConflict: 'task_id,user_id' })
     }
     resetTaskForm()
     setTaskSaving(false)
