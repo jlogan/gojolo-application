@@ -515,8 +515,8 @@ export default function TaskDetail() {
 
             {/* Description (click to edit) */}
             {task.description ? (
-              <div className="text-sm text-gray-300 whitespace-pre-wrap mb-4 border-l-2 border-accent/30 pl-4 cursor-pointer hover:border-accent/60" onClick={handleStartEdit} title="Click to edit">
-                {task.description}
+              <div className="text-sm text-gray-300 mb-4 border-l-2 border-accent/30 pl-4 cursor-pointer hover:border-accent/60" onClick={handleStartEdit} title="Click to edit">
+                <div className="prose prose-sm prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: task.description }} />
               </div>
             ) : (
               <button type="button" onClick={handleStartEdit} className="text-sm text-gray-500 hover:text-accent mb-4">+ Add description</button>
@@ -773,7 +773,7 @@ export default function TaskDetail() {
 
           {showTimeForm && (
             <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-4 space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Time (HH:MM)</label>
                   <input type="text" value={logTime} onChange={e => setLogTime(e.target.value)} placeholder="1:30"
@@ -796,11 +796,6 @@ export default function TaskDetail() {
                     <option value="non_billable">Non billable</option>
                   </select>
                 </div>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-0.5">Hourly Rate</label>
-                  <input type="number" step="0.01" min="0" value={logHourlyRate} onChange={e => setLogHourlyRate(e.target.value)} placeholder="0.00"
-                    className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
-                </div>
               </div>
               <div>
                 <label className="block text-[10px] text-gray-500 mb-0.5">Notes</label>
@@ -822,7 +817,6 @@ export default function TaskDetail() {
                   <th className="text-left px-4 py-2">Time</th>
                   <th className="text-left px-4 py-2">Who</th>
                   <th className="text-left px-4 py-2">Description</th>
-                  <th className="text-right px-4 py-2">Rate</th>
                   <th className="text-center px-4 py-2">Billable</th>
                 </tr></thead>
                 <tbody className="divide-y divide-border">
@@ -839,7 +833,6 @@ export default function TaskDetail() {
                         {t.description}
                         {t.comment && <p className="text-xs text-gray-500 mt-0.5">{t.comment}</p>}
                       </td>
-                      <td className="px-4 py-2 text-right text-gray-400">{t.hourly_rate != null ? `$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'}</td>
                       <td className="px-4 py-2 text-center">{t.billed !== false ? <span className="text-accent">✓</span> : <span className="text-gray-600">—</span>}</td>
                     </tr>
                   ))}
