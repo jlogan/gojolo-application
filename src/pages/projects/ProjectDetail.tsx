@@ -18,7 +18,8 @@ type Member = { user_id: string; role: string; display_name: string | null; avat
 type CompanyRow = { company_id: string; name: string }
 type ContactRow = { contact_id: string; name: string; email: string | null }
 type OrgUser = { user_id: string; display_name: string | null; avatar_url: string | null }
-type Attachment = { id: string; task_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string }
+type Attachment = { id: string; task_id: string; file_name: string | null; file_path: string | null; label: string | null; created_at: string }
+type TaskAssigneeRow = { task_id: string; user_id: string }
 
 const STATUS_ICON: Record<string, typeof Circle> = { todo: Circle, in_progress: Clock, done: CheckCircle2 }
 const PRIORITY_COLORS: Record<string, string> = {
@@ -60,6 +61,7 @@ export default function ProjectDetail() {
   const [addContactId, setAddContactId] = useState('')
 
   // Attachments
+  const [taskAssignees, setTaskAssignees] = useState<TaskAssigneeRow[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [selectedTaskForUpload, setSelectedTaskForUpload] = useState<string | null>(null)
@@ -134,8 +136,12 @@ export default function ProjectDetail() {
     if (!id) return
     const taskIds = tasks.map(t => t.id)
     if (taskIds.length === 0) { setAttachments([]); return }
-    const { data } = await supabase.from('task_attachments').select('*').in('task_id', taskIds).order('created_at', { ascending: false })
-    setAttachments((data as Attachment[]) ?? [])
+    const [attRes, taRes] = await Promise.all([
+      supabase.from('task_artifacts').select('id, task_id, label, file_name, file_path, created_at').eq('type', 'file').in('task_id', taskIds).order('created_at', { ascending: false }),
+      supabase.from('task_assignees').select('task_id, user_id').in('task_id', taskIds),
+    ])
+    setAttachments((attRes.data as Attachment[]) ?? [])
+    setTaskAssignees((taRes.data as TaskAssigneeRow[]) ?? [])
   }, [id, tasks])
 
   useEffect(() => { fetchProject() }, [fetchProject])
@@ -256,11 +262,11 @@ export default function ProjectDetail() {
   const handleFileUpload = async (taskId: string, file: File) => {
     setUploading(true)
     const path = `${currentOrg!.id}/${id}/${taskId}/${Date.now()}-${file.name}`
-    const { error: upErr } = await supabase.storage.from('task-attachments').upload(path, file)
+    const { error: upErr } = await supabase.storage.from('task-artifacts').upload(path, file)
     if (upErr) { console.error(upErr); setUploading(false); return }
-    await supabase.from('task_attachments').insert({
-      task_id: taskId, file_name: file.name, file_path: path,
-      file_size: file.size, content_type: file.type, uploaded_by: user?.id ?? null,
+    await supabase.from('task_artifacts').insert({
+      task_id: taskId, type: 'file', label: file.name, file_name: file.name,
+      file_path: path, content_type: file.type, uploaded_by: user?.id ?? null,
     })
     setUploading(false)
     setSelectedTaskForUpload(null)
@@ -268,13 +274,13 @@ export default function ProjectDetail() {
   }
 
   const handleDeleteAttachment = async (att: Attachment) => {
-    await supabase.storage.from('task-attachments').remove([att.file_path])
-    await supabase.from('task_attachments').delete().eq('id', att.id)
+    if (att.file_path) await supabase.storage.from('task-artifacts').remove([att.file_path])
+    await supabase.from('task_artifacts').delete().eq('id', att.id)
     fetchAttachments()
   }
 
   const openAttachment = async (path: string) => {
-    const { data, error } = await supabase.storage.from('task-attachments').createSignedUrl(path, 60 * 60)
+    const { data, error } = await supabase.storage.from('task-artifacts').createSignedUrl(path, 60 * 60)
     if (error || !data?.signedUrl) { alert('Could not generate download link. Please try again.'); return }
     window.open(data.signedUrl, '_blank', 'noreferrer')
   }
@@ -435,7 +441,13 @@ export default function ProjectDetail() {
                         <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs">
                           <span className={PRIORITY_COLORS[t.priority] ?? 'text-gray-400'}>{t.priority}</span>
                           {t.due_date && <span className="text-gray-500">{t.due_date}</span>}
-                          {t.assigned_to && <span className="text-gray-400">{getUserName(t.assigned_to)}</span>}
+                          {(() => {
+                            const assigneeIds = taskAssignees.filter(a => a.task_id === t.id).map(a => a.user_id)
+                            const names = assigneeIds.map(uid => orgUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8))
+                            const legacy = !assigneeIds.length && t.assigned_to ? getUserName(t.assigned_to) : null
+                            const display = names.length ? names.join(', ') : legacy
+                            return display ? <span className="text-gray-400">{display}</span> : null
+                          })()}
                           {taskAtts.length > 0 && <span className="text-gray-500 flex items-center gap-0.5"><Paperclip className="w-3 h-3" />{taskAtts.length}</span>}
                         </div>
                         {/* Attachments for this task */}
@@ -444,7 +456,7 @@ export default function ProjectDetail() {
                             {taskAtts.map(a => (
                               <div key={a.id} className="flex items-center gap-2 text-xs">
                                 <Paperclip className="w-3 h-3 text-gray-500" />
-                                <button type="button" onClick={() => openAttachment(a.file_path)} className="text-accent hover:underline truncate text-left">{a.file_name}</button>
+                                <button type="button" onClick={() => a.file_path && openAttachment(a.file_path)} className="text-accent hover:underline truncate text-left">{a.file_name ?? a.label}</button>
                                 <button type="button" onClick={() => handleDeleteAttachment(a)} className="text-gray-500 hover:text-red-400"><X className="w-3 h-3" /></button>
                               </div>
                             ))}

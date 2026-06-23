@@ -8,6 +8,7 @@ import {
   Paperclip, Key, Mail, ChevronRight,
   FileText, Pencil, Trash2, Play, Square,
 } from 'lucide-react'
+import RichTextEditor from '@/components/inbox/RichTextEditor'
 
 type Task = {
   id: string; project_id: string; title: string; description: string | null
@@ -271,15 +272,15 @@ export default function TaskDetail() {
   }, [showTimeForm, canEditBillable])
 
   useEffect(() => {
-    if (!currentOrg?.id) return
-    supabase.from('organization_users').select('user_id').eq('org_id', currentOrg.id)
+    if (!projectId) return
+    supabase.from('project_members').select('user_id').eq('project_id', projectId)
       .then(async ({ data }) => {
         const uids = (data ?? []).map((r: { user_id: string }) => r.user_id)
-        if (!uids.length) return
+        if (!uids.length) { setOrgUsers([]); return }
         const { data: profiles } = await supabase.from('profiles').select('id, display_name, avatar_url').in('id', uids)
         setOrgUsers((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => ({ user_id: p.id, display_name: p.display_name, avatar_url: p.avatar_url })))
       })
-  }, [currentOrg?.id])
+  }, [projectId])
 
   // Timer elapsed display
   useEffect(() => {
@@ -508,8 +509,13 @@ export default function TaskDetail() {
           <div className="space-y-3 mb-4">
             <input type="text" value={editTitle} onChange={e => setEditTitle(e.target.value)}
               className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-lg text-white font-semibold focus:outline-none focus:ring-2 focus:ring-accent" />
-            <textarea value={editDesc} onChange={e => setEditDesc(e.target.value)} rows={6} placeholder="Task description… (paste Loom links to auto-embed)"
-              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent resize-y" />
+            <RichTextEditor
+              key={editing ? 'task-edit' : 'task-view'}
+              content={editDesc}
+              placeholder="Task description… (paste Loom links to auto-embed)"
+              onChange={html => setEditDesc(html === '<p></p>' ? '' : html)}
+              minHeight="min-h-[150px]"
+            />
             <div className="grid grid-cols-3 gap-3">
               <select value={editPriority} onChange={e => setEditPriority(e.target.value)}
                 className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
@@ -742,7 +748,12 @@ export default function TaskDetail() {
                   </div>
                   {editingCommentId === c.id ? (
                     <div className="space-y-2">
-                      <textarea value={editDraft} onChange={e => setEditDraft(e.target.value)} rows={3} className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent resize-y" />
+                      <RichTextEditor
+                        key={editingCommentId ?? 'comment-edit'}
+                        content={editDraft}
+                        onChange={html => setEditDraft(html === '<p></p>' ? '' : html)}
+                        minHeight="min-h-[80px]"
+                      />
                       <div className="flex gap-2">
                         <button type="button" onClick={handleSaveComment} className="px-2 py-1 rounded bg-accent text-white text-xs font-medium">Save</button>
                         <button type="button" onClick={() => { setEditingCommentId(null); setEditDraft('') }} className="px-2 py-1 rounded border border-border text-xs text-gray-300">Cancel</button>
@@ -758,11 +769,13 @@ export default function TaskDetail() {
             ))}
           </div>
           <div className="space-y-2">
-            <textarea value={commentText} onChange={e => setCommentText(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && (commentText.trim() || commentFile)) { e.preventDefault(); handleAddComment() } }}
-              placeholder="Add a comment… (Shift+Enter for new line)"
-              rows={2}
-              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent resize-y" />
+            <RichTextEditor
+              key={`new-comment-${comments.length}`}
+              content={commentText}
+              placeholder="Add a comment…"
+              onChange={html => setCommentText(html === '<p></p>' ? '' : html)}
+              minHeight="min-h-[80px]"
+            />
             {commentFile && (
               <span className="text-xs text-gray-400 flex items-center gap-1">
                 <Paperclip className="w-3 h-3" /> {commentFile.name}
