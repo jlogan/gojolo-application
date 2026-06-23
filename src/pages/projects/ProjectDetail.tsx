@@ -269,9 +269,10 @@ export default function ProjectDetail() {
     fetchAttachments()
   }
 
-  const getDownloadUrl = (path: string) => {
-    const { data } = supabase.storage.from('task-attachments').getPublicUrl(path)
-    return data.publicUrl
+  const openAttachment = async (path: string) => {
+    const { data, error } = await supabase.storage.from('task-attachments').createSignedUrl(path, 60 * 60)
+    if (error || !data?.signedUrl) { alert('Could not generate download link. Please try again.'); return }
+    window.open(data.signedUrl, '_blank', 'noreferrer')
   }
 
   const getUserName = (uid: string | null) => {
@@ -373,25 +374,25 @@ export default function ProjectDetail() {
               {/* Attachments */}
               <div>
                 <label className="block text-[10px] text-gray-500 mb-1">Attachments</label>
-                <input
-                  type="file"
-                  multiple
-                  onChange={e => setTaskFiles(Array.from(e.target.files ?? []))}
-                  className="w-full text-sm text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-surface-muted file:px-3 file:py-1.5 file:text-sm file:text-gray-300 hover:file:bg-accent/10 file:cursor-pointer"
-                  key={taskFiles.length === 0 ? 'empty' : 'filled'}
-                />
-                {taskFiles.length > 0 && (
-                  <ul className="mt-2 space-y-1">
-                    {taskFiles.map((f, i) => (
-                      <li key={i} className="flex items-center gap-2 text-xs text-gray-400 bg-surface-elevated rounded px-2 py-1">
-                        <Paperclip className="w-3 h-3 shrink-0 text-gray-500" />
-                        <span className="truncate flex-1">{f.name}</span>
-                        <span className="text-gray-600 shrink-0">{f.size > 1024 * 1024 ? `${(f.size / 1024 / 1024).toFixed(1)}MB` : `${Math.round(f.size / 1024)}KB`}</span>
-                        <button type="button" onClick={() => setTaskFiles(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 shrink-0"><X className="w-3 h-3" /></button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <div className="space-y-1.5">
+                  {taskFiles.map((f, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs text-gray-400 bg-surface-elevated rounded px-2 py-1">
+                      <Paperclip className="w-3 h-3 shrink-0 text-gray-500" />
+                      <span className="truncate flex-1">{f.name}</span>
+                      <span className="text-gray-600 shrink-0">{f.size > 1024 * 1024 ? `${(f.size / 1024 / 1024).toFixed(1)}MB` : `${Math.round(f.size / 1024)}KB`}</span>
+                      <button type="button" onClick={() => setTaskFiles(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 shrink-0"><X className="w-3 h-3" /></button>
+                    </div>
+                  ))}
+                  <input
+                    type="file"
+                    key={taskFiles.length}
+                    onChange={e => {
+                      const file = e.target.files?.[0]
+                      if (file) setTaskFiles(prev => [...prev, file])
+                    }}
+                    className="w-full text-sm text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-surface-muted file:px-3 file:py-1.5 file:text-sm file:text-gray-300 hover:file:bg-accent/10 file:cursor-pointer"
+                  />
+                </div>
               </div>
               <div className="flex gap-2">
                 <button type="submit" disabled={taskSaving}
@@ -422,7 +423,11 @@ export default function ProjectDetail() {
                       </button>
                       <div className="flex-1 min-w-0">
                         <Link to={`/projects/${id}/tasks/${t.id}`} className={`font-medium text-sm hover:text-accent ${t.status === 'closed' ? 'line-through text-gray-500' : 'text-white'}`}>{t.title}</Link>
-                        {t.description && <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{t.description}</p>}
+                        {t.description && (
+                          <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">
+                            {t.description.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}
+                          </p>
+                        )}
                         <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs">
                           <span className={PRIORITY_COLORS[t.priority] ?? 'text-gray-400'}>{t.priority}</span>
                           {t.due_date && <span className="text-gray-500">{t.due_date}</span>}
@@ -435,7 +440,7 @@ export default function ProjectDetail() {
                             {taskAtts.map(a => (
                               <div key={a.id} className="flex items-center gap-2 text-xs">
                                 <Paperclip className="w-3 h-3 text-gray-500" />
-                                <a href={getDownloadUrl(a.file_path)} target="_blank" rel="noreferrer" className="text-accent hover:underline truncate">{a.file_name}</a>
+                                <button type="button" onClick={() => openAttachment(a.file_path)} className="text-accent hover:underline truncate text-left">{a.file_name}</button>
                                 <button type="button" onClick={() => handleDeleteAttachment(a)} className="text-gray-500 hover:text-red-400"><X className="w-3 h-3" /></button>
                               </div>
                             ))}
