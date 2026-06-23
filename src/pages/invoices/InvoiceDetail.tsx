@@ -42,6 +42,9 @@ type Invoice = {
   hash: string | null
   created_by: string | null
   created_at: string
+  is_recurring?: boolean
+  recurring_interval?: string
+  next_recurring_date?: string
 }
 
 type InvoiceItem = {
@@ -414,14 +417,12 @@ export default function InvoiceDetail() {
           </button>
         )}
 
-        {/* Pay with Stripe (vendor placeholder) */}
+        {/* Stripe payment info (vendor) */}
         {showStripeButton && (
-          <button
-            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700"
-            onClick={() => alert('Stripe payment coming soon')}
-          >
-            <CreditCard size={14} /> Pay with Stripe
-          </button>
+          <div className="w-full sm:w-auto rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-200 flex items-start gap-2">
+            <CreditCard size={16} className="mt-0.5 flex-shrink-0 text-indigo-300" />
+            <span>To pay via Stripe, please contact your account admin to set up payment processing.</span>
+          </div>
         )}
       </div>
 
@@ -491,6 +492,28 @@ export default function InvoiceDetail() {
                   <Calendar size={14} className="text-green-400" />
                   <span className="text-gray-400 w-20">Paid:</span>
                   <span className="text-green-400">{fmtDate(invoice.paid_date)}</span>
+                </div>
+              )}
+              {invoice.is_recurring && (
+                <div className="mt-4 pt-4 border-t border-white/10 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium uppercase text-gray-500">Recurring</span>
+                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-purple-500/20 text-purple-300">
+                      Auto-scheduled
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Calendar size={14} className="text-gray-400" />
+                    <span className="text-gray-400 w-20">Interval:</span>
+                    <span className="text-white capitalize">{invoice.recurring_interval?.replace('-', ' ') ?? '—'}</span>
+                  </div>
+                  {invoice.next_recurring_date && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <Calendar size={14} className="text-gray-400" />
+                      <span className="text-gray-400 w-20">Next:</span>
+                      <span className="text-white">{fmtDate(invoice.next_recurring_date)}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

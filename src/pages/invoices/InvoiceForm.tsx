@@ -233,6 +233,8 @@ export default function InvoiceForm() {
       setDiscountType((d.discount_type as 'percent' | 'fixed') ?? 'percent')
       setDiscountValue(Number(d.discount_value) || 0)
       setAdjustment(Number(d.adjustment) || 0)
+      setIsRecurring(Boolean(d.is_recurring))
+      setRecurringInterval((d.recurring_interval as string) ?? 'monthly')
 
       // load line items
       const { data: itemRows } = await supabase
@@ -942,12 +944,15 @@ export default function InvoiceForm() {
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-medium text-white">Line Items</h2>
-            <div className="flex gap-2">
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex gap-2">
               {(direction === 'inbound' || projectId) && (
                 <button
                   type="button"
                   onClick={openTimeLogModal}
-                  className={`${btnSecondary} inline-flex items-center gap-2 text-sm`}
+                  disabled={direction === 'inbound' ? selectedVendorIds.length === 0 : !projectId}
+                  title={direction === 'inbound' && selectedVendorIds.length === 0 ? 'Select a vendor first' : undefined}
+                  className={`${btnSecondary} inline-flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
                   <Clock className="w-4 h-4" />
                   Import from Time Logs
@@ -961,6 +966,10 @@ export default function InvoiceForm() {
                 <Plus className="w-4 h-4" />
                 Add Row
               </button>
+              </div>
+              {direction === 'inbound' && selectedVendorIds.length === 0 && (
+                <p className="text-xs text-amber-400">Select a vendor above to import time logs.</p>
+              )}
             </div>
           </div>
 
