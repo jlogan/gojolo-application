@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { downloadInvoicePdf } from '@/lib/invoicePdf'
+import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
   Plus, ChevronUp, FileText, DollarSign, Calendar,
@@ -303,12 +303,38 @@ export default function InvoiceDetail() {
 
   /* ---------- PDF download ---------- */
 
-  const handleDownloadPdf = async () => {
-    if (!printRef.current || !invoice || pdfLoading) return
+  const handleDownloadPdf = () => {
+    if (!invoice || pdfLoading) return
     setPdfLoading(true)
     try {
       const invoiceNum = `${(invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(invoice.number ?? '').padStart(4, '0')}`
-      await downloadInvoicePdf(printRef.current, `${invoiceNum}.pdf`)
+      downloadInvoicePdfFromData({
+        invoiceNumber: invoiceNum,
+        status: invoice.status,
+        issueDate: invoice.issue_date,
+        dueDate: invoice.due_date ?? null,
+        orgName: currentOrg?.name ?? 'Brogrammers Agency',
+        billToCompany: company?.name ?? null,
+        billToContact: contact?.name ?? null,
+        billToEmail: contact?.email ?? null,
+        items: items.map((item) => ({
+          description: item.description,
+          longDescription: item.long_description ?? null,
+          quantity: item.quantity,
+          unit: item.unit ?? null,
+          unitPrice: item.unit_price,
+          subtotal: item.subtotal,
+        })),
+        subtotal: invoice.subtotal ?? 0,
+        discountTotal: invoice.discount_total ?? 0,
+        taxTotal: invoice.tax_total ?? 0,
+        adjustment: invoice.adjustment ?? 0,
+        total: invoice.total ?? 0,
+        amountPaid: invoice.amount_paid ?? 0,
+        amountDue: invoice.amount_due ?? 0,
+        notes: invoice.notes ?? null,
+        terms: invoice.terms ?? null,
+      }, `${invoiceNum}.pdf`)
     } catch (err) {
       console.error('PDF generation failed:', err)
     }
@@ -563,7 +589,7 @@ export default function InvoiceDetail() {
               <tr className="border-b border-white/10 text-left text-xs uppercase text-gray-500">
                 <th className="px-4 py-3 w-[40%]">Description</th>
                 <th className="px-4 py-3 text-right">Qty</th>
-                <th className="px-4 py-3 text-right">Unit Price</th>
+                <th className="px-4 py-3 text-right">Rate</th>
                 <th className="px-4 py-3 text-right">Tax</th>
                 <th className="px-4 py-3 text-right">Subtotal</th>
               </tr>

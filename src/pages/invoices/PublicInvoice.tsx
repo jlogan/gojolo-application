@@ -38,15 +38,16 @@ type PublicInvoiceData = {
   paymentMethods?: { stripe?: boolean; paypal?: boolean }
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  draft: 'bg-gray-500/20 text-gray-300',
-  sent: 'bg-blue-500/20 text-blue-300',
-  viewed: 'bg-purple-500/20 text-purple-300',
-  partial: 'bg-yellow-500/20 text-yellow-300',
-  partially_paid: 'bg-yellow-500/20 text-yellow-300',
-  paid: 'bg-green-500/20 text-green-300',
-  overdue: 'bg-red-500/20 text-red-300',
-  cancelled: 'bg-gray-600/20 text-gray-400',
+// Map internal status → payment-facing label + color
+const PAYMENT_STATUS: Record<string, { label: string; cls: string }> = {
+  draft:          { label: 'DRAFT',    cls: 'bg-gray-500/20 text-gray-300' },
+  sent:           { label: 'UNPAID',   cls: 'bg-amber-500/20 text-amber-300' },
+  viewed:         { label: 'UNPAID',   cls: 'bg-amber-500/20 text-amber-300' },
+  partial:        { label: 'PARTIAL',  cls: 'bg-yellow-500/20 text-yellow-300' },
+  partially_paid: { label: 'PARTIAL',  cls: 'bg-yellow-500/20 text-yellow-300' },
+  paid:           { label: 'PAID',     cls: 'bg-green-500/20 text-green-300' },
+  overdue:        { label: 'OVERDUE',  cls: 'bg-red-500/20 text-red-300' },
+  cancelled:      { label: 'CANCELLED',cls: 'bg-gray-600/20 text-gray-400' },
 }
 
 function fmt(n: number) {
@@ -167,7 +168,7 @@ export default function PublicInvoice() {
     !['paid', 'cancelled', 'draft'].includes(data.invoice.status) &&
     data.invoice.amount_due > 0
 
-  const statusLabel = data?.invoice.status === 'partially_paid' ? 'partial' : data?.invoice.status
+  const payStatus = data ? (PAYMENT_STATUS[data.invoice.status] ?? { label: data.invoice.status.toUpperCase(), cls: 'bg-gray-500/20 text-gray-300' }) : null
 
   return (
     <div className="min-h-screen bg-[#0f0f0f] px-4 py-10">
@@ -183,11 +184,9 @@ export default function PublicInvoice() {
               {loading ? 'Loading…' : (error ? 'Invoice' : `Invoice ${invoiceNumber}`)}
             </h1>
           </div>
-          {data && (
-            <span className={`px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${
-              STATUS_COLORS[data.invoice.status] ?? 'bg-gray-500/20 text-gray-300'
-            }`}>
-              {statusLabel}
+          {data && payStatus && (
+            <span className={`px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${payStatus.cls}`}>
+              {payStatus.label}
             </span>
           )}
         </div>
@@ -253,7 +252,7 @@ export default function PublicInvoice() {
               <div className="px-4 py-3 border-b border-white/10 grid grid-cols-[1fr_80px_100px_100px] gap-2 text-xs font-medium uppercase text-gray-500">
                 <div>Description</div>
                 <div className="text-right">Qty</div>
-                <div className="text-right">Unit Price</div>
+                <div className="text-right">Rate</div>
                 <div className="text-right">Subtotal</div>
               </div>
               {data.items.map((item) => (
