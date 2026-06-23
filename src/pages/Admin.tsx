@@ -169,16 +169,23 @@ export default function Admin() {
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
-  // Payments (Stripe + PayPal)
+  // Payments (Stripe)
   const [stripePublishableKey, setStripePublishableKey] = useState('')
   const [stripeSecretKey, setStripeSecretKey] = useState('')
-  const [paypalClientId, setPaypalClientId] = useState('')
-  const [paypalClientSecret, setPaypalClientSecret] = useState('')
-  const [paypalMode, setPaypalMode] = useState<'sandbox' | 'live'>('sandbox')
   const [stripeSaving, setStripeSaving] = useState(false)
   const [stripeMessage, setStripeMessage] = useState<string | null>(null)
   const [stripeTestLoading, setStripeTestLoading] = useState(false)
   const [stripeTestMessage, setStripeTestMessage] = useState<string | null>(null)
+
+  // Payments (PayPal)
+  const [paypalUsername, setPaypalUsername] = useState('')
+  const [paypalPassword, setPaypalPassword] = useState('')
+  const [paypalSignature, setPaypalSignature] = useState('')
+  const [paypalMode, setPaypalMode] = useState<'sandbox' | 'live'>('sandbox')
+  const [paypalSaving, setPaypalSaving] = useState(false)
+  const [paypalMessage, setPaypalMessage] = useState<string | null>(null)
+  const [paypalTestLoading, setPaypalTestLoading] = useState(false)
+  const [paypalTestMessage, setPaypalTestMessage] = useState<string | null>(null)
 
   useEffect(() => {
     if (section === 'imap') setImapView('list')
@@ -190,11 +197,14 @@ export default function Admin() {
     const settings = currentOrg.settings as Record<string, unknown> | null
     setStripePublishableKey((settings?.stripe_publishable_key as string) ?? '')
     setStripeSecretKey((settings?.stripe_secret_key as string) ?? '')
-    setPaypalClientId((settings?.paypal_client_id as string) ?? '')
-    setPaypalClientSecret((settings?.paypal_client_secret as string) ?? '')
+    setPaypalUsername((settings?.paypal_username as string) ?? '')
+    setPaypalPassword((settings?.paypal_password as string) ?? '')
+    setPaypalSignature((settings?.paypal_signature as string) ?? '')
     setPaypalMode(((settings?.paypal_mode as string) === 'live' ? 'live' : 'sandbox'))
     setStripeMessage(null)
     setStripeTestMessage(null)
+    setPaypalMessage(null)
+    setPaypalTestMessage(null)
   }, [section, currentOrg?.id, currentOrg?.settings])
 
   useEffect(() => {
@@ -1775,41 +1785,6 @@ export default function Admin() {
                   <p className="text-xs text-gray-500 mt-1">Your secret key is stored in your organization settings. Never share it publicly.</p>
                 </div>
 
-                <div className="border-t border-border pt-4 space-y-4">
-                  <h3 className="text-sm font-semibold text-white">PayPal</h3>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">PayPal Mode</label>
-                    <select
-                      value={paypalMode}
-                      onChange={e => setPaypalMode(e.target.value === 'live' ? 'live' : 'sandbox')}
-                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
-                    >
-                      <option value="sandbox">Sandbox / Test</option>
-                      <option value="live">Live</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">PayPal Client ID</label>
-                    <input
-                      type="text"
-                      value={paypalClientId}
-                      onChange={e => setPaypalClientId(e.target.value)}
-                      placeholder="PayPal REST app client ID"
-                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">PayPal Client Secret</label>
-                    <input
-                      type="password"
-                      value={paypalClientSecret}
-                      onChange={e => setPaypalClientSecret(e.target.value)}
-                      placeholder="PayPal REST app secret"
-                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
-                    />
-                  </div>
-                </div>
-
                 <div className="flex items-center gap-3 pt-2">
                   <button
                     type="button"
@@ -1823,9 +1798,6 @@ export default function Admin() {
                         ...existingSettings,
                         stripe_publishable_key: stripePublishableKey.trim() || null,
                         stripe_secret_key: stripeSecretKey.trim() || null,
-                        paypal_client_id: paypalClientId.trim() || null,
-                        paypal_client_secret: paypalClientSecret.trim() || null,
-                        paypal_mode: paypalMode,
                       }
                       const { error } = await supabase
                         .from('organizations')
@@ -1882,6 +1854,136 @@ export default function Admin() {
                 {stripeTestMessage && (
                   <p className={`text-sm ${stripeTestMessage.startsWith('✓') ? 'text-accent' : 'text-red-400'}`}>
                     {stripeTestMessage}
+                  </p>
+                )}
+              </div>
+
+              {/* ── PayPal ── */}
+              <h3 className="text-lg font-semibold text-white mt-8 mb-2">PayPal</h3>
+              <p className="text-gray-400 text-sm mb-4">
+                Enter your PayPal NVP/SOAP API credentials. Find these in your PayPal account under Account Settings → API Access → NVP/SOAP API integration.
+              </p>
+              <div className="rounded-lg border border-border bg-surface-elevated p-6 max-w-lg space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">PayPal Mode</label>
+                  <select
+                    value={paypalMode}
+                    onChange={e => setPaypalMode(e.target.value === 'live' ? 'live' : 'sandbox')}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
+                  >
+                    <option value="sandbox">Sandbox / Test</option>
+                    <option value="live">Live</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">PayPal API Username</label>
+                  <input
+                    type="text"
+                    value={paypalUsername}
+                    onChange={e => setPaypalUsername(e.target.value)}
+                    placeholder="e.g. business_api1.example.com"
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">PayPal API Password</label>
+                  <input
+                    type="password"
+                    value={paypalPassword}
+                    onChange={e => setPaypalPassword(e.target.value)}
+                    placeholder="PayPal API password"
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">API Signature</label>
+                  <input
+                    type="password"
+                    value={paypalSignature}
+                    onChange={e => setPaypalSignature(e.target.value)}
+                    placeholder="PayPal API signature"
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                  />
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={paypalSaving}
+                    onClick={async () => {
+                      if (!currentOrg?.id) return
+                      setPaypalSaving(true)
+                      setPaypalMessage(null)
+                      const existingSettings = (currentOrg.settings as Record<string, unknown>) ?? {}
+                      const newSettings = {
+                        ...existingSettings,
+                        paypal_username: paypalUsername.trim() || null,
+                        paypal_password: paypalPassword.trim() || null,
+                        paypal_signature: paypalSignature.trim() || null,
+                        paypal_mode: paypalMode,
+                      }
+                      const { error } = await supabase
+                        .from('organizations')
+                        .update({ settings: newSettings })
+                        .eq('id', currentOrg.id)
+                      setPaypalSaving(false)
+                      if (error) {
+                        setPaypalMessage(error.message)
+                      } else {
+                        setPaypalMessage('PayPal credentials saved.')
+                        setTimeout(() => setPaypalMessage(null), 3000)
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                  >
+                    {paypalSaving ? 'Saving…' : 'Save PayPal Keys'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={paypalTestLoading || !paypalUsername.trim() || !paypalPassword.trim() || !paypalSignature.trim()}
+                    onClick={async () => {
+                      setPaypalTestLoading(true)
+                      setPaypalTestMessage(null)
+                      try {
+                        const endpoint = paypalMode === 'live'
+                          ? 'https://api-3t.paypal.com/nvp'
+                          : 'https://api-3t.sandbox.paypal.com/nvp'
+                        const params = new URLSearchParams({
+                          METHOD: 'GetBalance',
+                          VERSION: '204',
+                          USER: paypalUsername.trim(),
+                          PWD: paypalPassword.trim(),
+                          SIGNATURE: paypalSignature.trim(),
+                        })
+                        const res = await fetch(endpoint, { method: 'POST', body: params.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
+                        const text = await res.text()
+                        const result = Object.fromEntries(new URLSearchParams(text))
+                        if (result.ACK === 'Success' || result.ACK === 'SuccessWithWarning') {
+                          setPaypalTestMessage('✓ Connection successful — PayPal credentials are valid.')
+                        } else {
+                          setPaypalTestMessage(`✗ ${result.L_LONGMESSAGE0 || result.L_SHORTMESSAGE0 || 'Invalid credentials.'}`)
+                        }
+                      } catch (err) {
+                        setPaypalTestMessage(`✗ ${(err as Error).message}`)
+                      } finally {
+                        setPaypalTestLoading(false)
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg border border-border text-gray-300 text-sm font-medium hover:bg-surface-muted disabled:opacity-50"
+                  >
+                    {paypalTestLoading ? 'Testing…' : 'Test Connection'}
+                  </button>
+                </div>
+
+                {paypalMessage && (
+                  <p className={`text-sm ${paypalMessage.includes('saved') ? 'text-accent' : 'text-red-400'}`}>
+                    {paypalMessage}
+                  </p>
+                )}
+                {paypalTestMessage && (
+                  <p className={`text-sm ${paypalTestMessage.startsWith('✓') ? 'text-accent' : 'text-red-400'}`}>
+                    {paypalTestMessage}
                   </p>
                 )}
               </div>

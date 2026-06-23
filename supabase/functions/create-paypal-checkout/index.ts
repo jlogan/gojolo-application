@@ -4,23 +4,27 @@ import { corsHeaders } from '../_shared/cors.ts'
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
-function paypalBase(mode?: string) {
-  return mode === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com'
+function nvpEndpoint(mode?: string) {
+  return mode === 'live'
+    ? 'https://api-3t.paypal.com/nvp'
+    : 'https://api-3t.sandbox.paypal.com/nvp'
 }
 
-async function paypalAccessToken(baseUrl: string, clientId: string, clientSecret: string) {
-  const basic = btoa(`${clientId}:${clientSecret}`)
-  const res = await fetch(`${baseUrl}/v1/oauth2/token`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${basic}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: 'grant_type=client_credentials',
+async function nvpRequest(endpoint: string, user: string, pwd: string, sig: string, params: Record<string, string>) {
+  const body = new URLSearchParams({
+    VERSION: '204',
+    USER: user,
+    PWD: pwd,
+    SIGNATURE: sig,
+    ...params,
   })
-  if (!res.ok) throw new Error(`PayPal auth failed: ${await res.text()}`)
-  const json = await res.json()
-  return json.access_token as string
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+  if (!res.ok) throw new Error(`PayPal NVP request failed: ${res.status}`)
+  return Object.fromEntries(new URLSearchParams(await res.text()))
 }
 
 Deno.serve(async (req: Request) => {
@@ -67,54 +71,45 @@ Deno.serve(async (req: Request) => {
       .single()
 
     const settings = org?.settings as Record<string, unknown> | null
-    const clientId = settings?.paypal_client_id as string | undefined
-    const clientSecret = settings?.paypal_client_secret as string | undefined
+    const user = settings?.paypal_username as string | undefined
+    const pwd = settings?.paypal_password as string | undefined
+    const sig = settings?.paypal_signature as string | undefined
     const mode = (settings?.paypal_mode as string | undefined) || 'sandbox'
-    if (orgErr || !clientId || !clientSecret) {
+
+    if (orgErr || !user || !pwd || !sig) {
       return new Response(JSON.stringify({ error: 'PayPal is not configured for this organization.' }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
 
-    const baseUrl = paypalBase(mode)
-    const token = await paypalAccessToken(baseUrl, clientId, clientSecret)
+    const endpoint = nvpEndpoint(mode)
     const amount = Number(invoice.amount_due ?? 0).toFixed(2)
     const invoiceLabel = `${(invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(invoice.number ?? '').padStart(4, '0')}`
     const orgName = (org?.name as string) || 'Brogrammers Agency'
 
-    const res = await fetch(`${baseUrl}/v2/checkout/orders`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        intent: 'CAPTURE',
-        purchase_units: [
-          {
-            reference_id: invoice.org_id,
-            custom_id: invoice.id,
-            invoice_id: invoiceLabel,
-            description: `Payment to ${orgName} — Invoice ${invoiceLabel}`,
-            amount: { currency_code: 'USD', value: amount },
-          },
-        ],
-        application_context: {
-          brand_name: orgName,
-          user_action: 'PAY_NOW',
-          return_url: successUrl,
-          cancel_url: cancelUrl,
-        },
-      }),
+    const result = await nvpRequest(endpoint, user, pwd, sig, {
+      METHOD: 'SetExpressCheckout',
+      PAYMENTREQUEST_0_AMT: amount,
+      PAYMENTREQUEST_0_CURRENCYCODE: 'USD',
+      PAYMENTREQUEST_0_PAYMENTACTION: 'Sale',
+      PAYMENTREQUEST_0_DESC: `Payment to ${orgName} — Invoice ${invoiceLabel}`,
+      PAYMENTREQUEST_0_CUSTOM: invoice.id,
+      RETURNURL: successUrl ?? '',
+      CANCELURL: cancelUrl ?? '',
+      BRANDNAME: orgName,
+      NOSHIPPING: '1',
     })
 
-    const order = await res.json()
-    if (!res.ok) throw new Error(`PayPal order failed: ${JSON.stringify(order)}`)
-    const approve = order.links?.find((l: { rel: string; href: string }) => l.rel === 'approve')?.href
-    if (!approve) throw new Error('PayPal approve link missing')
+    if (result.ACK !== 'Success' && result.ACK !== 'SuccessWithWarning') {
+      throw new Error(result.L_LONGMESSAGE0 || result.L_SHORTMESSAGE0 || 'PayPal SetExpressCheckout failed')
+    }
 
-    return new Response(JSON.stringify({ url: approve, orderId: order.id }), {
+    const token = result.TOKEN
+    const ppBase = mode === 'live' ? 'https://www.paypal.com' : 'https://www.sandbox.paypal.com'
+    const approveUrl = `${ppBase}/cgi-bin/webscr?cmd=_express-checkout&token=${token}`
+
+    return new Response(JSON.stringify({ url: approveUrl, token }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   } catch (err) {

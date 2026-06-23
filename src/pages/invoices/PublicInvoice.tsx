@@ -64,8 +64,8 @@ export default function PublicInvoice() {
   const paymentResult = searchParams.get('payment')
   const provider = searchParams.get('provider') || 'stripe'
   const stripeSessionId = searchParams.get('session_id')
-  const paypalOrderId = searchParams.get('token')
-
+  const paypalToken = searchParams.get('token')
+  const paypalPayerId = searchParams.get('PayerID')
   const [data, setData] = useState<PublicInvoiceData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -98,9 +98,9 @@ export default function PublicInvoice() {
     ;(async () => {
       setConfirming(true)
       try {
-        if (provider === 'paypal' && paypalOrderId) {
+        if (provider === 'paypal' && paypalToken && paypalPayerId) {
           await supabase.functions.invoke('capture-paypal-payment', {
-            body: { invoiceId: data.invoice.id, orderId: paypalOrderId },
+            body: { invoiceId: data.invoice.id, token: paypalToken, payerId: paypalPayerId },
           })
         } else if (stripeSessionId) {
           await supabase.functions.invoke('confirm-stripe-payment', {
@@ -120,7 +120,7 @@ export default function PublicInvoice() {
     })()
 
     return () => { cancelled = true }
-  }, [data?.invoice.id, paymentResult, provider, paypalOrderId, stripeSessionId, loadInvoice])
+  }, [data?.invoice.id, paymentResult, provider, paypalToken, paypalPayerId, stripeSessionId, loadInvoice])
 
   const handleStripePay = async () => {
     if (!data?.invoice.id) return
