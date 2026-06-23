@@ -47,13 +47,14 @@ export default function ProjectDetail() {
   const [taskAssigned, setTaskAssigned] = useState('')
   const [taskSaving, setTaskSaving] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
+  const [taskFiles, setTaskFiles] = useState<File[]>([])
 
   // Add member
   const [addMemberUserId, setAddMemberUserId] = useState('')
 
   // Add company / contact
   const [allCompanies, setAllCompanies] = useState<{ id: string; name: string }[]>([])
-  const [allContacts, setAllContacts] = useState<{ id: string; name: string; email: string | null }[]>([])
+  const [allContacts, setAllContacts] = useState<{ id: string; name: string; email: string | null; company_id: string | null }[]>([])
   const [addCompanyId, setAddCompanyId] = useState('')
   const [addContactId, setAddContactId] = useState('')
 
@@ -115,11 +116,18 @@ export default function ProjectDetail() {
     if (!currentOrg?.id) return
     const [{ data: cos }, { data: cons }] = await Promise.all([
       supabase.from('companies').select('id, name').eq('org_id', currentOrg.id).order('name'),
-      supabase.from('contacts').select('id, name, email').eq('org_id', currentOrg.id).order('name'),
+      supabase.from('contacts').select('id, name, email, company_id').eq('org_id', currentOrg.id).order('name'),
     ])
     setAllCompanies((cos as { id: string; name: string }[]) ?? [])
-    setAllContacts((cons as { id: string; name: string; email: string | null }[]) ?? [])
+    setAllContacts((cons as { id: string; name: string; email: string | null; company_id: string | null }[]) ?? [])
   }, [currentOrg?.id])
+  // Contacts filtered to the linked company (or all if no company linked)
+  const linkedCompanyId = companies[0]?.company_id ?? null
+  const filteredContactOptions = allContacts.filter(c => {
+    if (contacts.some(pc => pc.contact_id === c.id)) return false // already linked
+    if (linkedCompanyId) return c.company_id === linkedCompanyId
+    return true
+  })
 
   const fetchAttachments = useCallback(async () => {
     if (!id) return
@@ -139,7 +147,7 @@ export default function ProjectDetail() {
 
   const resetTaskForm = () => {
     setTaskTitle(''); setTaskDesc(''); setTaskStatus('todo'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigned('')
-    setEditingTaskId(null); setShowTaskForm(false)
+    setEditingTaskId(null); setShowTaskForm(false); setTaskFiles([])
   }
 
   const handleTaskSubmit = async (e: React.FormEvent) => {
@@ -151,14 +159,31 @@ export default function ProjectDetail() {
       description: taskDesc.trim() || null, status: taskStatus, priority: taskPriority,
       due_date: taskDue || null, assigned_to: taskAssigned || null, updated_at: new Date().toISOString(),
     }
+    let newTaskId: string | null = null
     if (editingTaskId) {
       await supabase.from('tasks').update(payload).eq('id', editingTaskId)
+      newTaskId = editingTaskId
     } else {
-      await supabase.from('tasks').insert({ ...payload, created_by: user?.id ?? null })
+      const { data: insertedTask } = await supabase.from('tasks').insert({ ...payload, created_by: user?.id ?? null }).select('id').single()
+      newTaskId = (insertedTask as { id: string } | null)?.id ?? null
+    }
+    // Upload any attached files
+    if (newTaskId && taskFiles.length > 0) {
+      for (const file of taskFiles) {
+        const path = `${currentOrg!.id}/${id}/${newTaskId}/${Date.now()}-${file.name}`
+        const { error: upErr } = await supabase.storage.from('task-attachments').upload(path, file)
+        if (!upErr) {
+          await supabase.from('task_attachments').insert({
+            task_id: newTaskId, file_name: file.name, file_path: path,
+            file_size: file.size, content_type: file.type, uploaded_by: user?.id ?? null,
+          })
+        }
+      }
     }
     resetTaskForm()
     setTaskSaving(false)
     fetchTasks()
+    fetchAttachments()
   }
 
   const handleDeleteTask = async (taskId: string) => {
@@ -170,7 +195,7 @@ export default function ProjectDetail() {
   const startEditTask = (t: Task) => {
     setEditingTaskId(t.id); setTaskTitle(t.title); setTaskDesc(t.description ?? '')
     setTaskStatus(t.status); setTaskPriority(t.priority); setTaskDue(t.due_date ?? '')
-    setTaskAssigned(t.assigned_to ?? ''); setShowTaskForm(true)
+    setTaskAssigned(t.assigned_to ?? ''); setTaskFiles([]); setShowTaskForm(true)
   }
 
   const handleAddMember = async () => {
@@ -262,6 +287,8 @@ export default function ProjectDetail() {
   )
 
   const availableUsersForMember = orgUsers.filter(u => !members.some(m => m.user_id === u.user_id))
+  // Assignee list limited to project team members only
+  const assignableMembers = members
 
   return (
     <div className="p-4 md:p-6" data-testid="project-detail">
@@ -309,30 +336,43 @@ export default function ProjectDetail() {
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Status</label>
                   <select value={taskStatus} onChange={e => setTaskStatus(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
                     <option value="open">Open</option><option value="in_progress">In Progress</option><option value="needs_work">Needs Work</option><option value="testing">To Be Tested</option><option value="closed">Closed</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Priority</label>
                   <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
                     <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Due Date</label>
                   <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Assignee</label>
                   <select value={taskAssigned} onChange={e => setTaskAssigned(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
                     <option value="">Unassigned</option>
-                    {orgUsers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>)}
+                    {assignableMembers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>)}
                   </select>
                 </div>
+              </div>
+              {/* Attachments */}
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">Attachments</label>
+                <input
+                  type="file"
+                  multiple
+                  onChange={e => setTaskFiles(Array.from(e.target.files ?? []))}
+                  className="w-full text-sm text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-surface-muted file:px-3 file:py-1.5 file:text-sm file:text-gray-300 hover:file:bg-accent/10 file:cursor-pointer"
+                />
+                {taskFiles.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-1">{taskFiles.length} file{taskFiles.length > 1 ? 's' : ''} selected</p>
+                )}
               </div>
               <div className="flex gap-2">
                 <button type="submit" disabled={taskSaving}
@@ -504,7 +544,7 @@ export default function ProjectDetail() {
               <select value={addContactId} onChange={e => setAddContactId(e.target.value)}
                 className="flex-1 rounded-lg border border-border bg-surface-muted px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-accent">
                 <option value="">Link contact…</option>
-                {allContacts.filter(c => !contacts.some(pc => pc.contact_id === c.id)).map(c => <option key={c.id} value={c.id}>{c.name}{c.email ? ` (${c.email})` : ''}</option>)}
+                {filteredContactOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
               <button type="button" onClick={handleAddContact} disabled={!addContactId}
                 className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50">Add</button>
