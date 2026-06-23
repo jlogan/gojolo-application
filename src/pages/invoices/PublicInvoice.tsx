@@ -100,7 +100,7 @@ export default function PublicInvoice() {
   }
 
   const invoiceNumber = data
-    ? `${data.invoice.prefix ?? 'INV-'}${String(data.invoice.number ?? '').padStart(4, '0')}`
+    ? `${(data.invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(data.invoice.number ?? '').padStart(4, '0')}`
     : ''
 
   const showPayButton =

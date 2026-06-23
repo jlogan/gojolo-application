@@ -56,7 +56,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(amount / 100)
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(amount)
 }
 
 function formatDate(dateStr: string | null): string {
@@ -77,8 +77,8 @@ function projectName(projects: InvoiceRow['projects']): string {
 }
 
 function invoiceNumber(inv: InvoiceRow): string {
-  const prefix = inv.prefix ?? 'INV'
-  return inv.number ? `${prefix}-${inv.number}` : '—'
+  const prefix = (inv.prefix ?? 'INV-').replace(/-+$/, '')
+  return inv.number ? `${prefix}-${String(inv.number).padStart(4, '0')}` : '—'
 }
 
 export default function InvoicesList() {

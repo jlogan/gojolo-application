@@ -307,7 +307,7 @@ export default function InvoiceDetail() {
     if (!printRef.current || !invoice || pdfLoading) return
     setPdfLoading(true)
     try {
-      const invoiceNum = `${invoice.prefix ?? 'INV-'}${String(invoice.number ?? '').padStart(4, '0')}`
+      const invoiceNum = `${(invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(invoice.number ?? '').padStart(4, '0')}`
       await downloadInvoicePdf(printRef.current, `${invoiceNum}.pdf`)
     } catch (err) {
       console.error('PDF generation failed:', err)
@@ -339,7 +339,7 @@ export default function InvoiceDetail() {
     )
   }
 
-  const invoiceNumber = `${invoice.prefix ?? 'INV-'}${String(invoice.number ?? '').padStart(4, '0')}`
+  const invoiceNumber = `${(invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(invoice.number ?? '').padStart(4, '0')}`
   const directionLabel = invoice.direction === 'outbound' ? 'Invoice' : 'Bill'
   const canEdit = !isVendor && ['draft'].includes(invoice.status)
   const canMarkSent = !isVendor && ['draft'].includes(invoice.status)
