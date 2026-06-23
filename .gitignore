@@ -20,3 +20,4 @@ Thumbs.db
 *.log
 npm-debug.log*
 config.bat
+tmp/
