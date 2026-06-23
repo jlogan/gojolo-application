@@ -54,14 +54,14 @@ const NAV = [
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/leads', label: 'Leads', icon: Target, testId: 'nav-leads' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
-  { to: '/invoices', label: 'Invoices', icon: FileText, testId: 'nav-invoices' },
+  { to: '/invoices', label: 'Accounting', icon: FileText, testId: 'nav-invoices' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
 ]
 
 const VENDOR_NAV = [
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
-  { to: '/invoices', label: 'Bills', icon: FileText, testId: 'nav-bills' },
+  { to: '/invoices', label: 'Accounting', icon: FileText, testId: 'nav-bills' },
 ]
 
 export default function AppShell() {

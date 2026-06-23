@@ -138,7 +138,7 @@ export default function InvoicesList() {
     <div className="p-4 md:p-6" data-testid="invoices-page">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-        <h1 className="text-xl font-semibold text-white">{entityLabelPlural}</h1>
+        <h1 className="text-xl font-semibold text-white">Accounting</h1>
         {!isVendor && (
           <Link
             to={`/invoices/new?direction=${directionTab}`}

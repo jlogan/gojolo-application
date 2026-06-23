@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -7,7 +7,7 @@ import { downloadInvoicePdf } from '@/lib/invoicePdf'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
   Plus, ChevronUp, FileText, DollarSign, Calendar,
-  Building2, User, Hash,
+  Building2, User, Hash, Link2, CheckCheck,
 } from 'lucide-react'
 
 /* ------------------------------------------------------------------ */
@@ -157,6 +157,9 @@ export default function InvoiceDetail() {
   // Action states
   const [actionLoading, setActionLoading] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [copyLinkDone, setCopyLinkDone] = useState(false)
+  const [searchParams] = useSearchParams()
+  const paymentResult = searchParams.get('payment') // 'success' | 'cancelled'
 
   /* ---------- Fetch ---------- */
 
@@ -374,6 +377,25 @@ export default function InvoiceDetail() {
           {pdfLoading ? 'Generating…' : 'PDF'}
         </button>
 
+        {/* Copy share link */}
+        {invoice.hash && !isVendor && (
+          <button
+            type="button"
+            onClick={() => {
+              const url = `${window.location.origin}/invoice/${invoice.hash}`
+              navigator.clipboard.writeText(url).then(() => {
+                setCopyLinkDone(true)
+                setTimeout(() => setCopyLinkDone(false), 2000)
+              })
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:bg-white/10"
+            title="Copy public link"
+          >
+            {copyLinkDone ? <CheckCheck size={14} className="text-green-400" /> : <Link2 size={14} />}
+            {copyLinkDone ? 'Copied!' : 'Share Link'}
+          </button>
+        )}
+
         {/* Edit */}
         {canEdit && (
           <Link
@@ -425,6 +447,20 @@ export default function InvoiceDetail() {
           </div>
         )}
       </div>
+
+      {/* Payment result banner */}
+      {paymentResult === 'success' && (
+        <div className="rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-300 flex items-center gap-2">
+          <CheckCheck size={16} className="flex-shrink-0" />
+          Payment received — thank you! This invoice will be marked as paid once confirmed.
+        </div>
+      )}
+      {paymentResult === 'cancelled' && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300 flex items-center gap-2">
+          <XCircle size={16} className="flex-shrink-0" />
+          Payment was not completed. You can try again or contact us for help.
+        </div>
+      )}
 
       {/* ============= Printable invoice area ============= */}
       <div ref={printRef} className="space-y-6">

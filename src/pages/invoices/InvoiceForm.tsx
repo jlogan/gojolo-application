@@ -3,7 +3,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { ArrowLeft, Plus, Trash2, Clock, X, Check, GripVertical } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Clock, X, Check, GripVertical, ChevronDown, ChevronUp } from 'lucide-react'
 
 /* ─── types ─── */
 
@@ -11,7 +11,7 @@ type TaxRate = { id: string; name: string; rate: number; is_default: boolean }
 type Currency = { id: string; code: string; name: string; symbol: string; is_default: boolean }
 type Company = { id: string; name: string }
 type Contact = { id: string; name: string; email: string | null; company_id: string | null }
-type Project = { id: string; name: string }
+type Project = { id: string; name: string; project_companies?: { company_id: string }[] }
 type VendorUser = { id: string; display_name: string }
 
 type LineItem = {
@@ -141,6 +141,9 @@ export default function InvoiceForm() {
   /* ── drag state ── */
   const [dragIdx, setDragIdx] = useState<number | null>(null)
 
+  /* ── advanced section ── */
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
   /* ── load reference data ── */
   useEffect(() => {
     if (!currentOrg?.id) return
@@ -181,7 +184,7 @@ export default function InvoiceForm() {
 
     supabase
       .from('projects')
-      .select('id, name')
+      .select('id, name, project_companies(company_id)')
       .eq('org_id', orgId)
       .order('name')
       .then(({ data }) => setProjects((data as Project[] | null) ?? []))
@@ -271,6 +274,23 @@ export default function InvoiceForm() {
     if (companyId && contactId) {
       const valid = contacts.find((c) => c.id === contactId && c.company_id === companyId)
       if (!valid) setContactId('')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId])
+
+  /* ── filtered projects by company (outbound) ── */
+  const filteredProjects = useMemo(() => {
+    if (!companyId || direction !== 'outbound') return projects
+    return projects.filter((p) =>
+      p.project_companies?.some((pc) => pc.company_id === companyId)
+    )
+  }, [projects, companyId, direction])
+
+  /* reset project when company changes and project no longer linked */
+  useEffect(() => {
+    if (companyId && projectId && direction === 'outbound') {
+      const valid = filteredProjects.find((p) => p.id === projectId)
+      if (!valid) setProjectId('')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId])
@@ -813,30 +833,6 @@ export default function InvoiceForm() {
           </div>
           )}
 
-          {/* Date range for inbound */}
-          {direction === 'inbound' && (
-          <>
-            <div>
-              <label className={labelCls}>Start Date (filter)</label>
-              <input
-                type="date"
-                value={dateRangeStart}
-                onChange={(e) => setDateRangeStart(e.target.value)}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>End Date (filter)</label>
-              <input
-                type="date"
-                value={dateRangeEnd}
-                onChange={(e) => setDateRangeEnd(e.target.value)}
-                className={inputCls}
-              />
-            </div>
-          </>
-          )}
-
           {/* Project */}
           <div>
             <label className={labelCls}>Project</label>
@@ -846,26 +842,9 @@ export default function InvoiceForm() {
               className={selectCls}
             >
               <option value="">— Select project —</option>
-              {projects.map((p) => (
+              {filteredProjects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Currency */}
-          <div>
-            <label className={labelCls}>Currency</label>
-            <select
-              value={currencyId}
-              onChange={(e) => setCurrencyId(e.target.value)}
-              className={selectCls}
-            >
-              <option value="">— Select currency —</option>
-              {currencies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.code} — {c.name}
                 </option>
               ))}
             </select>
@@ -893,6 +872,48 @@ export default function InvoiceForm() {
               className={inputCls}
             />
           </div>
+
+          {/* Currency */}
+          <div>
+            <label className={labelCls}>Currency</label>
+            <select
+              value={currencyId}
+              onChange={(e) => setCurrencyId(e.target.value)}
+              className={selectCls}
+            >
+              <option value="">— Select currency —</option>
+              {currencies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} — {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Date range for inbound (time log import filters) */}
+          {direction === 'inbound' && (
+          <>
+            <div>
+              <label className={labelCls}>Start Date (filter)</label>
+              <input
+                type="date"
+                value={dateRangeStart}
+                onChange={(e) => setDateRangeStart(e.target.value)}
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className={labelCls}>End Date (filter)</label>
+              <input
+                type="date"
+                value={dateRangeEnd}
+                onChange={(e) => setDateRangeEnd(e.target.value)}
+                className={inputCls}
+              />
+            </div>
+          </>
+          )}
+
         </div>
 
         {/* ─── Recurring ─── */}
@@ -1162,46 +1183,6 @@ export default function InvoiceForm() {
           </div>
         </div>
 
-        {/* ─── Discount & Adjustment ─── */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className={labelCls}>Discount Type</label>
-            <select
-              value={discountType}
-              onChange={(e) => setDiscountType(e.target.value as 'percent' | 'fixed')}
-              className={selectCls}
-            >
-              <option value="percent">Percentage (%)</option>
-              <option value="fixed">Fixed Amount ({currSymbol})</option>
-            </select>
-          </div>
-          <div>
-            <label className={labelCls}>
-              Discount Value{discountType === 'percent' ? ' (%)' : ` (${currSymbol})`}
-            </label>
-            <input
-              type="number"
-              step="0.01"
-              min="0"
-              value={discountValue || ''}
-              onChange={(e) => setDiscountValue(parseFloat(e.target.value) || 0)}
-              className={inputCls}
-              placeholder="0"
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Adjustment ({currSymbol})</label>
-            <input
-              type="number"
-              step="0.01"
-              value={adjustment || ''}
-              onChange={(e) => setAdjustment(parseFloat(e.target.value) || 0)}
-              className={inputCls}
-              placeholder="0.00"
-            />
-          </div>
-        </div>
-
         {/* ─── Summary ─── */}
         <div className="rounded-lg border border-border bg-surface-muted p-4 md:p-6 max-w-sm ml-auto">
           <div className="space-y-2 text-sm">
@@ -1251,28 +1232,87 @@ export default function InvoiceForm() {
           </div>
         </div>
 
-        {/* ─── Notes & Terms ─── */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className={labelCls}>Notes</label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={3}
-              className={`${inputCls} resize-y`}
-              placeholder="Notes visible to the client…"
-            />
-          </div>
-          <div>
-            <label className={labelCls}>Terms</label>
-            <textarea
-              value={terms}
-              onChange={(e) => setTerms(e.target.value)}
-              rows={3}
-              className={`${inputCls} resize-y`}
-              placeholder="Payment terms, late fee policy…"
-            />
-          </div>
+        {/* ─── Advanced / Optional ─── */}
+        <div className="rounded-lg border border-border bg-surface-muted">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 text-left"
+            aria-expanded={showAdvanced}
+          >
+            <span className="text-sm font-medium text-white">Advanced / Optional</span>
+            {showAdvanced ? (
+              <ChevronUp className="w-4 h-4 text-gray-400" />
+            ) : (
+              <ChevronDown className="w-4 h-4 text-gray-400" />
+            )}
+          </button>
+          {showAdvanced && (
+            <div className="border-t border-border px-4 py-4 space-y-4">
+              {/* Discount & Adjustment */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className={labelCls}>Discount Type</label>
+                  <select
+                    value={discountType}
+                    onChange={(e) => setDiscountType(e.target.value as 'percent' | 'fixed')}
+                    className={selectCls}
+                  >
+                    <option value="percent">Percentage (%)</option>
+                    <option value="fixed">Fixed Amount ({currSymbol})</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    Discount Value{discountType === 'percent' ? ' (%)' : ` (${currSymbol})`}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={discountValue || ''}
+                    onChange={(e) => setDiscountValue(parseFloat(e.target.value) || 0)}
+                    className={inputCls}
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Adjustment ({currSymbol})</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={adjustment || ''}
+                    onChange={(e) => setAdjustment(parseFloat(e.target.value) || 0)}
+                    className={inputCls}
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+              {/* Notes & Terms */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>Notes</label>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    rows={3}
+                    className={`${inputCls} resize-y`}
+                    placeholder="Notes visible to the client…"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Terms</label>
+                  <textarea
+                    value={terms}
+                    onChange={(e) => setTerms(e.target.value)}
+                    rows={3}
+                    className={`${inputCls} resize-y`}
+                    placeholder="Payment terms, late fee policy…"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ─── Actions ─── */}
