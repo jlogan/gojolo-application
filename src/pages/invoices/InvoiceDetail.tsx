@@ -341,7 +341,7 @@ export default function InvoiceDetail() {
 
   const invoiceNumber = `${(invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(invoice.number ?? '').padStart(4, '0')}`
   const directionLabel = invoice.direction === 'outbound' ? 'Invoice' : 'Bill'
-  const canEdit = !isVendor && ['draft'].includes(invoice.status)
+  const canEdit = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
   const canMarkSent = !isVendor && ['draft'].includes(invoice.status)
   const canMarkCancelled = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
   const canDelete = !isVendor && ['draft'].includes(invoice.status)

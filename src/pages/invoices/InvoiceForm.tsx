@@ -724,7 +724,7 @@ export default function InvoiceForm() {
         }
       }
 
-      navigate(`/invoices`)
+      navigate(isEdit && id ? `/invoices/${id}` : `/invoices`)
     } catch (err) {
       console.error('Unexpected error saving invoice:', err)
     } finally {
@@ -749,7 +749,7 @@ export default function InvoiceForm() {
     <div className="p-4 md:p-6 max-w-5xl" data-testid="invoice-form">
       {/* Back link */}
       <Link
-        to={isEdit ? `/invoices` : '/invoices'}
+        to={isEdit && id ? `/invoices/${id}` : '/invoices'}
         className="inline-flex items-center gap-2 text-sm text-surface-muted hover:text-gray-300 mb-6"
       >
         <ArrowLeft className="w-4 h-4" />
@@ -1230,7 +1230,7 @@ export default function InvoiceForm() {
           >
             {saving ? 'Saving…' : 'Save & Send'}
           </button>
-          <Link to="/invoices" className={btnSecondary}>
+          <Link to={isEdit && id ? `/invoices/${id}` : "/invoices"} className={btnSecondary}>
             Cancel
           </Link>
         </div>
