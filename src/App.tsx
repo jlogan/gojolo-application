@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
 import Login from '@/pages/Login'
+import PublicInvoice from '@/pages/invoices/PublicInvoice'
 import WorkspacePicker from '@/pages/WorkspacePicker'
 import AppShell from '@/components/AppShell'
 import UpdateNotificationBar from '@/components/UpdateNotificationBar'
@@ -80,6 +81,7 @@ export default function App() {
       <UpdateNotificationBar />
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/invoice/:hash" element={<PublicInvoice />} />
         <Route
           path="/workspace"
           element={

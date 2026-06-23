@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
@@ -125,6 +125,7 @@ export default function InvoiceForm() {
   const [selectedVendorIds, setSelectedVendorIds] = useState<string[]>([])
   const [dateRangeStart, setDateRangeStart] = useState('')
   const [dateRangeEnd, setDateRangeEnd] = useState('')
+  void setSelectedVendorIds; void setDateRangeStart; void setDateRangeEnd
 
   /* ── recurring ── */
   const [isRecurring, setIsRecurring] = useState(false)
@@ -263,11 +264,6 @@ export default function InvoiceForm() {
     })()
   }, [id, currentOrg?.id])
 
-  /* ── filtered contacts by company ── */
-  const filteredContacts = useMemo(
-    () => (companyId ? contacts.filter((c) => c.company_id === companyId) : contacts),
-    [contacts, companyId],
-  )
 
   /* reset contact when company changes */
   useEffect(() => {
@@ -294,6 +290,36 @@ export default function InvoiceForm() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId])
+
+  /* ── combobox state (searchable selects) ── */
+  const [companyQuery, setCompanyQuery] = useState('')
+  const [companyOpen, setCompanyOpen] = useState(false)
+  const companyRef = useRef<HTMLDivElement>(null)
+
+  const [contactQuery, setContactQuery] = useState('')
+  const [contactOpen, setContactOpen] = useState(false)
+  const contactRef = useRef<HTMLDivElement>(null)
+
+  const [projectQuery, setProjectQuery] = useState('')
+  const [projectOpen, setProjectOpen] = useState(false)
+  const projectRef = useRef<HTMLDivElement>(null)
+
+  const filteredCompanyList = useMemo(() => {
+    const q = companyQuery.trim().toLowerCase()
+    return q ? companies.filter((c) => c.name.toLowerCase().includes(q)) : companies
+  }, [companies, companyQuery])
+
+  const filteredContactList = useMemo(() => {
+    const q = contactQuery.trim().toLowerCase()
+    const base = companyId ? contacts.filter((c) => c.company_id === companyId) : contacts
+    return q ? base.filter((c) => c.name.toLowerCase().includes(q) || (c.email ?? '').toLowerCase().includes(q)) : base
+  }, [contacts, contactQuery, companyId])
+
+  const filteredProjectList = useMemo(() => {
+    const q = projectQuery.trim().toLowerCase()
+    const base = filteredProjects
+    return q ? base.filter((p) => p.name.toLowerCase().includes(q)) : base
+  }, [filteredProjects, projectQuery])
 
   /* ── line item helpers ── */
 
@@ -737,182 +763,100 @@ export default function InvoiceForm() {
       <form onSubmit={handleSubmit} className="space-y-8">
         {/* ─── Header fields ─── */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {/* Direction */}
-          <div>
-            <label className={labelCls}>Type</label>
-            <select
-              value={direction}
-              onChange={(e) => setDirection(e.target.value as 'outbound' | 'inbound')}
-              className={selectCls}
-              disabled={isEdit}
-            >
-              <option value="outbound">Invoice (Outbound)</option>
-              <option value="inbound">Bill (Inbound)</option>
-            </select>
-          </div>
-
-          {/* Company (outbound only) */}
-          {direction === 'outbound' && (
-          <div>
-            <label className={labelCls}>
-              Client Company
-            </label>
-            <select
-              value={companyId}
-              onChange={(e) => setCompanyId(e.target.value)}
-              className={selectCls}
-            >
-              <option value="">— Select company —</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          )}
-
-          {/* Contact (outbound only) */}
-          {direction === 'outbound' && (
-          <div>
-            <label className={labelCls}>Contact</label>
-            <select
-              value={contactId}
-              onChange={(e) => setContactId(e.target.value)}
-              className={selectCls}
-            >
-              <option value="">— Select contact —</option>
-              {filteredContacts.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                  {c.email ? ` (${c.email})` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-          )}
-
-          {/* Vendor multi-select (inbound only) */}
-          {direction === 'inbound' && (
-          <div className="lg:col-span-3">
-            <label className={labelCls}>Select Vendors</label>
-            {vendorUsers.length === 0 ? (
-              <p className="text-sm text-gray-500">No vendors found in this organization.</p>
-            ) : (
-              <div className="flex flex-wrap gap-2 mt-1">
-                {vendorUsers.map((v) => {
-                  const sel = selectedVendorIds.includes(v.id)
-                  return (
-                    <button
-                      key={v.id}
-                      type="button"
-                      onClick={() =>
-                        setSelectedVendorIds((prev) =>
-                          sel ? prev.filter((id) => id !== v.id) : [...prev, v.id],
-                        )
-                      }
-                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
-                        sel
-                          ? 'border-accent bg-accent/10 text-white'
-                          : 'border-border bg-surface-muted text-gray-400 hover:border-gray-600'
-                      }`}
-                    >
-                      <div
-                        className={`w-4 h-4 rounded border flex items-center justify-center ${
-                          sel ? 'bg-accent border-accent' : 'border-gray-500 bg-transparent'
-                        }`}
-                      >
-                        {sel && <Check className="w-3 h-3 text-white" />}
-                      </div>
-                      {v.display_name}
-                    </button>
-                  )
-                })}
-              </div>
+          {/* Client Company — searchable */}
+          <div className="relative" ref={companyRef}>
+            <label className={labelCls}>Client Company</label>
+            <input
+              type="text"
+              value={companyOpen ? companyQuery : (companies.find((c) => c.id === companyId)?.name ?? '')}
+              onChange={(e) => { setCompanyQuery(e.target.value); setCompanyOpen(true) }}
+              onFocus={() => { setCompanyQuery(''); setCompanyOpen(true) }}
+              placeholder="Search companies…"
+              className={inputCls}
+            />
+            {companyOpen && (
+              <ul className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-[#1a1a1a] py-1 shadow-lg max-h-48 overflow-auto">
+                <li>
+                  <button type="button" onMouseDown={() => { setCompanyId(''); setCompanyQuery(''); setCompanyOpen(false) }}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-400 hover:bg-white/5">— Clear —</button>
+                </li>
+                {filteredCompanyList.map((c) => (
+                  <li key={c.id}>
+                    <button type="button" onMouseDown={() => { setCompanyId(c.id); setCompanyQuery(c.name); setCompanyOpen(false) }}
+                      className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/5">{c.name}</button>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
-          )}
 
-          {/* Project */}
-          <div>
+          {/* Contact — searchable */}
+          <div className="relative" ref={contactRef}>
+            <label className={labelCls}>Contact</label>
+            <input
+              type="text"
+              value={contactOpen ? contactQuery : (contacts.find((c) => c.id === contactId)?.name ?? '')}
+              onChange={(e) => { setContactQuery(e.target.value); setContactOpen(true) }}
+              onFocus={() => { setContactQuery(''); setContactOpen(true) }}
+              placeholder="Search contacts…"
+              className={inputCls}
+            />
+            {contactOpen && (
+              <ul className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-[#1a1a1a] py-1 shadow-lg max-h-48 overflow-auto">
+                <li>
+                  <button type="button" onMouseDown={() => { setContactId(''); setContactQuery(''); setContactOpen(false) }}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-400 hover:bg-white/5">— Clear —</button>
+                </li>
+                {filteredContactList.map((c) => (
+                  <li key={c.id}>
+                    <button type="button" onMouseDown={() => { setContactId(c.id); setContactQuery(c.name); setContactOpen(false) }}
+                      className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/5">
+                      {c.name}{c.email ? <span className="text-gray-400"> ({c.email})</span> : null}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Project — searchable */}
+          <div className="relative" ref={projectRef}>
             <label className={labelCls}>Project</label>
-            <select
-              value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-              className={selectCls}
-            >
-              <option value="">— Select project —</option>
-              {filteredProjects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+            <input
+              type="text"
+              value={projectOpen ? projectQuery : (projects.find((p) => p.id === projectId)?.name ?? '')}
+              onChange={(e) => { setProjectQuery(e.target.value); setProjectOpen(true) }}
+              onFocus={() => { setProjectQuery(''); setProjectOpen(true) }}
+              placeholder="Search projects…"
+              className={inputCls}
+            />
+            {projectOpen && (
+              <ul className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-[#1a1a1a] py-1 shadow-lg max-h-48 overflow-auto">
+                <li>
+                  <button type="button" onMouseDown={() => { setProjectId(''); setProjectQuery(''); setProjectOpen(false) }}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-400 hover:bg-white/5">— Clear —</button>
+                </li>
+                {filteredProjectList.map((p) => (
+                  <li key={p.id}>
+                    <button type="button" onMouseDown={() => { setProjectId(p.id); setProjectQuery(p.name); setProjectOpen(false) }}
+                      className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/5">{p.name}</button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {/* Issue date */}
           <div>
             <label className={labelCls}>Issue Date</label>
-            <input
-              type="date"
-              value={issueDate}
-              onChange={(e) => setIssueDate(e.target.value)}
-              required
-              className={inputCls}
-            />
+            <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} required className={inputCls} />
           </div>
 
           {/* Due date */}
           <div>
             <label className={labelCls}>Due Date</label>
-            <input
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              className={inputCls}
-            />
+            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
           </div>
-
-          {/* Currency */}
-          <div>
-            <label className={labelCls}>Currency</label>
-            <select
-              value={currencyId}
-              onChange={(e) => setCurrencyId(e.target.value)}
-              className={selectCls}
-            >
-              <option value="">— Select currency —</option>
-              {currencies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.code} — {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Date range for inbound (time log import filters) */}
-          {direction === 'inbound' && (
-          <>
-            <div>
-              <label className={labelCls}>Start Date (filter)</label>
-              <input
-                type="date"
-                value={dateRangeStart}
-                onChange={(e) => setDateRangeStart(e.target.value)}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>End Date (filter)</label>
-              <input
-                type="date"
-                value={dateRangeEnd}
-                onChange={(e) => setDateRangeEnd(e.target.value)}
-                className={inputCls}
-              />
-            </div>
-          </>
-          )}
 
         </div>
 
@@ -995,15 +939,13 @@ export default function InvoiceForm() {
           </div>
 
           {/* Table header */}
-          <div className="hidden md:grid md:grid-cols-[32px_1fr_80px_100px_80px_120px_100px_100px_36px] gap-2 text-xs text-gray-400 uppercase tracking-wider mb-2 px-1">
+          <div className="hidden md:grid md:grid-cols-[32px_1fr_80px_100px_80px_100px_36px] gap-2 text-xs text-gray-400 uppercase tracking-wider mb-2 px-1">
             <div></div>
             <div>Description</div>
             <div className="text-right">Qty</div>
             <div className="text-right">Unit Price</div>
             <div>Unit</div>
-            <div>Tax Rate</div>
             <div className="text-right">Subtotal</div>
-            <div className="text-right">Tax</div>
             <div></div>
           </div>
 
@@ -1023,7 +965,7 @@ export default function InvoiceForm() {
                   }`}
                 >
                   {/* Desktop layout */}
-                  <div className="hidden md:grid md:grid-cols-[32px_1fr_80px_100px_80px_120px_100px_100px_36px] gap-2 items-center">
+                  <div className="hidden md:grid md:grid-cols-[32px_1fr_80px_100px_80px_100px_36px] gap-2 items-center">
                     <div className="cursor-grab text-gray-500 hover:text-gray-300 flex justify-center">
                       <GripVertical className="w-4 h-4" />
                     </div>
@@ -1064,24 +1006,9 @@ export default function InvoiceForm() {
                       <option value="days">days</option>
                       <option value="units">units</option>
                     </select>
-                    <select
-                      value={item.tax_rate_id}
-                      onChange={(e) => updateItem(idx, { tax_rate_id: e.target.value })}
-                      className="w-full rounded border border-border bg-transparent px-1 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent"
-                    >
-                      <option value="">No tax</option>
-                      {taxRates.map((tr) => (
-                        <option key={tr.id} value={tr.id}>
-                          {tr.name} ({tr.rate}%)
-                        </option>
-                      ))}
-                    </select>
                     <div className="text-sm text-gray-300 text-right tabular-nums">
                       {currSymbol}
                       {calc.subtotal.toFixed(2)}
-                    </div>
-                    <div className="text-sm text-gray-400 text-right tabular-nums">
-                      {calc.tax > 0 ? `${currSymbol}${calc.tax.toFixed(2)}` : '—'}
                     </div>
                     <button
                       type="button"
@@ -1112,7 +1039,7 @@ export default function InvoiceForm() {
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-xs text-gray-500">Qty</label>
                         <input
@@ -1139,33 +1066,11 @@ export default function InvoiceForm() {
                           className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-sm text-white text-right focus:outline-none focus:ring-1 focus:ring-accent"
                         />
                       </div>
-                      <div>
-                        <label className="text-xs text-gray-500">Tax</label>
-                        <select
-                          value={item.tax_rate_id}
-                          onChange={(e) => updateItem(idx, { tax_rate_id: e.target.value })}
-                          className="w-full rounded border border-border bg-transparent px-1 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent"
-                        >
-                          <option value="">None</option>
-                          {taxRates.map((tr) => (
-                            <option key={tr.id} value={tr.id}>
-                              {tr.name} ({tr.rate}%)
-                            </option>
-                          ))}
-                        </select>
-                      </div>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-400">
-                        Subtotal: {currSymbol}
-                        {calc.subtotal.toFixed(2)}
+                        Subtotal: {currSymbol}{calc.subtotal.toFixed(2)}
                       </span>
-                      {calc.tax > 0 && (
-                        <span className="text-gray-500">
-                          Tax: {currSymbol}
-                          {calc.tax.toFixed(2)}
-                        </span>
-                      )}
                     </div>
                   </div>
 
@@ -1191,13 +1096,6 @@ export default function InvoiceForm() {
               <span className="text-white tabular-nums">
                 {currSymbol}
                 {summary.subtotal.toFixed(2)}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Tax</span>
-              <span className="text-white tabular-nums">
-                {currSymbol}
-                {summary.taxTotal.toFixed(2)}
               </span>
             </div>
             {summary.discountTotal > 0 && (
