@@ -10,6 +10,7 @@ import {
   ExternalLink, X,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
+import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 
 type Task = {
   id: string; project_id: string; title: string; description: string | null
@@ -21,6 +22,11 @@ type TimeLog = { id: string; user_id: string; hours: number; minutes: number; wo
 type Artifact = { id: string; type: string; label: string | null; url: string | null; file_path: string | null; file_name: string | null; created_at: string }
 type StatusEntry = { id: string; from_status: string | null; to_status: string; changed_by: string | null; comment: string | null; created_at: string; display_name?: string | null }
 type LinkedThread = { thread_id: string; subject: string | null; last_message_at: string }
+type InboxMessage = {
+  id: string; thread_id: string; direction: string
+  from_identifier: string; to_identifier: string | null; cc: string | null
+  body: string | null; html_body: string | null; received_at: string
+}
 type SlackMsg = { id: string; user_name: string | null; content: string; received_at: string }
 type VaultCred = { id: string; credential_id: string; label: string; url: string | null; username: string | null }
 type OrgUser = { user_id: string; display_name: string | null; avatar_url: string | null }
@@ -143,6 +149,10 @@ export default function TaskDetail() {
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [statusHistory, setStatusHistory] = useState<StatusEntry[]>([])
   const [linkedThreads, setLinkedThreads] = useState<LinkedThread[]>([])
+  const [threadMessages, setThreadMessages] = useState<Record<string, InboxMessage[]>>({})
+  const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null)
+  const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null)
+  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set())
   const [_slackMessages, setSlackMessages] = useState<SlackMsg[]>([])
   const [vaultCreds, setVaultCreds] = useState<VaultCred[]>([])
   const [assignees, setAssignees] = useState<TaskAssignee[]>([])
@@ -529,6 +539,21 @@ export default function TaskDetail() {
     if (!error) {
       setLinkedThreads(prev => prev.filter(t => t.thread_id !== threadId))
     }
+  }
+
+  const fetchThreadMessages = async (threadId: string) => {
+    if (threadMessages[threadId]) return
+    setLoadingThreadId(threadId)
+    const { data } = await supabase
+      .from('inbox_messages')
+      .select('id, thread_id, direction, from_identifier, to_identifier, cc, body, html_body, received_at')
+      .eq('thread_id', threadId)
+      .order('received_at', { ascending: true })
+    setThreadMessages(prev => ({ ...prev, [threadId]: (data as InboxMessage[]) ?? [] }))
+    if (data && data.length > 0) {
+      setExpandedMsgIds(prev => new Set([...Array.from(prev), (data as InboxMessage[])[data.length - 1].id]))
+    }
+    setLoadingThreadId(null)
   }
 
   const totalMinutes = timeLogs.reduce((sum, t) => sum + (t.hours * 60) + t.minutes, 0)
@@ -1076,37 +1101,122 @@ export default function TaskDetail() {
           {linkedThreads.length === 0 ? (
             <p className="text-gray-500 text-sm">No email threads linked yet.</p>
           ) : (
-            linkedThreads.map(t => (
-              <div
-                key={t.thread_id}
-                className="flex items-center gap-3 p-3 rounded-lg border border-border hover:border-accent/30 hover:bg-surface-muted/30"
-              >
-                <Mail className="w-4 h-4 text-gray-500 shrink-0" />
-                <p className="text-sm text-white truncate flex-1 min-w-0">
-                  {t.subject || '(No subject)'}
-                </p>
-                <span className="text-xs text-gray-500 shrink-0">
-                  {t.last_message_at ? new Date(t.last_message_at).toLocaleString() : ''}
-                </span>
-                <a
-                  href={`/inbox/${t.thread_id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-gray-500 hover:text-accent shrink-0"
-                  title="Open in inbox"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                </a>
-                <button
-                  type="button"
-                  onClick={() => handleUnlinkEmailThread(t.thread_id)}
-                  className="text-gray-600 hover:text-red-400 shrink-0"
-                  title="Unlink thread"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            ))
+            linkedThreads.map(t => {
+              const isExpanded = expandedThreadId === t.thread_id
+              const msgs = threadMessages[t.thread_id] ?? []
+              return (
+                <div key={t.thread_id} className="rounded-lg border border-border overflow-hidden">
+                  {/* Thread accordion header */}
+                  <div
+                    className="flex items-center gap-2 p-3 cursor-pointer hover:bg-surface-muted/40 select-none"
+                    onClick={() => {
+                      if (isExpanded) {
+                        setExpandedThreadId(null)
+                      } else {
+                        setExpandedThreadId(t.thread_id)
+                        void fetchThreadMessages(t.thread_id)
+                      }
+                    }}
+                  >
+                    <ChevronRight
+                      className="w-4 h-4 text-gray-500 shrink-0 transition-transform"
+                      style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                    />
+                    <Mail className="w-4 h-4 text-gray-500 shrink-0" />
+                    <p className="text-sm text-white truncate flex-1 min-w-0">
+                      {t.subject || '(No subject)'}
+                    </p>
+                    <span className="text-xs text-gray-500 shrink-0">
+                      {t.last_message_at ? new Date(t.last_message_at).toLocaleString() : ''}
+                    </span>
+                    <a
+                      href={`/inbox/${t.thread_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-gray-500 hover:text-accent shrink-0"
+                      title="Open in inbox"
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={e => { e.stopPropagation(); void handleUnlinkEmailThread(t.thread_id) }}
+                      className="text-gray-600 hover:text-red-400 shrink-0"
+                      title="Unlink thread"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Thread messages (expanded) */}
+                  {isExpanded && (
+                    <div className="border-t border-border bg-surface-elevated/30">
+                      {loadingThreadId === t.thread_id ? (
+                        <p className="text-gray-500 text-sm px-3 py-3">Loading messages…</p>
+                      ) : msgs.length === 0 ? (
+                        <p className="text-gray-500 text-sm px-3 py-3">No messages found.</p>
+                      ) : (
+                        <div className="divide-y divide-border">
+                          {msgs.map(m => {
+                            const isMsgExpanded = expandedMsgIds.has(m.id)
+                            return (
+                              <article key={m.id}>
+                                {/* Message header */}
+                                <div
+                                  className="px-3 py-2 text-xs text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 cursor-pointer hover:bg-surface-muted/30"
+                                  onClick={() => setExpandedMsgIds(prev => {
+                                    const next = new Set(Array.from(prev))
+                                    if (next.has(m.id)) next.delete(m.id); else next.add(m.id)
+                                    return next
+                                  })}
+                                >
+                                  <span><span className="text-gray-500">From:</span> {m.from_identifier}</span>
+                                  {isMsgExpanded && m.to_identifier && <span><span className="text-gray-500">To:</span> {m.to_identifier}</span>}
+                                  {isMsgExpanded && m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
+                                  <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${m.direction === 'inbound' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'}`}>
+                                    {m.direction === 'inbound' ? '↓ in' : '↑ out'}
+                                  </span>
+                                </div>
+                                {/* Message body */}
+                                {isMsgExpanded && (() => {
+                                  if (m.html_body?.trim()) {
+                                    const sanitized = sanitizeEmailHtml(m.html_body)
+                                    const { srcDoc, isDark } = buildEmailSrcDoc(sanitized)
+                                    return (
+                                      <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
+                                        <iframe
+                                          title="Email"
+                                          srcDoc={srcDoc}
+                                          className="w-full border-0"
+                                          sandbox="allow-same-origin allow-popups allow-top-navigation-by-user-activation"
+                                          onLoad={e => {
+                                            const f = e.target as HTMLIFrameElement
+                                            if (f.contentDocument?.body) {
+                                              f.style.height = Math.max(80, f.contentDocument.body.scrollHeight + 20) + 'px'
+                                            }
+                                          }}
+                                          style={{ minHeight: '80px', background: isDark ? '#0f0f0f' : '#fff' }}
+                                        />
+                                      </div>
+                                    )
+                                  }
+                                  if (m.body?.trim()) {
+                                    return <div className="text-sm whitespace-pre-wrap break-words p-3 text-gray-200">{m.body}</div>
+                                  }
+                                  return <p className="text-xs text-gray-500 p-3">No message body.</p>
+                                })()}
+                              </article>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })
           )}
         </div>
       )}
