@@ -27,7 +27,7 @@ Deno.serve(async (req: Request) => {
     // Fetch the invoice with org settings
     const { data: invoice, error: invErr } = await service
       .from('invoices')
-      .select('id, org_id, invoice_number, amount_due, currency, status, company_id, companies(name)')
+      .select('id, org_id, number, prefix, amount_due, currency_id, status, company_id, companies(name)')
       .eq('id', invoiceId)
       .single()
 
@@ -75,6 +75,7 @@ Deno.serve(async (req: Request) => {
     })
 
     const amountCents = Math.round((invoice.amount_due ?? 0) * 100)
+    const invoiceLabel = `${(invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(invoice.number ?? '').padStart(4, '0')}`
     const companyName = Array.isArray(invoice.companies)
       ? invoice.companies[0]?.name
       : (invoice.companies as { name: string } | null)?.name
@@ -85,9 +86,9 @@ Deno.serve(async (req: Request) => {
       line_items: [
         {
           price_data: {
-            currency: (invoice.currency ?? 'usd').toLowerCase(),
+            currency: 'usd',
             product_data: {
-              name: `Invoice ${invoice.invoice_number}`,
+              name: `Invoice ${invoiceLabel}`,
               description: companyName ? `Payment to ${companyName}` : undefined,
             },
             unit_amount: amountCents,
