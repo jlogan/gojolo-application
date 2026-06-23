@@ -66,7 +66,20 @@ BEGIN
       'contact', v_contact_name,
       'email', v_contact_email
     ),
-    'items', COALESCE(v_items, '[]'::jsonb)
+    'items', COALESCE(v_items, '[]'::jsonb),
+    'paymentMethods', jsonb_build_object(
+      'stripe', EXISTS (
+        SELECT 1 FROM organizations
+        WHERE id = v_invoice.org_id
+          AND NULLIF(settings->>'stripe_secret_key', '') IS NOT NULL
+      ),
+      'paypal', EXISTS (
+        SELECT 1 FROM organizations
+        WHERE id = v_invoice.org_id
+          AND NULLIF(settings->>'paypal_client_id', '') IS NOT NULL
+          AND NULLIF(settings->>'paypal_client_secret', '') IS NOT NULL
+      )
+    )
   );
 END;
 $$;

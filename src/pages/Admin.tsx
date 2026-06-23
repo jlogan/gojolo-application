@@ -169,9 +169,12 @@ export default function Admin() {
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
-  // Payments (Stripe)
+  // Payments (Stripe + PayPal)
   const [stripePublishableKey, setStripePublishableKey] = useState('')
   const [stripeSecretKey, setStripeSecretKey] = useState('')
+  const [paypalClientId, setPaypalClientId] = useState('')
+  const [paypalClientSecret, setPaypalClientSecret] = useState('')
+  const [paypalMode, setPaypalMode] = useState<'sandbox' | 'live'>('sandbox')
   const [stripeSaving, setStripeSaving] = useState(false)
   const [stripeMessage, setStripeMessage] = useState<string | null>(null)
   const [stripeTestLoading, setStripeTestLoading] = useState(false)
@@ -187,6 +190,9 @@ export default function Admin() {
     const settings = currentOrg.settings as Record<string, unknown> | null
     setStripePublishableKey((settings?.stripe_publishable_key as string) ?? '')
     setStripeSecretKey((settings?.stripe_secret_key as string) ?? '')
+    setPaypalClientId((settings?.paypal_client_id as string) ?? '')
+    setPaypalClientSecret((settings?.paypal_client_secret as string) ?? '')
+    setPaypalMode(((settings?.paypal_mode as string) === 'live' ? 'live' : 'sandbox'))
     setStripeMessage(null)
     setStripeTestMessage(null)
   }, [section, currentOrg?.id, currentOrg?.settings])
@@ -1744,7 +1750,7 @@ export default function Admin() {
             <>
               <h2 className="text-xl font-semibold text-white mb-2">Payment Configuration</h2>
               <p className="text-gray-400 text-sm mb-6">
-                Configure Stripe keys for your organization to accept payments on invoices. Keys are stored securely per organization.
+                Configure Stripe and PayPal keys for your organization to accept payments on invoices. Keys are stored per organization.
               </p>
               <div className="rounded-lg border border-border bg-surface-elevated p-6 max-w-lg space-y-4">
                 <div>
@@ -1769,6 +1775,41 @@ export default function Admin() {
                   <p className="text-xs text-gray-500 mt-1">Your secret key is stored in your organization settings. Never share it publicly.</p>
                 </div>
 
+                <div className="border-t border-border pt-4 space-y-4">
+                  <h3 className="text-sm font-semibold text-white">PayPal</h3>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">PayPal Mode</label>
+                    <select
+                      value={paypalMode}
+                      onChange={e => setPaypalMode(e.target.value === 'live' ? 'live' : 'sandbox')}
+                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50"
+                    >
+                      <option value="sandbox">Sandbox / Test</option>
+                      <option value="live">Live</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">PayPal Client ID</label>
+                    <input
+                      type="text"
+                      value={paypalClientId}
+                      onChange={e => setPaypalClientId(e.target.value)}
+                      placeholder="PayPal REST app client ID"
+                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">PayPal Client Secret</label>
+                    <input
+                      type="password"
+                      value={paypalClientSecret}
+                      onChange={e => setPaypalClientSecret(e.target.value)}
+                      placeholder="PayPal REST app secret"
+                      className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                    />
+                  </div>
+                </div>
+
                 <div className="flex items-center gap-3 pt-2">
                   <button
                     type="button"
@@ -1782,6 +1823,9 @@ export default function Admin() {
                         ...existingSettings,
                         stripe_publishable_key: stripePublishableKey.trim() || null,
                         stripe_secret_key: stripeSecretKey.trim() || null,
+                        paypal_client_id: paypalClientId.trim() || null,
+                        paypal_client_secret: paypalClientSecret.trim() || null,
+                        paypal_mode: paypalMode,
                       }
                       const { error } = await supabase
                         .from('organizations')

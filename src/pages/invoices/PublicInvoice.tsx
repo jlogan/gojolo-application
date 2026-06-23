@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { CheckCheck, XCircle, AlertCircle } from 'lucide-react'
@@ -35,6 +35,7 @@ type PublicInvoiceData = {
     total: number
     sort_order: number
   }>
+  paymentMethods?: { stripe?: boolean; paypal?: boolean }
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -42,6 +43,7 @@ const STATUS_COLORS: Record<string, string> = {
   sent: 'bg-blue-500/20 text-blue-300',
   viewed: 'bg-purple-500/20 text-purple-300',
   partial: 'bg-yellow-500/20 text-yellow-300',
+  partially_paid: 'bg-yellow-500/20 text-yellow-300',
   paid: 'bg-green-500/20 text-green-300',
   overdue: 'bg-red-500/20 text-red-300',
   cancelled: 'bg-gray-600/20 text-gray-400',
@@ -60,42 +62,99 @@ export default function PublicInvoice() {
   const { hash } = useParams<{ hash: string }>()
   const [searchParams] = useSearchParams()
   const paymentResult = searchParams.get('payment')
+  const provider = searchParams.get('provider') || 'stripe'
+  const stripeSessionId = searchParams.get('session_id')
+  const paypalOrderId = searchParams.get('token')
 
   const [data, setData] = useState<PublicInvoiceData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [payLoading, setPayLoading] = useState(false)
+  const [payLoading, setPayLoading] = useState<'stripe' | 'paypal' | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  const loadInvoice = useCallback(async () => {
+    if (!hash) return null
+    const { data: result, error: err } = await supabase.rpc('get_public_invoice', { p_hash: hash })
+    if (err || !result || result.error) {
+      setError('Invoice not found or no longer available.')
+      return null
+    }
+    const payload = result as PublicInvoiceData
+    setData(payload)
+    setError(null)
+    return payload
+  }, [hash])
 
   useEffect(() => {
     if (!hash) return
     setLoading(true)
-    supabase
-      .rpc('get_public_invoice', { p_hash: hash })
-      .then(({ data: result, error: err }) => {
-        if (err || !result || result.error) {
-          setError('Invoice not found or no longer available.')
-        } else {
-          setData(result as PublicInvoiceData)
-        }
-        setLoading(false)
-      })
-  }, [hash])
+    loadInvoice().finally(() => setLoading(false))
+  }, [hash, loadInvoice])
 
-  const handlePayNow = async () => {
+  useEffect(() => {
+    if (!data?.invoice.id || paymentResult !== 'success') return
+
+    let cancelled = false
+    ;(async () => {
+      setConfirming(true)
+      try {
+        if (provider === 'paypal' && paypalOrderId) {
+          await supabase.functions.invoke('capture-paypal-payment', {
+            body: { invoiceId: data.invoice.id, orderId: paypalOrderId },
+          })
+        } else if (stripeSessionId) {
+          await supabase.functions.invoke('confirm-stripe-payment', {
+            body: { invoiceId: data.invoice.id, sessionId: stripeSessionId },
+          })
+        }
+
+        // Refetch/poll briefly so the DB trigger can update amount_paid/status.
+        for (let i = 0; i < 8 && !cancelled; i += 1) {
+          const latest = await loadInvoice()
+          if (latest?.invoice.status === 'paid') break
+          await new Promise((resolve) => setTimeout(resolve, 1500))
+        }
+      } finally {
+        if (!cancelled) setConfirming(false)
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [data?.invoice.id, paymentResult, provider, paypalOrderId, stripeSessionId, loadInvoice])
+
+  const handleStripePay = async () => {
     if (!data?.invoice.id) return
-    setPayLoading(true)
+    setPayLoading('stripe')
     const { data: checkout, error: fnErr } = await supabase.functions.invoke('create-stripe-checkout', {
       body: {
         invoiceId: data.invoice.id,
-        successUrl: `${window.location.origin}/invoice/${hash}?payment=success`,
-        cancelUrl: `${window.location.origin}/invoice/${hash}?payment=cancelled`,
+        successUrl: `${window.location.origin}/invoice/${hash}?payment=success&provider=stripe&session_id={CHECKOUT_SESSION_ID}`,
+        cancelUrl: `${window.location.origin}/invoice/${hash}?payment=cancelled&provider=stripe`,
       },
     })
     if (!fnErr && checkout?.url) {
       window.location.href = checkout.url
     } else {
-      setPayLoading(false)
-      alert('Online payment is not configured yet. Please contact us to arrange payment.')
+      setPayLoading(null)
+      alert(checkout?.error || 'Online card payment is not configured yet. Please contact us to arrange payment.')
+    }
+  }
+
+  const handlePayPalPay = async () => {
+    if (!data?.invoice.id) return
+    setPayLoading('paypal')
+    const { data: checkout, error: fnErr } = await supabase.functions.invoke('create-paypal-checkout', {
+      body: {
+        invoiceId: data.invoice.id,
+        successUrl: `${window.location.origin}/invoice/${hash}?payment=success&provider=paypal`,
+        cancelUrl: `${window.location.origin}/invoice/${hash}?payment=cancelled&provider=paypal`,
+      },
+    })
+    if (!fnErr && checkout?.url) {
+      window.location.href = checkout.url
+    } else {
+      setPayLoading(null)
+      alert(checkout?.error || 'PayPal is not configured yet. Please contact us to arrange payment.')
     }
   }
 
@@ -107,6 +166,8 @@ export default function PublicInvoice() {
     data &&
     !['paid', 'cancelled', 'draft'].includes(data.invoice.status) &&
     data.invoice.amount_due > 0
+
+  const statusLabel = data?.invoice.status === 'partially_paid' ? 'partial' : data?.invoice.status
 
   return (
     <div className="min-h-screen bg-[#0f0f0f] px-4 py-10">
@@ -126,7 +187,7 @@ export default function PublicInvoice() {
             <span className={`px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide ${
               STATUS_COLORS[data.invoice.status] ?? 'bg-gray-500/20 text-gray-300'
             }`}>
-              {data.invoice.status}
+              {statusLabel}
             </span>
           )}
         </div>
@@ -144,7 +205,11 @@ export default function PublicInvoice() {
         {paymentResult === 'success' && (
           <div className="rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-300 flex items-center gap-2">
             <CheckCheck size={16} />
-            Payment received — thank you! This invoice will be marked as paid once confirmed.
+            {data?.invoice.status === 'paid'
+              ? 'Payment received — thank you! This invoice is now paid.'
+              : confirming
+                ? 'Payment received — confirming your invoice status…'
+                : 'Payment received — thank you! This invoice will be marked as paid once confirmed.'}
           </div>
         )}
         {paymentResult === 'cancelled' && (
@@ -242,16 +307,27 @@ export default function PublicInvoice() {
               </div>
             </div>
 
-            {/* Pay Now */}
+            {/* Payment buttons */}
             {showPayButton && (
-              <div className="flex justify-end">
-                <button
-                  onClick={handlePayNow}
-                  disabled={payLoading}
-                  className="inline-flex items-center gap-2 rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-60 px-6 py-3 text-sm font-semibold text-white transition-colors"
-                >
-                  {payLoading ? 'Redirecting…' : `Pay ${fmt(data.invoice.amount_due)}`}
-                </button>
+              <div className="flex flex-col sm:flex-row justify-end gap-3">
+                {data.paymentMethods?.stripe !== false && (
+                  <button
+                    onClick={handleStripePay}
+                    disabled={payLoading !== null}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-60 px-6 py-3 text-sm font-semibold text-white transition-colors"
+                  >
+                    {payLoading === 'stripe' ? 'Redirecting…' : `Pay by Card ${fmt(data.invoice.amount_due)}`}
+                  </button>
+                )}
+                {data.paymentMethods?.paypal && (
+                  <button
+                    onClick={handlePayPalPay}
+                    disabled={payLoading !== null}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#ffc439] hover:bg-[#f4b800] disabled:opacity-60 px-6 py-3 text-sm font-semibold text-black transition-colors"
+                  >
+                    {payLoading === 'paypal' ? 'Redirecting…' : 'Pay with PayPal'}
+                  </button>
+                )}
               </div>
             )}
             {data.invoice.status === 'paid' && (
