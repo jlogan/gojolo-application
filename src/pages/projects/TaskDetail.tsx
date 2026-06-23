@@ -7,6 +7,7 @@ import {
   ArrowLeft, Send, Plus, User,
   Paperclip, Key, Mail, ChevronRight,
   FileText, Pencil, Trash2, Play, Square,
+  ExternalLink, X,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 
@@ -40,6 +41,12 @@ function isLoomUrl(url: string): boolean { return /loom\.com\/(share|embed)\//.t
 function getLoomEmbedUrl(url: string): string {
   const match = url.match(/loom\.com\/(?:share|embed)\/([a-zA-Z0-9]+)/)
   return match ? `https://www.loom.com/embed/${match[1]}` : url
+}
+
+function parseInboxThreadId(url: string): string | null {
+  const trimmed = url.trim()
+  const match = trimmed.match(/\/inbox\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)
+  return match ? match[1].toLowerCase() : null
 }
 
 const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g
@@ -189,6 +196,12 @@ export default function TaskDetail() {
 
   // Assignee add
   const [addAssigneeId, setAddAssigneeId] = useState('')
+
+  // Email thread linking
+  const [showEmailForm, setShowEmailForm] = useState(false)
+  const [emailLinkUrl, setEmailLinkUrl] = useState('')
+  const [emailLinkError, setEmailLinkError] = useState<string | null>(null)
+  const [emailLinkLoading, setEmailLinkLoading] = useState(false)
 
   const fetchAll = useCallback(async () => {
     if (!taskId || !projectId) return
@@ -469,6 +482,53 @@ export default function TaskDetail() {
     if (!taskId) return
     await supabase.from('task_assignees').delete().eq('task_id', taskId).eq('user_id', uid)
     fetchAll()
+  }
+
+  const handleLinkEmailThread = async () => {
+    if (!taskId) return
+    const parsedId = parseInboxThreadId(emailLinkUrl)
+    if (!parsedId) {
+      setEmailLinkError('Invalid inbox URL. Paste a link like app.gojolo.io/inbox/<uuid>')
+      return
+    }
+    setEmailLinkLoading(true)
+    setEmailLinkError(null)
+    const { error } = await supabase
+      .from('task_threads')
+      .insert({ task_id: taskId, thread_id: parsedId })
+    if (error) {
+      setEmailLinkError(
+        error.code === '23505'
+          ? 'This thread is already linked to this task.'
+          : error.message
+      )
+      setEmailLinkLoading(false)
+      return
+    }
+    const { data } = await supabase
+      .from('task_threads')
+      .select('thread_id, inbox_threads(subject, last_message_at)')
+      .eq('task_id', taskId)
+    setLinkedThreads((data ?? []).map((r: { thread_id: string; inbox_threads: { subject: string | null; last_message_at: string } | { subject: string | null; last_message_at: string }[] | null }) => {
+      const th = Array.isArray(r.inbox_threads) ? r.inbox_threads[0] : r.inbox_threads
+      return { thread_id: r.thread_id, subject: th?.subject ?? null, last_message_at: th?.last_message_at ?? '' }
+    }))
+    setEmailLinkUrl('')
+    setShowEmailForm(false)
+    setEmailLinkError(null)
+    setEmailLinkLoading(false)
+  }
+
+  const handleUnlinkEmailThread = async (threadId: string) => {
+    if (!taskId) return
+    const { error } = await supabase
+      .from('task_threads')
+      .delete()
+      .eq('task_id', taskId)
+      .eq('thread_id', threadId)
+    if (!error) {
+      setLinkedThreads(prev => prev.filter(t => t.thread_id !== threadId))
+    }
   }
 
   const totalMinutes = timeLogs.reduce((sum, t) => sum + (t.hours * 60) + t.minutes, 0)
@@ -969,15 +1029,85 @@ export default function TaskDetail() {
 
       {activeTab === 'emails' && (
         <div className="space-y-2">
-          {linkedThreads.length === 0 ? <p className="text-gray-500 text-sm">No email threads linked. Link threads from the Inbox.</p> : linkedThreads.map(t => (
-            <Link key={t.thread_id} to={`/inbox/${t.thread_id}`} className="flex items-center gap-3 p-3 rounded-lg border border-border hover:border-accent/30 hover:bg-surface-muted/30">
-              <Mail className="w-4 h-4 text-gray-500 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-white truncate">{t.subject || '(No subject)'}</p>
-                <p className="text-xs text-gray-500">{new Date(t.last_message_at).toLocaleString()}</p>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm text-gray-400">Linked Email Threads</h3>
+            <button
+              type="button"
+              onClick={() => { setShowEmailForm(!showEmailForm); setEmailLinkError(null) }}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-xs text-gray-500 hover:text-accent hover:border-accent/30"
+            >
+              <Plus className="w-3 h-3" /> Add
+            </button>
+          </div>
+
+          {showEmailForm && (
+            <div className="rounded-lg border border-border bg-surface-muted p-3 space-y-2">
+              <input
+                type="text"
+                value={emailLinkUrl}
+                onChange={e => { setEmailLinkUrl(e.target.value); setEmailLinkError(null) }}
+                placeholder="Paste inbox thread URL… e.g. app.gojolo.io/inbox/..."
+                autoFocus
+                className="w-full rounded border border-border bg-surface-elevated px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+              {emailLinkError && (
+                <p className="text-xs text-red-400">{emailLinkError}</p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleLinkEmailThread}
+                  disabled={emailLinkLoading}
+                  className="px-3 py-1.5 rounded bg-accent text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
+                >
+                  {emailLinkLoading ? 'Linking…' : 'Link Thread'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEmailLinkUrl(''); setEmailLinkError(null); setShowEmailForm(false) }}
+                  className="px-3 py-1.5 rounded border border-border text-xs text-gray-300 hover:bg-surface-elevated"
+                >
+                  Cancel
+                </button>
               </div>
-            </Link>
-          ))}
+            </div>
+          )}
+
+          {linkedThreads.length === 0 ? (
+            <p className="text-gray-500 text-sm">No email threads linked yet.</p>
+          ) : (
+            linkedThreads.map(t => (
+              <div
+                key={t.thread_id}
+                className="flex items-center gap-3 p-3 rounded-lg border border-border hover:border-accent/30 hover:bg-surface-muted/30"
+              >
+                <Mail className="w-4 h-4 text-gray-500 shrink-0" />
+                <p className="text-sm text-white truncate flex-1 min-w-0">
+                  {t.subject || '(No subject)'}
+                </p>
+                <span className="text-xs text-gray-500 shrink-0">
+                  {t.last_message_at ? new Date(t.last_message_at).toLocaleString() : ''}
+                </span>
+                <a
+                  href={`/inbox/${t.thread_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-gray-500 hover:text-accent shrink-0"
+                  title="Open in inbox"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => handleUnlinkEmailThread(t.thread_id)}
+                  className="text-gray-600 hover:text-red-400 shrink-0"
+                  title="Unlink thread"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))
+          )}
         </div>
       )}
 
