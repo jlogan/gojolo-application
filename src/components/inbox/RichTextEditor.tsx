@@ -14,9 +14,10 @@ type Props = {
   placeholder?: string
   onChange?: (html: string) => void
   autofocus?: boolean
+  minHeight?: string
 }
 
-export default function RichTextEditor({ content = '', placeholder = 'Write your message…', onChange, autofocus = false }: Props) {
+export default function RichTextEditor({ content = '', placeholder = 'Write your message…', onChange, autofocus = false, minHeight = 'min-h-[240px]' }: Props) {
   const [showLinkInput, setShowLinkInput] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
 
@@ -34,7 +35,7 @@ export default function RichTextEditor({ content = '', placeholder = 'Write your
     },
     editorProps: {
       attributes: {
-        class: 'inbox-editor-content prose prose-sm prose-invert max-w-none focus:outline-none min-h-[240px] px-3 py-2 text-gray-200',
+        class: `inbox-editor-content prose prose-sm prose-invert max-w-none focus:outline-none ${minHeight} px-3 py-2 text-gray-200`,
       },
     },
   })

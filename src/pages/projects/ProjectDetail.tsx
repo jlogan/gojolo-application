@@ -8,6 +8,7 @@ import {
   CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign,
 } from 'lucide-react'
 import { type Project, StatusBadge } from './ProjectsList'
+import RichTextEditor from '@/components/inbox/RichTextEditor'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -329,33 +330,41 @@ export default function ProjectDetail() {
           {showTaskForm && (
             <form onSubmit={handleTaskSubmit} className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
               <input type="text" required value={taskTitle} onChange={e => setTaskTitle(e.target.value)} placeholder="Task title"
-                className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
-              <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={4} placeholder="Description (optional)"
-                className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent resize-y" />
+                className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+              <div>
+                <label className="block text-[10px] text-gray-500 mb-1">Description</label>
+                <RichTextEditor
+                  key={editingTaskId ?? 'new'}
+                  content={taskDesc}
+                  placeholder="Description (optional)"
+                  onChange={html => setTaskDesc(html === '<p></p>' ? '' : html)}
+                  minHeight="min-h-[120px]"
+                />
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Status</label>
                   <select value={taskStatus} onChange={e => setTaskStatus(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent appearance-none">
                     <option value="open">Open</option><option value="in_progress">In Progress</option><option value="needs_work">Needs Work</option><option value="testing">To Be Tested</option><option value="closed">Closed</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Priority</label>
                   <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent appearance-none">
                     <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Due Date</label>
                   <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
+                    className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Assignee</label>
                   <select value={taskAssigned} onChange={e => setTaskAssigned(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent">
+                    className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent appearance-none">
                     <option value="">Unassigned</option>
                     {assignableMembers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>)}
                   </select>
@@ -369,9 +378,19 @@ export default function ProjectDetail() {
                   multiple
                   onChange={e => setTaskFiles(Array.from(e.target.files ?? []))}
                   className="w-full text-sm text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-surface-muted file:px-3 file:py-1.5 file:text-sm file:text-gray-300 hover:file:bg-accent/10 file:cursor-pointer"
+                  key={taskFiles.length === 0 ? 'empty' : 'filled'}
                 />
                 {taskFiles.length > 0 && (
-                  <p className="text-xs text-gray-500 mt-1">{taskFiles.length} file{taskFiles.length > 1 ? 's' : ''} selected</p>
+                  <ul className="mt-2 space-y-1">
+                    {taskFiles.map((f, i) => (
+                      <li key={i} className="flex items-center gap-2 text-xs text-gray-400 bg-surface-elevated rounded px-2 py-1">
+                        <Paperclip className="w-3 h-3 shrink-0 text-gray-500" />
+                        <span className="truncate flex-1">{f.name}</span>
+                        <span className="text-gray-600 shrink-0">{f.size > 1024 * 1024 ? `${(f.size / 1024 / 1024).toFixed(1)}MB` : `${Math.round(f.size / 1024)}KB`}</span>
+                        <button type="button" onClick={() => setTaskFiles(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 shrink-0"><X className="w-3 h-3" /></button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
               <div className="flex gap-2">
