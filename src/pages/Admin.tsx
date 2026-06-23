@@ -1946,23 +1946,18 @@ export default function Admin() {
                       setPaypalTestLoading(true)
                       setPaypalTestMessage(null)
                       try {
-                        const endpoint = paypalMode === 'live'
-                          ? 'https://api-3t.paypal.com/nvp'
-                          : 'https://api-3t.sandbox.paypal.com/nvp'
-                        const params = new URLSearchParams({
-                          METHOD: 'GetBalance',
-                          VERSION: '204',
-                          USER: paypalUsername.trim(),
-                          PWD: paypalPassword.trim(),
-                          SIGNATURE: paypalSignature.trim(),
+                        const { data, error } = await supabase.functions.invoke('test-paypal-connection', {
+                          body: {
+                            username: paypalUsername.trim(),
+                            password: paypalPassword.trim(),
+                            signature: paypalSignature.trim(),
+                            mode: paypalMode,
+                          },
                         })
-                        const res = await fetch(endpoint, { method: 'POST', body: params.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
-                        const text = await res.text()
-                        const result = Object.fromEntries(new URLSearchParams(text))
-                        if (result.ACK === 'Success' || result.ACK === 'SuccessWithWarning') {
-                          setPaypalTestMessage('✓ Connection successful — PayPal credentials are valid.')
+                        if (error || !data?.success) {
+                          setPaypalTestMessage(`✗ ${data?.error || error?.message || 'Invalid credentials.'}`)
                         } else {
-                          setPaypalTestMessage(`✗ ${result.L_LONGMESSAGE0 || result.L_SHORTMESSAGE0 || 'Invalid credentials.'}`)
+                          setPaypalTestMessage('✓ Connection successful — PayPal credentials are valid.')
                         }
                       } catch (err) {
                         setPaypalTestMessage(`✗ ${(err as Error).message}`)

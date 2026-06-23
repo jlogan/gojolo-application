@@ -76,8 +76,9 @@ BEGIN
       'paypal', EXISTS (
         SELECT 1 FROM organizations
         WHERE id = v_invoice.org_id
-          AND NULLIF(settings->>'paypal_client_id', '') IS NOT NULL
-          AND NULLIF(settings->>'paypal_client_secret', '') IS NOT NULL
+          AND NULLIF(settings->>'paypal_username', '') IS NOT NULL
+          AND NULLIF(settings->>'paypal_password', '') IS NOT NULL
+          AND NULLIF(settings->>'paypal_signature', '') IS NOT NULL
       )
     )
   );
