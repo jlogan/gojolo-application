@@ -437,7 +437,7 @@ export default function InvoiceDetail() {
             disabled={actionLoading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            <Send size={14} /> Mark as Unpaid
+            <Send size={14} /> Mark as Sent
           </button>
         )}
 

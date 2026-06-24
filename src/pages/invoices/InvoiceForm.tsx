@@ -1301,7 +1301,7 @@ export default function InvoiceForm() {
               onClick={() => handleSave(true)}
               className={`${btnPrimary} bg-green-600 hover:bg-green-700`}
             >
-              {saving ? 'Saving…' : 'Save & Mark Unpaid'}
+              {saving ? 'Saving…' : 'Save & Mark as Sent'}
             </button>
           )}
           <Link to={isEdit && id ? `/invoices/${id}` : "/invoices"} className={btnSecondary}>
