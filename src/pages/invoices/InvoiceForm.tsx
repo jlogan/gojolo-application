@@ -255,6 +255,8 @@ export default function InvoiceForm() {
         setContactIds(ids)
         setContactId(ids[0] ?? primaryContactId)
       }
+      // If invoice_contacts table not yet migrated or has no rows, keep the
+      // primaryContactId that was already set from invoices.contact_id above.
 
       // load line items
       const { data: itemRows } = await supabase
@@ -283,7 +285,7 @@ export default function InvoiceForm() {
 
   /* reset contact when company changes */
   useEffect(() => {
-    if (companyId && contactIds.length > 0) {
+    if (companyId && contactIds.length > 0 && contacts.length > 0) {
       const validIds = contactIds.filter((id) => contacts.some((c) => c.id === id && c.company_id === companyId))
       if (validIds.length !== contactIds.length) {
         setContactIds(validIds)
@@ -303,7 +305,7 @@ export default function InvoiceForm() {
 
   /* reset project when company changes and project no longer linked */
   useEffect(() => {
-    if (companyId && projectId && direction === 'outbound') {
+    if (companyId && projectId && direction === 'outbound' && projects.length > 0) {
       const valid = filteredProjects.find((p) => p.id === projectId)
       if (!valid) setProjectId('')
     }
