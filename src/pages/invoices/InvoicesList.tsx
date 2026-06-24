@@ -21,28 +21,22 @@ type InvoiceRow = {
   projects: { name: string } | { name: string }[] | null
 }
 
-type InvoiceStatus = 'all' | 'draft' | 'sent' | 'unpaid' | 'partially_paid' | 'paid' | 'overdue' | 'cancelled'
+type InvoiceStatus = 'all' | 'draft' | 'unpaid' | 'paid' | 'cancelled'
 
 type DirectionTab = 'outbound' | 'inbound'
 
 const STATUS_FILTERS: { id: InvoiceStatus; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'draft', label: 'Draft' },
-  { id: 'sent', label: 'Sent' },
   { id: 'unpaid', label: 'Unpaid' },
-  { id: 'partially_paid', label: 'Partially Paid' },
   { id: 'paid', label: 'Paid' },
-  { id: 'overdue', label: 'Overdue' },
   { id: 'cancelled', label: 'Cancelled' },
 ]
 
 const STATUS_CONFIG: Record<string, { label: string; classes: string }> = {
   draft: { label: 'Draft', classes: 'bg-gray-500/20 text-gray-400 border-gray-500/30' },
-  sent: { label: 'Sent', classes: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
   unpaid: { label: 'Unpaid', classes: 'bg-amber-500/20 text-amber-400 border-amber-500/30' },
-  partially_paid: { label: 'Partially Paid', classes: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
   paid: { label: 'Paid', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
-  overdue: { label: 'Overdue', classes: 'bg-red-500/20 text-red-400 border-red-500/30' },
   cancelled: { label: 'Cancelled', classes: 'bg-slate-500/20 text-slate-400 border-slate-500/30' },
 }
 

@@ -11,7 +11,7 @@ type TaxRate = { id: string; name: string; rate: number; is_default: boolean }
 type Currency = { id: string; code: string; name: string; symbol: string; is_default: boolean }
 type Company = { id: string; name: string }
 type Contact = { id: string; name: string; email: string | null; company_id: string | null }
-type Project = { id: string; name: string; project_companies?: { company_id: string }[] }
+type Project = { id: string; name: string; hourly_rate: number | null; project_companies?: { company_id: string }[] }
 type VendorUser = { id: string; display_name: string }
 
 type LineItem = {
@@ -108,6 +108,7 @@ export default function InvoiceForm() {
   const [direction, setDirection] = useState<'outbound' | 'inbound'>('outbound')
   const [companyId, setCompanyId] = useState('')
   const [contactId, setContactId] = useState('')
+  const [contactIds, setContactIds] = useState<string[]>([])
   const [projectId, setProjectId] = useState('')
   const [currencyId, setCurrencyId] = useState('')
   const [issueDate, setIssueDate] = useState(new Date().toISOString().split('T')[0])
@@ -119,6 +120,7 @@ export default function InvoiceForm() {
   const [adjustment, setAdjustment] = useState(0)
   const [items, setItems] = useState<LineItem[]>([emptyItem()])
   const [saving, setSaving] = useState(false)
+  const [invoiceStatus, setInvoiceStatus] = useState<'draft' | 'unpaid' | 'paid' | 'cancelled'>('draft')
 
   /* ── vendor multi-select (inbound) ── */
   const [vendorUsers, setVendorUsers] = useState<VendorUser[]>([])
@@ -185,7 +187,7 @@ export default function InvoiceForm() {
 
     supabase
       .from('projects')
-      .select('id, name, project_companies(company_id)')
+      .select('id, name, hourly_rate, project_companies(company_id)')
       .eq('org_id', orgId)
       .order('name')
       .then(({ data }) => setProjects((data as Project[] | null) ?? []))
@@ -227,7 +229,9 @@ export default function InvoiceForm() {
       const d = inv as Record<string, unknown>
       setDirection((d.direction as 'outbound' | 'inbound') ?? 'outbound')
       setCompanyId((d.company_id as string) ?? '')
-      setContactId((d.contact_id as string) ?? '')
+      const primaryContactId = (d.contact_id as string) ?? ''
+      setContactId(primaryContactId)
+      setContactIds(primaryContactId ? [primaryContactId] : [])
       setProjectId((d.project_id as string) ?? '')
       setCurrencyId((d.currency_id as string) ?? '')
       setIssueDate((d.issue_date as string) ?? '')
@@ -237,8 +241,20 @@ export default function InvoiceForm() {
       setDiscountType((d.discount_type as 'percent' | 'fixed') ?? 'percent')
       setDiscountValue(Number(d.discount_value) || 0)
       setAdjustment(Number(d.adjustment) || 0)
+      setInvoiceStatus((d.status as 'draft' | 'unpaid' | 'paid' | 'cancelled') ?? 'draft')
       setIsRecurring(Boolean(d.is_recurring))
       setRecurringInterval((d.recurring_interval as string) ?? 'monthly')
+
+      // load any additional invoice recipients
+      const { data: contactRows } = await supabase
+        .from('invoice_contacts')
+        .select('contact_id')
+        .eq('invoice_id', id)
+      if (contactRows && contactRows.length > 0) {
+        const ids = (contactRows as { contact_id: string }[]).map((r) => r.contact_id)
+        setContactIds(ids)
+        setContactId(ids[0] ?? primaryContactId)
+      }
 
       // load line items
       const { data: itemRows } = await supabase
@@ -267,9 +283,12 @@ export default function InvoiceForm() {
 
   /* reset contact when company changes */
   useEffect(() => {
-    if (companyId && contactId) {
-      const valid = contacts.find((c) => c.id === contactId && c.company_id === companyId)
-      if (!valid) setContactId('')
+    if (companyId && contactIds.length > 0) {
+      const validIds = contactIds.filter((id) => contacts.some((c) => c.id === id && c.company_id === companyId))
+      if (validIds.length !== contactIds.length) {
+        setContactIds(validIds)
+        setContactId(validIds[0] ?? '')
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId])
@@ -314,6 +333,20 @@ export default function InvoiceForm() {
     const base = companyId ? contacts.filter((c) => c.company_id === companyId) : contacts
     return q ? base.filter((c) => c.name.toLowerCase().includes(q) || (c.email ?? '').toLowerCase().includes(q)) : base
   }, [contacts, contactQuery, companyId])
+
+  const selectedContacts = useMemo(() => {
+    return contactIds
+      .map((id) => contacts.find((c) => c.id === id))
+      .filter((c): c is Contact => Boolean(c))
+  }, [contacts, contactIds])
+
+  const toggleContact = useCallback((id: string) => {
+    setContactIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((contactId) => contactId !== id) : [...prev, id]
+      setContactId(next[0] ?? '')
+      return next
+    })
+  }, [])
 
   const filteredProjectList = useMemo(() => {
     const q = projectQuery.trim().toLowerCase()
@@ -379,7 +412,6 @@ export default function InvoiceForm() {
         .from('time_logs')
         .select('id, task_id, user_id, project_id, hours, minutes, work_date, description, hourly_rate, tasks(title), projects:project_id(name)')
         .in('user_id', selectedVendorIds)
-        .eq('billed', false)
         .order('work_date', { ascending: false })
 
       if (dateRangeStart) query = query.gte('work_date', dateRangeStart)
@@ -472,7 +504,7 @@ export default function InvoiceForm() {
     // Fetch unbilled time logs for the selected project
     const { data: rows } = await supabase
       .from('time_logs')
-      .select('id, task_id, hours, minutes, work_date, description, hourly_rate, billed, tasks(title)')
+      .select('id, task_id, user_id, hours, minutes, work_date, description, hourly_rate, billed, tasks(title), projects:project_id(hourly_rate)')
       .eq('project_id', projectId)
       .order('work_date', { ascending: false })
 
@@ -495,9 +527,21 @@ export default function InvoiceForm() {
       })
     }
 
-    // Map rows
+    const timeLogIds = (rows as unknown as { id: string }[]).map((r) => r.id)
+    const actuallyBilledIds = new Set<string>()
+    if (timeLogIds.length > 0) {
+      const { data: billedItems } = await supabase
+        .from('invoice_items')
+        .select('time_log_ids')
+        .overlaps('time_log_ids', timeLogIds)
+      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach((item) => {
+        ;(item.time_log_ids ?? []).forEach((id) => actuallyBilledIds.add(id))
+      })
+    }
+
+    // Map rows. Billed status is derived from actual invoice_items linkage, not stale time_logs.billed.
     const mapped: TimeLogRow[] = (rows as unknown[]).map((r) => {
-      const row = r as TimeLogRow & { tasks?: { title?: string } | null; user_id?: string }
+      const row = r as TimeLogRow & { tasks?: { title?: string } | null; projects?: { hourly_rate?: number | null } | null; user_id?: string }
       return {
         id: row.id,
         task_id: row.task_id,
@@ -506,8 +550,8 @@ export default function InvoiceForm() {
         minutes: row.minutes,
         work_date: row.work_date,
         description: row.description,
-        hourly_rate: row.hourly_rate,
-        billed: row.billed ?? false,
+        hourly_rate: row.hourly_rate && row.hourly_rate > 0 ? row.hourly_rate : (row.projects?.hourly_rate ?? projects.find((p) => p.id === projectId)?.hourly_rate ?? null),
+        billed: actuallyBilledIds.has(row.id),
         user_display_name: profileMap.get(row.user_id ?? '') ?? null,
       }
     })
@@ -612,9 +656,9 @@ export default function InvoiceForm() {
         org_id: currentOrg.id,
         direction,
         prefix,
-        status: sendAfterSave ? 'sent' : 'draft',
+        status: isEdit ? (sendAfterSave ? 'unpaid' : invoiceStatus) : (sendAfterSave ? 'unpaid' : 'draft'),
         company_id: direction === 'inbound' ? null : (companyId || null),
-        contact_id: direction === 'inbound' ? null : (contactId || null),
+        contact_id: direction === 'inbound' ? null : (contactIds[0] || contactId || null),
         project_id: projectId || null,
         issue_date: issueDate,
         due_date: dueDate || null,
@@ -663,8 +707,9 @@ export default function InvoiceForm() {
         }
         invoiceId = id
 
-        // Delete old items and re-insert
+        // Delete old items/recipients and re-insert
         await supabase.from('invoice_items').delete().eq('invoice_id', id)
+        await supabase.from('invoice_contacts').delete().eq('invoice_id', id)
       } else {
         // Get next invoice number
         const { data: numData, error: numErr } = await supabase.rpc('next_invoice_number', {
@@ -694,6 +739,19 @@ export default function InvoiceForm() {
         }
 
         invoiceId = (insertedInv as { id: string }).id
+      }
+
+      // Insert invoice recipients
+      const recipientIds = Array.from(new Set(direction === 'inbound' ? [] : (contactIds.length > 0 ? contactIds : (contactId ? [contactId] : []))))
+      if (recipientIds.length > 0) {
+        const { error: contactsErr } = await supabase.from('invoice_contacts').insert(
+          recipientIds.map((recipientContactId, idx) => ({
+            invoice_id: invoiceId,
+            contact_id: recipientContactId,
+            is_primary: idx === 0,
+          })),
+        )
+        if (contactsErr) console.error('Error inserting invoice contacts:', contactsErr)
       }
 
       // Insert line items
@@ -790,28 +848,39 @@ export default function InvoiceForm() {
             )}
           </div>
 
-          {/* Contact — searchable */}
+          {/* Contacts — searchable multi-select */}
           <div className="relative" ref={contactRef}>
-            <label className={labelCls}>Contact</label>
+            <label className={labelCls}>Recipients</label>
             <input
               type="text"
-              value={contactOpen ? contactQuery : (contacts.find((c) => c.id === contactId)?.name ?? '')}
+              value={contactOpen ? contactQuery : (selectedContacts.length ? selectedContacts.map((c) => c.name).join(', ') : '')}
               onChange={(e) => { setContactQuery(e.target.value); setContactOpen(true) }}
               onFocus={() => { setContactQuery(''); setContactOpen(true) }}
               placeholder="Search contacts…"
               className={inputCls}
             />
+            {selectedContacts.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {selectedContacts.map((c) => (
+                  <span key={c.id} className="inline-flex items-center gap-1 rounded bg-accent/10 px-2 py-0.5 text-xs text-accent">
+                    {c.name}
+                    <button type="button" onClick={() => toggleContact(c.id)} className="text-accent/70 hover:text-accent">×</button>
+                  </span>
+                ))}
+              </div>
+            )}
             {contactOpen && (
               <ul className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-[#1a1a1a] py-1 shadow-lg max-h-48 overflow-auto">
                 <li>
-                  <button type="button" onMouseDown={() => { setContactId(''); setContactQuery(''); setContactOpen(false) }}
+                  <button type="button" onMouseDown={() => { setContactId(''); setContactIds([]); setContactQuery(''); setContactOpen(false) }}
                     className="w-full text-left px-3 py-2 text-sm text-gray-400 hover:bg-white/5">— Clear —</button>
                 </li>
                 {filteredContactList.map((c) => (
                   <li key={c.id}>
-                    <button type="button" onMouseDown={() => { setContactId(c.id); setContactQuery(c.name); setContactOpen(false) }}
-                      className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/5">
-                      {c.name}{c.email ? <span className="text-gray-400"> ({c.email})</span> : null}
+                    <button type="button" onMouseDown={(e) => { e.preventDefault(); toggleContact(c.id); setContactQuery(''); setContactOpen(true) }}
+                      className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/5 flex items-start gap-2">
+                      <span className="mt-0.5">{contactIds.includes(c.id) ? '✓' : '○'}</span>
+                      <span>{c.name}{c.email ? <span className="block text-xs text-gray-400">{c.email}</span> : null}</span>
                     </button>
                   </li>
                 ))}
@@ -991,6 +1060,7 @@ export default function InvoiceForm() {
                       step="0.01"
                       min="0"
                       value={item.unit_price || ''}
+                      placeholder="Price"
                       onChange={(e) =>
                         updateItem(idx, { unit_price: parseFloat(e.target.value) || 0 })
                       }
@@ -1060,6 +1130,7 @@ export default function InvoiceForm() {
                           step="0.01"
                           min="0"
                           value={item.unit_price || ''}
+                          placeholder="Price"
                           onChange={(e) =>
                             updateItem(idx, { unit_price: parseFloat(e.target.value) || 0 })
                           }
@@ -1220,16 +1291,18 @@ export default function InvoiceForm() {
             disabled={saving}
             className={btnPrimary}
           >
-            {saving ? 'Saving…' : 'Save as Draft'}
+            {saving ? 'Saving…' : (isEdit && invoiceStatus !== 'draft' ? 'Save' : 'Save as Draft')}
           </button>
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => handleSave(true)}
-            className={`${btnPrimary} bg-green-600 hover:bg-green-700`}
-          >
-            {saving ? 'Saving…' : 'Save & Send'}
-          </button>
+          {(!isEdit || invoiceStatus === 'draft') && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => handleSave(true)}
+              className={`${btnPrimary} bg-green-600 hover:bg-green-700`}
+            >
+              {saving ? 'Saving…' : 'Save & Mark Unpaid'}
+            </button>
+          )}
           <Link to={isEdit && id ? `/invoices/${id}` : "/invoices"} className={btnSecondary}>
             Cancel
           </Link>

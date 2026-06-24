@@ -41,10 +41,7 @@ type PublicInvoiceData = {
 // Map internal status → payment-facing label + color
 const PAYMENT_STATUS: Record<string, { label: string; cls: string }> = {
   draft:          { label: 'DRAFT',    cls: 'bg-gray-500/20 text-gray-300' },
-  sent:           { label: 'UNPAID',   cls: 'bg-amber-500/20 text-amber-300' },
-  viewed:         { label: 'UNPAID',   cls: 'bg-amber-500/20 text-amber-300' },
-  partial:        { label: 'PARTIAL',  cls: 'bg-yellow-500/20 text-yellow-300' },
-  partially_paid: { label: 'PARTIAL',  cls: 'bg-yellow-500/20 text-yellow-300' },
+  unpaid:         { label: 'UNPAID',   cls: 'bg-amber-500/20 text-amber-300' },
   paid:           { label: 'PAID',     cls: 'bg-green-500/20 text-green-300' },
   overdue:        { label: 'OVERDUE',  cls: 'bg-red-500/20 text-red-300' },
   cancelled:      { label: 'CANCELLED',cls: 'bg-gray-600/20 text-gray-400' },
@@ -165,7 +162,7 @@ export default function PublicInvoice() {
 
   const showPayButton =
     data &&
-    !['paid', 'cancelled', 'draft'].includes(data.invoice.status) &&
+    data.invoice.status === 'unpaid' &&
     data.invoice.amount_due > 0
 
   const payStatus = data ? (PAYMENT_STATUS[data.invoice.status] ?? { label: data.invoice.status.toUpperCase(), cls: 'bg-gray-500/20 text-gray-300' }) : null
@@ -357,7 +354,6 @@ export default function PublicInvoice() {
           </>
         )}
 
-        <p className="text-center text-xs text-gray-600 pt-4">Powered by Jolo</p>
       </div>
     </div>
   )

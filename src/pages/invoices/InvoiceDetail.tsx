@@ -84,9 +84,7 @@ type ProjectInfo = { id: string; name: string }
 
 const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-gray-500/20 text-gray-300',
-  sent: 'bg-blue-500/20 text-blue-300',
   unpaid: 'bg-yellow-500/20 text-yellow-300',
-  partially_paid: 'bg-orange-500/20 text-orange-300',
   paid: 'bg-green-500/20 text-green-300',
   overdue: 'bg-red-500/20 text-red-300',
   cancelled: 'bg-slate-500/20 text-slate-400',
@@ -368,7 +366,7 @@ export default function InvoiceDetail() {
   const invoiceNumber = `${(invoice.prefix ?? 'INV-').replace(/-+$/, '')}-${String(invoice.number ?? '').padStart(4, '0')}`
   const directionLabel = invoice.direction === 'outbound' ? 'Invoice' : 'Bill'
   const canEdit = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
-  const canMarkSent = !isVendor && ['draft'].includes(invoice.status)
+  const canMarkUnpaid = !isVendor && ['draft'].includes(invoice.status)
   const canMarkCancelled = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
   const canDelete = !isVendor && ['draft'].includes(invoice.status)
   const showStripeButton = isVendor && invoice.direction === 'inbound' && !['paid', 'cancelled'].includes(invoice.status)
@@ -432,14 +430,14 @@ export default function InvoiceDetail() {
           </Link>
         )}
 
-        {/* Mark as Sent */}
-        {canMarkSent && (
+        {/* Mark as Unpaid / payable */}
+        {canMarkUnpaid && (
           <button
-            onClick={() => updateStatus('sent')}
+            onClick={() => updateStatus('unpaid')}
             disabled={actionLoading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            <Send size={14} /> Mark as Sent
+            <Send size={14} /> Mark as Unpaid
           </button>
         )}
 
@@ -507,12 +505,14 @@ export default function InvoiceDetail() {
                 </div>
               )}
               {contact && (
-                <div className="flex items-center gap-2 text-gray-300 mt-1">
-                  <User size={14} className="text-gray-400" />
-                  <span>{contact.name}</span>
-                  {contact.email && (
-                    <span className="text-gray-500 text-sm">({contact.email})</span>
-                  )}
+                <div className="flex items-start gap-2 text-gray-300 mt-1">
+                  <User size={14} className="text-gray-400 mt-0.5" />
+                  <div className="min-w-0">
+                    <div>{contact.name}</div>
+                    {contact.email && (
+                      <div className="text-gray-500 text-xs truncate">{contact.email}</div>
+                    )}
+                  </div>
                 </div>
               )}
               {!company && !contact && (

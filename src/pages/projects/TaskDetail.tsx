@@ -237,7 +237,19 @@ export default function TaskDetail() {
     // Enrich with profiles
     const allUids = new Set<string>()
     const cmtRows = (cmtRes.data ?? []) as TaskComment[]
-    const tlRows = (tlRes.data ?? []) as TimeLog[]
+    let tlRows = (tlRes.data ?? []) as TimeLog[]
+    const timeLogIds = tlRows.map(t => t.id)
+    if (timeLogIds.length > 0) {
+      const { data: billedItems } = await supabase
+        .from('invoice_items')
+        .select('time_log_ids')
+        .overlaps('time_log_ids', timeLogIds)
+      const actuallyBilledIds = new Set<string>()
+      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach(item => {
+        ;(item.time_log_ids ?? []).forEach(id => actuallyBilledIds.add(id))
+      })
+      tlRows = tlRows.map(t => ({ ...t, billed: actuallyBilledIds.has(t.id) }))
+    }
     const shRows = (shRes.data ?? []) as StatusEntry[]
     const taRows = (taRes.data ?? []) as { user_id: string }[]
     cmtRows.forEach(c => allUids.add(c.user_id))
@@ -449,7 +461,7 @@ export default function TaskDetail() {
     await supabase.from('time_logs').insert({
       task_id: taskId, project_id: projectId, user_id: user.id,
       hours: h, minutes: m, work_date: logDate,
-      description: logNotes.trim() || null, comment: null, billed: logBillable,
+      description: logNotes.trim() || null, comment: null, billed: false,
       hourly_rate: logHourlyRate ? parseFloat(logHourlyRate) : null,
     })
     setLogTime(''); setLogNotes(''); setLogHourlyRate(''); setShowTimeForm(false); fetchAll()
@@ -886,7 +898,7 @@ export default function TaskDetail() {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-4 text-sm">
               <span className="text-gray-300">Total: <strong className="text-white">{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</strong></span>
-              <span className="text-gray-400">Billable: <strong className="text-accent">{Math.floor(billableMinutes / 60)}h {billableMinutes % 60}m</strong></span>
+              <span className="text-gray-400">Billed: <strong className="text-accent">{Math.floor(billableMinutes / 60)}h {billableMinutes % 60}m</strong></span>
             </div>
             <div className="flex items-center gap-2">
               {activeTimer ? (
@@ -951,7 +963,7 @@ export default function TaskDetail() {
                   <th className="text-left px-4 py-2">Time</th>
                   <th className="text-left px-4 py-2">Who</th>
                   <th className="text-left px-4 py-2">Description</th>
-                  <th className="text-center px-4 py-2">Billable</th>
+                  <th className="text-center px-4 py-2">Billed</th>
                   <th className="text-right px-4 py-2">Actions</th>
                 </tr></thead>
                 <tbody className="divide-y divide-border">
