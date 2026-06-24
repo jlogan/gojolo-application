@@ -51,6 +51,7 @@ export interface InvoicePdfData {
   amountDue: number
   notes?: string | null
   terms?: string | null
+  paymentUrl?: string | null   // public invoice URL for pay-online section
 }
 
 // ─── Main generator ──────────────────────────────────────────────────────────
@@ -263,9 +264,50 @@ export function buildInvoicePdf(data: InvoicePdfData): jsPDF {
       doc.text(lines, margin, ty)
     }
   }
-
   // ── Footer ────────────────────────────────────────────────────────────────────
   const pageH = doc.internal.pageSize.getHeight()
+
+   // ── Pay Online section (only for unpaid invoices with a payment URL) ─────────
+   const isPayable = !['paid', 'cancelled', 'draft'].includes(data.status)
+   if (isPayable && data.paymentUrl) {
+     ty += 8
+     doc.setDrawColor(...hexToRgb(GRAY_300))
+     doc.setLineWidth(0.3)
+     doc.line(margin, ty - 3, W - margin, ty - 3)
+
+     doc.setFontSize(7.5)
+     doc.setFont('helvetica', 'bold')
+     doc.setTextColor(...hexToRgb(GRAY_600))
+     doc.text('PAY ONLINE', margin, ty)
+     ty += 5
+
+     doc.setFontSize(9)
+     doc.setFont('helvetica', 'normal')
+     doc.setTextColor(...hexToRgb(GRAY_600))
+     doc.text('Click a link below to pay securely:', margin, ty)
+     ty += 6
+
+     // Stripe link
+     const stripeLinkText = '💳  Pay by Card (Stripe)  →  ' + data.paymentUrl
+     doc.setTextColor(0, 102, 204)
+     doc.setFont('helvetica', 'bold')
+     doc.setFontSize(9)
+     doc.text(stripeLinkText, margin, ty)
+     doc.link(margin, ty - 4, doc.getTextWidth(stripeLinkText), 5, { url: data.paymentUrl })
+     ty += 6
+
+     // PayPal link
+     const paypalLinkText = '🅿  Pay via PayPal  →  ' + data.paymentUrl
+     doc.setTextColor(0, 70, 170)
+     doc.text(paypalLinkText, margin, ty)
+     doc.link(margin, ty - 4, doc.getTextWidth(paypalLinkText), 5, { url: data.paymentUrl })
+     ty += 4
+
+     doc.setTextColor(...hexToRgb(GRAY_600))
+     doc.setFont('helvetica', 'normal')
+     doc.setFontSize(7.5)
+     doc.text('Both payment options are available at the link above.', margin, ty)
+   }
   doc.setFontSize(7.5)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(...hexToRgb(GRAY_600))

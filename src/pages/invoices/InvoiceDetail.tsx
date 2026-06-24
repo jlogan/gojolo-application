@@ -332,6 +332,9 @@ export default function InvoiceDetail() {
         amountDue: invoice.amount_due ?? 0,
         notes: invoice.notes ?? null,
         terms: invoice.terms ?? null,
+        paymentUrl: invoice.hash && !['paid', 'cancelled', 'draft'].includes(invoice.status)
+          ? `${window.location.origin}/invoice/${invoice.hash}`
+          : null,
       }, `${invoiceNum}.pdf`)
     } catch (err) {
       console.error('PDF generation failed:', err)
