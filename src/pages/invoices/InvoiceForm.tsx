@@ -640,9 +640,10 @@ export default function InvoiceForm() {
     if (lineMode === 'single') {
       const totalHours = round2(allLogs.reduce((s, l) => s + l.hours + l.minutes / 60, 0))
       const rate = allLogs.find((l) => l.hourly_rate && l.hourly_rate > 0)?.hourly_rate ?? 0
+      const uniqueTasks = [...new Map(allLogs.map((l) => [l.task_id, l.task_title ?? 'Untitled Task'])).values()]
       newItems = [{
         id: uid(),
-        description: 'Services',
+        description: uniqueTasks.join(', '),
         long_description: allLogs
           .map((l) => `${l.work_date}: ${l.task_title ?? ''} ${l.hours}h ${l.minutes}m${l.description ? ' — ' + l.description : ''}`)
           .join('\n'),
