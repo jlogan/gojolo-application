@@ -141,6 +141,10 @@ export default function InvoiceForm() {
   const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([])
   const [loadingTimeLogs, setLoadingTimeLogs] = useState(false)
 
+  /* ── time log modal selection + line mode ── */
+  const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set())
+  const [lineMode, setLineMode] = useState<'single' | 'per_task' | 'per_log'>('per_task')
+
   /* ── drag state ── */
   const [dragIdx, setDragIdx] = useState<number | null>(null)
 
@@ -585,8 +589,38 @@ export default function InvoiceForm() {
     })
 
     setTaskGroups(Array.from(groupMap.values()))
+    // Pre-select all unbilled logs
+    setSelectedLogIds(new Set(mapped.filter((l) => !l.billed).map((l) => l.id)))
     setLoadingTimeLogs(false)
   }, [direction, selectedVendorIds, dateRangeStart, dateRangeEnd, vendorUsers, projectId, currentOrg?.id])
+
+  const toggleLogId = useCallback((logId: string) => {
+    setSelectedLogIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(logId)) next.delete(logId)
+      else next.add(logId)
+      return next
+    })
+  }, [])
+
+  const toggleTaskGroupLogs = useCallback((group: TaskGroup) => {
+    setSelectedLogIds((prev) => {
+      const allSelected = group.logs.every((l) => prev.has(l.id))
+      const next = new Set(prev)
+      group.logs.forEach((l) => {
+        if (allSelected) next.delete(l.id)
+        else next.add(l.id)
+      })
+      return next
+    })
+    setTaskGroups((prev) =>
+      prev.map((g) => {
+        if (g.task_id !== group.task_id) return g
+        const allSelected = group.logs.every((l) => selectedLogIds.has(l.id))
+        return { ...g, selected: !allSelected }
+      }),
+    )
+  }, [selectedLogIds])
 
   const toggleTaskGroup = useCallback((taskId: string) => {
     setTaskGroups((prev) =>
@@ -595,38 +629,71 @@ export default function InvoiceForm() {
   }, [])
 
   const importSelectedTimeLogs = useCallback(() => {
-    const selected = taskGroups.filter((g) => g.selected)
-    if (selected.length === 0) {
+    const allLogs = taskGroups.flatMap((g) => g.logs).filter((l) => selectedLogIds.has(l.id))
+    if (allLogs.length === 0) {
       setShowTimeLogModal(false)
       return
     }
 
-    const newItems: LineItem[] = selected.map((g) => ({
-      id: uid(),
-      description: g.task_title,
-      long_description: g.logs
-        .map(
-          (l) =>
-            `${l.work_date}: ${l.hours}h ${l.minutes}m${l.description ? ' — ' + l.description : ''}`,
-        )
-        .join('\n'),
-      quantity: round2(g.totalHours),
-      unit_price: g.rate,
-      unit: 'hours',
-      tax_rate_id: '',
-      time_log_ids: g.logs.map((l) => l.id),
-    }))
+    let newItems: LineItem[] = []
 
-    // Remove empty placeholder items and append new items
+    if (lineMode === 'single') {
+      const totalHours = round2(allLogs.reduce((s, l) => s + l.hours + l.minutes / 60, 0))
+      const rate = allLogs.find((l) => l.hourly_rate && l.hourly_rate > 0)?.hourly_rate ?? 0
+      newItems = [{
+        id: uid(),
+        description: 'Services',
+        long_description: allLogs
+          .map((l) => `${l.work_date}: ${l.task_title ?? ''} ${l.hours}h ${l.minutes}m${l.description ? ' — ' + l.description : ''}`)
+          .join('\n'),
+        quantity: totalHours,
+        unit_price: rate,
+        unit: 'hours',
+        tax_rate_id: '',
+        time_log_ids: allLogs.map((l) => l.id),
+      }]
+    } else if (lineMode === 'per_task') {
+      const taskMap = new Map<string, { task_title: string; logs: TimeLogRow[]; rate: number }>()
+      allLogs.forEach((l) => {
+        let g = taskMap.get(l.task_id)
+        if (!g) {
+          g = { task_title: l.task_title ?? 'Untitled Task', logs: [], rate: 0 }
+          taskMap.set(l.task_id, g)
+        }
+        g.logs.push(l)
+        if (l.hourly_rate && l.hourly_rate > 0) g.rate = l.hourly_rate
+      })
+      newItems = Array.from(taskMap.values()).map((g) => ({
+        id: uid(),
+        description: g.task_title,
+        long_description: g.logs
+          .map((l) => `${l.work_date}: ${l.hours}h ${l.minutes}m${l.description ? ' — ' + l.description : ''}`)
+          .join('\n'),
+        quantity: round2(g.logs.reduce((s, l) => s + l.hours + l.minutes / 60, 0)),
+        unit_price: g.rate,
+        unit: 'hours',
+        tax_rate_id: '',
+        time_log_ids: g.logs.map((l) => l.id),
+      }))
+    } else {
+      newItems = allLogs.map((l) => ({
+        id: uid(),
+        description: `${l.task_title ?? 'Work'} — ${l.work_date}`,
+        long_description: l.description ?? '',
+        quantity: round2(l.hours + l.minutes / 60),
+        unit_price: l.hourly_rate ?? 0,
+        unit: 'hours',
+        tax_rate_id: '',
+        time_log_ids: [l.id],
+      }))
+    }
+
     setItems((prev) => {
-      const existing = prev.filter(
-        (item) => item.description.trim() !== '' || item.unit_price > 0,
-      )
+      const existing = prev.filter((item) => item.description.trim() !== '' || item.unit_price > 0)
       return [...existing, ...newItems]
     })
-
     setShowTimeLogModal(false)
-  }, [taskGroups])
+  }, [taskGroups, selectedLogIds, lineMode])
 
   /* ── drag reorder ── */
   const handleDragStart = (idx: number) => setDragIdx(idx)
@@ -1317,15 +1384,39 @@ export default function InvoiceForm() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-2xl rounded-xl border border-border bg-surface shadow-2xl max-h-[80vh] flex flex-col">
             {/* Modal header */}
-            <div className="flex items-center justify-between border-b border-border px-6 py-4">
-              <h3 className="text-lg font-semibold text-white">Import from Time Logs</h3>
-              <button
-                type="button"
-                onClick={() => setShowTimeLogModal(false)}
-                className="text-gray-400 hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
+            <div className="border-b border-border px-6 py-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-white">Import from Time Logs</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowTimeLogModal(false)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              {/* Line grouping mode */}
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-gray-400 mr-1">Group as:</span>
+                {([
+                  ['single', 'Single Line'],
+                  ['per_task', 'Per Task'],
+                  ['per_log', 'Individual Logs'],
+                ] as const).map(([val, label]) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setLineMode(val)}
+                    className={`px-2.5 py-1 rounded-md border transition-colors ${
+                      lineMode === val
+                        ? 'border-accent bg-accent/20 text-accent'
+                        : 'border-border text-gray-400 hover:text-white hover:border-gray-500'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Modal body */}
@@ -1421,84 +1512,92 @@ export default function InvoiceForm() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <p className="text-sm text-gray-400 mb-4">
-                    Select task groups to import as line items. Each task becomes one line item with
-                    total hours.
-                  </p>
-                  {taskGroups.map((group) => (
-                    <label
-                      key={group.task_id}
-                      className={`block rounded-lg border p-4 cursor-pointer transition-colors ${
-                        group.selected
-                          ? 'border-accent bg-accent/10'
-                          : 'border-border bg-surface-muted hover:border-gray-600'
-                      }`}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="mt-0.5">
-                          <div
-                            className={`w-5 h-5 rounded border flex items-center justify-center ${
-                              group.selected
-                                ? 'bg-accent border-accent'
-                                : 'border-gray-500 bg-transparent'
-                            }`}
+                  {taskGroups.map((group) => {
+                    const allGroupSelected = group.logs.every((l) => selectedLogIds.has(l.id))
+                    const someGroupSelected = group.logs.some((l) => selectedLogIds.has(l.id))
+                    const groupHours = round2(group.logs.filter((l) => selectedLogIds.has(l.id)).reduce((s, l) => s + l.hours + l.minutes / 60, 0))
+                    return (
+                      <div
+                        key={group.task_id}
+                        className={`rounded-lg border p-4 transition-colors ${
+                          someGroupSelected
+                            ? 'border-accent bg-accent/10'
+                            : 'border-border bg-surface-muted'
+                        }`}
+                      >
+                        {/* Task header row */}
+                        <div className="flex items-start gap-3">
+                          <button
+                            type="button"
+                            onClick={() => toggleTaskGroupLogs(group)}
+                            className="mt-0.5 flex-shrink-0"
                           >
-                            {group.selected && <Check className="w-3.5 h-3.5 text-white" />}
-                          </div>
-                          <input
-                            type="checkbox"
-                            checked={group.selected}
-                            onChange={() => toggleTaskGroup(group.task_id)}
-                            className="sr-only"
-                          />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium text-white">{group.task_title}</span>
-                            <div className="flex items-center gap-2 ml-2">
-                              {group.logs.every((l) => l.billed) && (
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-900/50 text-yellow-400 border border-yellow-800">Already billed</span>
-                              )}
-                              <span className="text-sm text-gray-300 tabular-nums">
-                                {round2(group.totalHours).toFixed(2)} hrs
-                                {group.rate > 0 && (
-                                  <span className="text-gray-500">
-                                    {' '}
-                                    × {currSymbol}
-                                    {group.rate.toFixed(2)}
-                                  </span>
+                            <div
+                              className={`w-5 h-5 rounded border flex items-center justify-center ${
+                                allGroupSelected
+                                  ? 'bg-accent border-accent'
+                                  : someGroupSelected
+                                  ? 'bg-accent/40 border-accent'
+                                  : 'border-gray-500 bg-transparent'
+                              }`}
+                            >
+                              {(allGroupSelected || someGroupSelected) && <Check className="w-3.5 h-3.5 text-white" />}
+                            </div>
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-white">{group.task_title}</span>
+                              <div className="flex items-center gap-2 ml-2">
+                                {group.logs.every((l) => l.billed) && (
+                                  <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-900/50 text-yellow-400 border border-yellow-800">Already billed</span>
                                 )}
-                              </span>
+                                <span className="text-sm text-gray-300 tabular-nums">
+                                  {groupHours.toFixed(2)} hrs
+                                  {group.rate > 0 && (
+                                    <span className="text-gray-500"> × {currSymbol}{group.rate.toFixed(2)}</span>
+                                  )}
+                                </span>
+                              </div>
                             </div>
                           </div>
-                          <div className="mt-1 text-xs text-gray-500">
-                            {group.logs.length} time{group.logs.length !== 1 ? ' entries' : ' entry'}
-                            {group.rate > 0 && (
-                              <span>
-                                {' '}
-                                · Est. {currSymbol}
-                                {round2(group.totalHours * group.rate).toFixed(2)}
-                              </span>
-                            )}
-                          </div>
-                          {/* Show individual entries */}
-                          <div className="mt-2 space-y-1">
-                            {group.logs.slice(0, 5).map((log) => (
-                              <div key={log.id} className="text-xs text-gray-500">
-                                {log.work_date}: {log.hours}h {log.minutes}m
-                                {log.description && ` — ${log.description}`}
-                              </div>
-                            ))}
-                            {group.logs.length > 5 && (
-                              <div className="text-xs text-gray-600">
-                                +{group.logs.length - 5} more entries
-                              </div>
-                            )}
-                          </div>
+                        </div>
+                        {/* Individual log rows */}
+                        <div className="mt-3 ml-8 space-y-1.5">
+                          {group.logs.map((log) => {
+                            const checked = selectedLogIds.has(log.id)
+                            return (
+                              <button
+                                key={log.id}
+                                type="button"
+                                onClick={() => toggleLogId(log.id)}
+                                className={`w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                                  checked ? 'bg-accent/10' : 'hover:bg-surface-muted'
+                                }`}
+                              >
+                                <div
+                                  className={`w-4 h-4 flex-shrink-0 rounded border flex items-center justify-center ${
+                                    checked ? 'bg-accent border-accent' : 'border-gray-500 bg-transparent'
+                                  }`}
+                                >
+                                  {checked && <Check className="w-2.5 h-2.5 text-white" />}
+                                </div>
+                                <span className="text-xs text-gray-400 flex-1">
+                                  {log.work_date}: {log.hours}h {log.minutes}m
+                                  {log.description && <span className="text-gray-500"> — {log.description}</span>}
+                                </span>
+                                {log.billed && (
+                                  <span className="text-xs text-yellow-500 ml-auto">billed</span>
+                                )}
+                                {log.hourly_rate != null && log.hourly_rate > 0 && (
+                                  <span className="text-xs text-gray-500 tabular-nums">{currSymbol}{log.hourly_rate}/hr</span>
+                                )}
+                              </button>
+                            )
+                          })}
                         </div>
                       </div>
-                    </label>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -1506,7 +1605,7 @@ export default function InvoiceForm() {
             {/* Modal footer */}
             <div className="border-t border-border px-6 py-4 flex justify-between items-center">
               <span className="text-sm text-gray-400">
-                {taskGroups.filter((g) => g.selected).length} of {taskGroups.length} tasks selected
+                {selectedLogIds.size} log{selectedLogIds.size !== 1 ? 's' : ''} selected
               </span>
               <div className="flex gap-3">
                 <button
@@ -1519,7 +1618,7 @@ export default function InvoiceForm() {
                 <button
                   type="button"
                   onClick={importSelectedTimeLogs}
-                  disabled={taskGroups.filter((g) => g.selected).length === 0}
+                  disabled={selectedLogIds.size === 0}
                   className={btnPrimary}
                 >
                   Import Selected
