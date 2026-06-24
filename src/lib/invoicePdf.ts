@@ -88,14 +88,18 @@ export function buildInvoicePdf(data: InvoicePdfData): jsPDF {
     cancelled:      { label: 'CANCELLED', bg: '#374151', text: GRAY_300 },
   }
   const badge = statusMap[data.status] ?? { label: data.status.toUpperCase(), bg: '#6b7280', text: WHITE }
-  const badgeW = 26
+  const badgeH = 10
+  const badgeY = 10
+  doc.setFontSize(9)
+  doc.setFont('helvetica', 'bold')
+  const badgeW = Math.max(28, doc.getTextWidth(badge.label) + 10)
   const badgeX = W - margin - badgeW
   doc.setFillColor(...hexToRgb(badge.bg))
-  doc.roundedRect(badgeX, 10, badgeW, 10, 2, 2, 'F')
-  doc.setFontSize(7)
-  doc.setFont('helvetica', 'bold')
+  doc.roundedRect(badgeX, badgeY, badgeW, badgeH, 2, 2, 'F')
   doc.setTextColor(...hexToRgb(badge.text))
-  doc.text(badge.label, badgeX + badgeW / 2, 16.5, { align: 'center' })
+  // Center the text vertically inside the status pill. jsPDF text y is a baseline, not top.
+  const badgeTextY = badgeY + badgeH / 2 + 9 * 0.3528 / 3
+  doc.text(badge.label, badgeX + badgeW / 2, badgeTextY, { align: 'center' })
 
   // ── Bill To + Date meta ──────────────────────────────────────────────────────
   let y = 42
@@ -205,11 +209,11 @@ export function buildInvoicePdf(data: InvoicePdfData): jsPDF {
   if (data.taxTotal !== 0)    drawTotalRow('Tax', fmtUSD(data.taxTotal))
   if (data.adjustment !== 0)  drawTotalRow('Adjustment', (data.adjustment > 0 ? '+' : '') + fmtUSD(data.adjustment))
 
-  // Total divider
+  // Total divider — leave enough gap because jsPDF text y is a baseline.
   doc.setDrawColor(...hexToRgb(GRAY_300))
   doc.setLineWidth(0.3)
-  doc.line(totalsX, ty - 1, W - margin, ty - 1)
-  ty += 1
+  doc.line(totalsX, ty, W - margin, ty)
+  ty += 4
   drawTotalRow('Total', fmtUSD(data.total), true)
 
   if (data.amountPaid > 0) {
