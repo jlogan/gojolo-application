@@ -679,8 +679,8 @@ export default function InvoiceForm() {
     } else {
       newItems = allLogs.map((l) => ({
         id: uid(),
-        description: `${l.task_title ?? 'Work'} — ${l.work_date}`,
-        long_description: l.description ?? '',
+        description: l.task_title ?? 'Work',
+        long_description: [l.work_date + ': ' + l.hours + 'h ' + l.minutes + 'm', l.description].filter(Boolean).join(' — '),
         quantity: round2(l.hours + l.minutes / 60),
         unit_price: l.hourly_rate ?? 0,
         unit: 'hours',
