@@ -105,7 +105,22 @@ export default function Timesheets() {
       }
     })
 
-    setEntries(mapped)
+    // Derive billed status from actual invoice_items linkage (source of truth)
+    // This ensures deleted invoices immediately show logs as unbilled.
+    const allLogIds = mapped.map((t) => t.id)
+    const actuallyBilledIds = new Set<string>()
+    if (allLogIds.length > 0) {
+      const { data: billedItems } = await supabase
+        .from('invoice_items')
+        .select('time_log_ids')
+        .overlaps('time_log_ids', allLogIds)
+      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach((item) => {
+        ;(item.time_log_ids ?? []).forEach((id) => actuallyBilledIds.add(id))
+      })
+    }
+
+    const mappedWithBilled = mapped.map((t) => ({ ...t, billed: actuallyBilledIds.has(t.id) }))
+    setEntries(mappedWithBilled)
 
     // Build unique users list for filter
     const seen = new Set<string>()
@@ -302,9 +317,6 @@ export default function Timesheets() {
         }))
       )
     }
-
-    // Mark selected logs as billed
-    await supabase.from('time_logs').update({ billed: true }).in('id', Array.from(selected))
 
     setCreatingInvoice(false)
     navigate(`/invoices/${inv.id}/edit`)
