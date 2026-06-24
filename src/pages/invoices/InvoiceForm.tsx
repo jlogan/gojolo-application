@@ -346,6 +346,7 @@ export default function InvoiceForm() {
       setContactId(next[0] ?? '')
       return next
     })
+    setContactOpen(false)
   }, [])
 
   const filteredProjectList = useMemo(() => {
@@ -877,7 +878,7 @@ export default function InvoiceForm() {
                 </li>
                 {filteredContactList.map((c) => (
                   <li key={c.id}>
-                    <button type="button" onMouseDown={(e) => { e.preventDefault(); toggleContact(c.id); setContactQuery(''); setContactOpen(true) }}
+                    <button type="button" onMouseDown={(e) => { e.preventDefault(); toggleContact(c.id); setContactQuery('') }}
                       className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/5 flex items-start gap-2">
                       <span className="mt-0.5">{contactIds.includes(c.id) ? '✓' : '○'}</span>
                       <span>{c.name}{c.email ? <span className="block text-xs text-gray-400">{c.email}</span> : null}</span>
