@@ -547,11 +547,13 @@ export default function InvoiceDetail() {
                 <span className="text-gray-400 w-20">Issued:</span>
                 <span className="text-white">{fmtDate(invoice.issue_date)}</span>
               </div>
+              {invoice.due_date && (
               <div className="flex items-center gap-2 text-sm">
                 <Calendar size={14} className="text-gray-400" />
                 <span className="text-gray-400 w-20">Due:</span>
                 <span className="text-white">{fmtDate(invoice.due_date)}</span>
               </div>
+              )}
               {invoice.paid_date && (
                 <div className="flex items-center gap-2 text-sm">
                   <Calendar size={14} className="text-green-400" />

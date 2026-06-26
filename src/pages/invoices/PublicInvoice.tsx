@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { CheckCheck, XCircle, AlertCircle } from 'lucide-react'
+import { CheckCheck, XCircle, AlertCircle, Download } from 'lucide-react'
+import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
 
 type PublicInvoiceData = {
   invoice: {
@@ -69,6 +70,49 @@ export default function PublicInvoice() {
   const [error, setError] = useState<string | null>(null)
   const [payLoading, setPayLoading] = useState<'stripe' | 'paypal' | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [pdfLoading, setPdfLoading] = useState(false)
+
+  const handleDownloadPdf = () => {
+    if (!data || pdfLoading) return
+    setPdfLoading(true)
+    try {
+      const inv = data.invoice
+      const invoiceNum = `${(inv.prefix ?? 'INV-').replace(/-+$/, '')}-${String(inv.number ?? '').padStart(4, '0')}`
+      downloadInvoicePdfFromData({
+        invoiceNumber: invoiceNum,
+        status:        inv.status,
+        issueDate:     inv.issue_date,
+        dueDate:       inv.due_date ?? null,
+        orgName:       data.org.name,
+        billToCompany: data.billTo.company ?? null,
+        billToContact: data.billTo.contact ?? null,
+        billToEmail:   data.billTo.email ?? null,
+        items: data.items.map((item) => ({
+          description:     item.description,
+          longDescription: item.long_description ?? null,
+          quantity:        item.quantity,
+          unit:            item.unit ?? null,
+          unitPrice:       item.unit_price,
+          subtotal:        item.subtotal,
+        })),
+        subtotal:      inv.subtotal ?? 0,
+        discountTotal: inv.discount_total ?? 0,
+        taxTotal:      inv.tax_total ?? 0,
+        adjustment:    inv.adjustment ?? 0,
+        total:         inv.total ?? 0,
+        amountPaid:    inv.amount_paid ?? 0,
+        amountDue:     inv.amount_due ?? 0,
+        notes:         inv.notes ?? null,
+        terms:         inv.terms ?? null,
+        paymentUrl:    !['paid', 'cancelled', 'draft'].includes(inv.status)
+                         ? window.location.href.split('?')[0]
+                         : null,
+      }, `${invoiceNum}.pdf`)
+    } catch (err) {
+      console.error('PDF generation failed:', err)
+    }
+    setPdfLoading(false)
+  }
 
   const loadInvoice = useCallback(async () => {
     if (!hash) return null
@@ -231,10 +275,12 @@ export default function PublicInvoice() {
                   <span className="text-gray-400">Issue Date</span>
                   <span className="text-white">{fmtDate(data.invoice.issue_date)}</span>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-400">Due Date</span>
-                  <span className="text-white">{fmtDate(data.invoice.due_date)}</span>
-                </div>
+                {data.invoice.due_date && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Due Date</span>
+                    <span className="text-white">{fmtDate(data.invoice.due_date)}</span>
+                  </div>
+                )}
                 {data.invoice.amount_paid > 0 && (
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Amount Paid</span>
@@ -333,6 +379,18 @@ export default function PublicInvoice() {
                 </div>
               </div>
             )}
+
+            {/* PDF Download */}
+            <div className="flex justify-end">
+              <button
+                onClick={handleDownloadPdf}
+                disabled={pdfLoading}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-50 transition-colors"
+              >
+                <Download size={14} />
+                {pdfLoading ? 'Generating…' : 'Download PDF'}
+              </button>
+            </div>
 
             {/* Notes / Terms */}
             {(data.invoice.notes || data.invoice.terms) && (
