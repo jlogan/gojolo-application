@@ -7,7 +7,7 @@ import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive, ArchiveRestore,
   List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
   RotateCcw, Send, RefreshCw, Paperclip, Download,
-  Search, User, Link2,
+  Search, User, Link2, Pencil, Trash2,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
@@ -28,6 +28,7 @@ type InboxMessage = {
   body: string | null; html_body: string | null; received_at: string
   imap_account_id?: string | null
   external_uid?: number | null
+  is_draft?: boolean | null
 }
 type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
@@ -487,7 +488,7 @@ export default function Inbox() {
     setMessagesLoading(true)
     let msgs: InboxMessage[] = []
     const { data, error: queryError } = await supabase.from('inbox_messages')
-      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid')
+      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, is_draft')
       .eq('thread_id', tid).order('received_at', { ascending: true })
     msgs = (data as InboxMessage[]) ?? []
     debugLog('fetchMessages', { event: 'messages_query', threadId: tid, count: msgs.length, error: queryError?.message, messages: msgs.map(m => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.html_body?.trim()), external_uid: m.external_uid, direction: m.direction })) }, tid)
@@ -2071,11 +2072,13 @@ export default function Inbox() {
                       const sanitized = html ? sanitizeEmailHtml(content) : content
                       const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
+                      const isDraftMsg = !!m.is_draft
                       return (<React.Fragment key={`msg-${m.id}`}>
-                        <article className="rounded-lg border border-border overflow-hidden group/msg">
+                        <article className={`rounded-lg border overflow-hidden group/msg ${isDraftMsg ? 'border-yellow-500/50 bg-yellow-500/5' : 'border-border'}`}>
                           <header onClick={() => setExpandedMsgs(prev => { const n = new Set(prev); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n })}
                             className={`px-4 py-2 text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 bg-surface-elevated/50 ${!isExpanded ? 'cursor-pointer hover:bg-surface-muted/50' : 'border-b border-border'}`}>
                             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 flex-1 min-w-0">
+                              {isDraftMsg && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 shrink-0">DRAFT</span>}
                               <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
                               {isExpanded && m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
                               {isExpanded && m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
@@ -2109,6 +2112,27 @@ export default function Inbox() {
                                   <RefreshCw className={`w-3.5 h-3.5 ${imapReloadingId === m.id ? 'animate-spin' : ''}`} />
                                 </button>
                               )}
+                              {isDraftMsg && (<>
+                                <button type="button" title="Edit draft" onClick={(e) => { e.stopPropagation()
+                                  const fromAddress = findFromAddressForReply(m)
+                                  if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
+                                  setReplyTo(m.to_identifier ?? ''); setReplyCc(m.cc ?? ''); setReplyBcc(''); setShowCcBcc(!!(m.cc?.trim()))
+                                  setReplySubject(selectedThread?.subject ?? '')
+                                  const { content: draftContent, html: draftIsHtml } = cleanMessageBody(m)
+                                  setReplyHtml(draftIsHtml ? draftContent : draftContent.replace(/\n/g, '<br/>'))
+                                  setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
+                                }} className="p-1 rounded text-yellow-500/70 hover:text-yellow-400 hover:bg-surface-muted">
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                <button type="button" title="Delete draft" onClick={async (e) => { e.stopPropagation()
+                                  if (!confirm('Delete this draft message?')) return
+                                  const { error: delErr } = await supabase.from('inbox_messages').delete().eq('id', m.id)
+                                  if (delErr) { alert('Failed to delete draft: ' + delErr.message); return }
+                                  setMessages(prev => prev.filter(msg => msg.id !== m.id))
+                                }} className="p-1 rounded text-red-500/70 hover:text-red-400 hover:bg-surface-muted">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </>)}
                               <button type="button" title="Reply" onClick={(e) => { e.stopPropagation()
                                 const fromAddress = findFromAddressForReply(m)
                                 if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
