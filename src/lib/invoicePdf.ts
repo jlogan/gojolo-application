@@ -289,7 +289,13 @@ export function buildInvoicePdf(data: InvoicePdfData): jsPDF {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(9)
     doc.text(onlineInvoiceText, margin, ty)
-    doc.link(margin, ty - 4, doc.getTextWidth(onlineInvoiceText), 5, { url: data.paymentUrl })
+    // Underline to make it visually obvious as a hyperlink
+    const linkW = doc.getTextWidth(onlineInvoiceText)
+    doc.setDrawColor(0, 102, 204)
+    doc.setLineWidth(0.3)
+    doc.line(margin, ty + 1, margin + linkW, ty + 1)
+    // Clickable hotspot — full text height
+    doc.link(margin, ty - 4, linkW, 6, { url: data.paymentUrl })
   }
 
   return doc
