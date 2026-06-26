@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { type Project, StatusBadge } from './ProjectsList'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
+import LinkedInvoices from '@/components/LinkedInvoices'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -590,6 +591,8 @@ export default function ProjectDetail() {
                 className="px-2 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50">Add</button>
             </div>
           </section>
+          {/* Invoices */}
+          <LinkedInvoices projectId={id!} />
           {/* Slack channel */}
           <SlackChannelPicker projectId={id!} orgId={currentOrg?.id ?? ''} />
         </div>

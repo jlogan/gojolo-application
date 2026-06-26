@@ -4,6 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
 import { Users, Pencil, ArrowLeft, X, Trash2 } from 'lucide-react'
 import type { Company } from './CompaniesList'
+import LinkedInvoices from '@/components/LinkedInvoices'
 
 type ContactRow = { id: string; name: string; email: string | null; phone: string | null }
 type SearchContact = { id: string; name: string; email: string | null; phone: string | null }
@@ -326,6 +327,7 @@ export default function CompanyDetail() {
           </div>
         </form>
       </section>
+      <LinkedInvoices companyId={company.id} />
 
       {deleteOpen && (
         <div

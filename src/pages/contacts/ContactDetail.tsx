@@ -7,6 +7,7 @@ import {
   FolderKanban, MessageSquare, Send, X, GitMerge,
 } from 'lucide-react'
 import type { Contact } from './ContactsList'
+import LinkedInvoices from '@/components/LinkedInvoices'
 
 type ContactEmail = { id: string; email: string; label: string | null; is_primary: boolean }
 type ContactPhone = { id: string; phone: string; label: string | null; is_primary: boolean }
@@ -324,6 +325,7 @@ export default function ContactDetail() {
             ))}</ul>
           )}
         </section>
+        <LinkedInvoices contactId={contact.id} />
       </div>
     </div>
   )
