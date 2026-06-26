@@ -406,9 +406,37 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         continue
       }
 
-      // Skip Gmail draft autosaves — they would be ingested as duplicate outbound messages
+      // Skip Gmail draft autosaves — they would be ingested as duplicate outbound messages.
+      // However: if there is an app-inserted row with no external_uid that matches this draft UID
+      // (same thread, within a 5-min window), mark it is_draft=true so the UI can surface it.
       if (p.isDraft) {
-        console.log('[refresh-email] skip draft envelope', p.uid)
+        console.log('[refresh-email] draft envelope uid=', p.uid, '— checking for matching app row to flag')
+        const draftCutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
+        let draftThreadId: string | undefined
+        for (const refId of [p.inReplyTo, ...p.refsList]) {
+          if (refId && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
+        }
+        if (!draftThreadId) {
+          const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+          if (normSubject) draftThreadId = subjectThreadMap.get(normSubject)
+        }
+        if (draftThreadId) {
+          const { data: draftRows } = await service.from('inbox_messages')
+            .select('id')
+            .eq('thread_id', draftThreadId)
+            .eq('imap_account_id', acc.id)
+            .eq('direction', 'outbound')
+            .is('external_uid', null)
+            .gte('received_at', draftCutoff)
+            .limit(1)
+          if (draftRows?.length) {
+            const draftRowId = (draftRows[0] as { id: string }).id
+            console.log('[refresh-email] marking app row', draftRowId, 'as is_draft=true (uid=', p.uid, ')')
+            await service.from('inbox_messages')
+              .update({ external_uid: p.uid, is_draft: true })
+              .eq('id', draftRowId)
+          }
+        }
         continue
       }
 

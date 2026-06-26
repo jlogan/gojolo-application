@@ -653,8 +653,37 @@ serve(async (req) => {
 
         // Skip Gmail draft autosaves — each draft revision is a separate UID/Message-ID in All Mail
         // and would otherwise be ingested as duplicate outbound messages. The real sent copy has no \Draft flag.
+        // However: if there is an app-inserted row with no external_uid that matches this draft UID
+        // (same thread, same direction, within a 5-min window), mark it is_draft=true so the UI can surface it.
         if (p.isDraft) {
-          console.log('[imap-sync] account', acc.id, 'skip draft envelope', p.uid)
+          console.log('[imap-sync] account', acc.id, 'draft envelope uid=', p.uid, '— checking for matching app row to flag')
+          const draftCutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
+          // Find the thread this draft belongs to (same matching logic as normal messages)
+          let draftThreadId: string | undefined
+          for (const refId of [p.inReplyTo, ...p.refsList]) {
+            if (refId && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
+          }
+          if (!draftThreadId) {
+            const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+            if (normSubject) draftThreadId = subjectThreadMap.get(normSubject)
+          }
+          if (draftThreadId) {
+            const { data: draftRows } = await service.from('inbox_messages')
+              .select('id')
+              .eq('thread_id', draftThreadId)
+              .eq('imap_account_id', acc.id)
+              .eq('direction', 'outbound')
+              .is('external_uid', null)
+              .gte('received_at', draftCutoff)
+              .limit(1)
+            if (draftRows?.length) {
+              const draftRowId = (draftRows[0] as { id: string }).id
+              console.log('[imap-sync] account', acc.id, 'marking app row', draftRowId, 'as is_draft=true (uid=', p.uid, ')')
+              await service.from('inbox_messages')
+                .update({ external_uid: p.uid, is_draft: true })
+                .eq('id', draftRowId)
+            }
+          }
           continue
         }
 
