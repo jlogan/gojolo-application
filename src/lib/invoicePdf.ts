@@ -284,7 +284,7 @@ export function buildInvoicePdf(data: InvoicePdfData): jsPDF {
     doc.text('Open the invoice online to review details and payment options:', margin, ty)
     ty += 6
 
-    const onlineInvoiceText = data.paymentUrl
+    const onlineInvoiceText = 'View Invoice →'
     doc.setTextColor(0, 102, 204)
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(9)
