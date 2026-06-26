@@ -264,26 +264,44 @@ export function buildInvoicePdf(data: InvoicePdfData): jsPDF {
       doc.text(lines, margin, ty)
     }
   }
-  // ── Online invoice link (payment options live on the web invoice) ─────────────
+  // ── Pay Online section ────────────────────────────────────────────────────────
   const canViewOnline = data.status !== 'cancelled'
   if (canViewOnline && data.paymentUrl) {
-    ty += 8
+    ty += 10
+
+    // Section divider line
     doc.setDrawColor(...hexToRgb(GRAY_300))
     doc.setLineWidth(0.3)
-    doc.line(margin, ty - 3, W - margin, ty - 3)
+    doc.line(margin, ty - 4, W - margin, ty - 4)
 
-    const onlineInvoiceText = 'PAY INVOICE'
-    doc.setTextColor(0, 102, 204)
+    // Section label
+    doc.setFontSize(7.5)
     doc.setFont('helvetica', 'bold')
+    doc.setTextColor(...hexToRgb(GRAY_600))
+    doc.text('PAYMENT', margin, ty)
+    ty += 5
+
+    // Instruction text
     doc.setFontSize(9)
-    doc.text(onlineInvoiceText, margin, ty)
-    // Underline to make it visually obvious as a hyperlink
-    const linkW = doc.getTextWidth(onlineInvoiceText)
-    doc.setDrawColor(0, 102, 204)
-    doc.setLineWidth(0.3)
-    doc.line(margin, ty + 1, margin + linkW, ty + 1)
-    // Clickable hotspot — full text height
-    doc.link(margin, ty - 4, linkW, 6, { url: data.paymentUrl })
+    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(...hexToRgb(GRAY_600))
+    doc.text('To pay this invoice online, click the button below or visit the link from any device:', margin, ty)
+    ty += 8
+
+    // Button-style background pill
+    const btnLabel = 'Pay Invoice Online'
+    doc.setFontSize(10)
+    doc.setFont('helvetica', 'bold')
+    const btnTextW = doc.getTextWidth(btnLabel)
+    const btnPadX = 6
+    const btnPadY = 3.5
+    const btnW = btnTextW + btnPadX * 2
+    const btnH = 10 * 0.3528 + btnPadY * 2   // ~9mm
+    doc.setFillColor(0, 102, 204)
+    doc.roundedRect(margin, ty - btnPadY - 0.5, btnW, btnH, 2, 2, 'F')
+    doc.setTextColor(...hexToRgb(WHITE))
+    doc.text(btnLabel, margin + btnPadX, ty + btnPadY - 0.5)
+    doc.link(margin, ty - btnPadY - 0.5, btnW, btnH, { url: data.paymentUrl })
   }
 
   return doc
