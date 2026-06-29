@@ -7,7 +7,7 @@ import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
   Plus, ChevronUp, FileText, DollarSign, Calendar,
-  Building2, User, Hash, Link2, CheckCheck,
+  Building2, User, Hash, Link2, CheckCheck, Mail,
 } from 'lucide-react'
 
 /* ------------------------------------------------------------------ */
@@ -123,6 +123,17 @@ function fmtDate(d: string | null | undefined): string {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+  })
+}
+
+function fmtDateTime(d: string | null | undefined): string {
+  if (!d) return '—'
+  return new Date(d).toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
   })
 }
 
@@ -499,6 +510,32 @@ export default function InvoiceDetail() {
         <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300 flex items-center gap-2">
           <XCircle size={16} className="flex-shrink-0" />
           Payment was not completed. You can try again or contact us for help.
+        </div>
+      )}
+
+      {invoice.email_sent_at && (
+        <div className="mb-6 rounded-xl border border-blue-500/30 bg-blue-500/10 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-lg bg-blue-500/20 p-2 text-blue-300">
+                <Mail size={18} />
+              </div>
+              <div>
+                <h2 className="text-sm font-semibold text-blue-100">Invoice email sent</h2>
+                <p className="mt-1 text-sm text-blue-200/80">
+                  Sent {fmtDateTime(invoice.email_sent_at)}
+                </p>
+              </div>
+            </div>
+            {invoice.email_sent_thread_id && (
+              <Link
+                to={`/inbox/${invoice.email_sent_thread_id}`}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                <Mail size={14} /> View Email Thread
+              </Link>
+            )}
+          </div>
         </div>
       )}
 
