@@ -213,11 +213,12 @@ select option {
   border-radius: 0 0 12px 12px;
 }
 
-.invoice-email-draft-compose .inbox-editor-content h3 + p + p strong:first-child,
-.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p strong:first-child,
-.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p + p strong:first-child {
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p span:first-child,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p span:first-child,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p + p span:first-child {
   color: #6b7280;
   font-size: 13px;
+  font-weight: 700;
 }
 
 .invoice-email-draft-compose .inbox-editor-content h3 + p + p strong:last-child,
