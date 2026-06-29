@@ -82,7 +82,6 @@ function buildDefaultInvoiceMessage(args: {
     '<p><strong>Due Date</strong><br />',
     `<strong>${escapeHtml(args.dueDate)}</strong></p>`,
     `<p><a href="${payUrl}"><strong>PAY NOW</strong></a></p>`,
-    `<p><a href="${payUrl}">${payUrl}</a></p>`,
     '<p>Please contact us for more information.</p>',
     `<p>Kind Regards,<br />${signatureHtml}</p>`,
   ].join('')
@@ -326,25 +325,27 @@ export default function InvoiceEmailDraft() {
         </div>
       )}
 
-      <EmailComposeForm
-        modeLabel="New message"
-        sendableAddresses={sendableAddresses}
-        selectedFromAddress={selectedFrom}
-        onFromAddressChange={(email) => setSelectedFrom(email)}
-        to={to}
-        onToChange={setTo}
-        subject={subject}
-        onSubjectChange={setSubject}
-        html={message}
-        onHtmlChange={setMessage}
-        onSend={handleSend}
-        sending={sending}
-        sendDisabled={!!successThreadId || !to.trim()}
-        sendLabel="Send Invoice To Client"
-        sentLabel="Sent"
-        minHeight="min-h-[320px]"
-        onCancel={() => window.history.back()}
-      />
+      <div className="invoice-email-draft-compose">
+        <EmailComposeForm
+          modeLabel="New message"
+          sendableAddresses={sendableAddresses}
+          selectedFromAddress={selectedFrom}
+          onFromAddressChange={(email) => setSelectedFrom(email)}
+          to={to}
+          onToChange={setTo}
+          subject={subject}
+          onSubjectChange={setSubject}
+          html={message}
+          onHtmlChange={setMessage}
+          onSend={handleSend}
+          sending={sending}
+          sendDisabled={!!successThreadId || !to.trim()}
+          sendLabel="Send Invoice To Client"
+          sentLabel="Sent"
+          minHeight="min-h-[520px]"
+          onCancel={() => window.history.back()}
+        />
+      </div>
 
       <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-gray-400 space-y-1">
         <div><span className="text-gray-500">Invoice:</span> <span className="text-gray-200">{invNum}</span></div>

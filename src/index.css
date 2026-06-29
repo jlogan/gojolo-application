@@ -123,6 +123,94 @@ select option {
   opacity: 0.9;
 }
 
+/* Invoice email compose: make the preloaded template look like a formatted email inside the shared WYSIWYG editor. */
+.invoice-email-draft-compose .inbox-editor-content {
+  background: #ffffff;
+  color: #172033;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 0 0 28px;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h2 {
+  margin: 0 0 24px;
+  padding: 22px 28px;
+  background: #111827;
+  color: #ffffff;
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 800;
+}
+
+.invoice-email-draft-compose .inbox-editor-content p,
+.invoice-email-draft-compose .inbox-editor-content h3 {
+  margin-left: 28px;
+  margin-right: 28px;
+}
+
+.invoice-email-draft-compose .inbox-editor-content p {
+  margin-top: 0;
+  margin-bottom: 18px;
+  color: #374151;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h3 {
+  margin-top: 20px;
+  margin-bottom: 8px;
+  padding: 14px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px 12px 0 0;
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h3 + p {
+  margin-top: -8px;
+  padding: 14px 18px;
+  border: 1px solid #e5e7eb;
+  border-top: 0;
+  border-radius: 0 0 12px 12px;
+  text-align: center;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h3 + p strong {
+  color: #111827;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.invoice-email-draft-compose .inbox-editor-content p strong {
+  color: #111827;
+}
+
+.invoice-email-draft-compose .inbox-editor-content a {
+  color: #2563eb;
+}
+
+.invoice-email-draft-compose .inbox-editor-content a:has(strong) {
+  display: inline-block;
+  padding: 12px 26px;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #ffffff;
+  text-decoration: none;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.invoice-email-draft-compose .inbox-editor-content a:has(strong) strong {
+  color: #ffffff;
+}
+
 /* Inbox: force single-column layout on narrow viewports (backup for JS) */
 @media (max-width: 1023px) {
   [data-testid="inbox-page"] [data-inbox-panels] {
