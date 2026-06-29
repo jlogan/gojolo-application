@@ -271,8 +271,9 @@ export default function InvoiceDetail() {
 
   /* ---------- Status actions ---------- */
 
-  const updateStatus = async (newStatus: string) => {
+  const updateStatus = async (newStatus: string, options?: { confirmMessage?: string }) => {
     if (!id || actionLoading) return
+    if (options?.confirmMessage && !window.confirm(options.confirmMessage)) return
     setActionLoading(true)
     const { error } = await supabase
       .from('invoices')
@@ -459,7 +460,7 @@ export default function InvoiceDetail() {
         {/* Mark as Cancelled */}
         {canMarkCancelled && (
           <button
-            onClick={() => updateStatus('cancelled')}
+            onClick={() => updateStatus('cancelled', { confirmMessage: `Cancel ${directionLabel} ${invoiceNumber}? This action will stop this ${directionLabel.toLowerCase()} from being sent or paid.` })}
             disabled={actionLoading}
             className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/20 disabled:opacity-50"
           >
