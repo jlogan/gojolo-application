@@ -188,6 +188,46 @@ select option {
   font-weight: 800;
 }
 
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p + p {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 0;
+  padding: 12px 18px;
+  border-left: 1px solid #e5e7eb;
+  border-right: 1px solid #e5e7eb;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p {
+  margin-top: 18px;
+  border-top: 1px solid #e5e7eb;
+  border-radius: 12px 12px 0 0;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p + p {
+  margin-bottom: 22px;
+  border-bottom: 1px solid #e5e7eb;
+  border-radius: 0 0 12px 12px;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p strong:first-child,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p strong:first-child,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p + p strong:first-child {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p strong:last-child,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p strong:last-child,
+.invoice-email-draft-compose .inbox-editor-content h3 + p + p + p + p strong:last-child {
+  color: #111827;
+  font-size: 14px;
+  text-align: right;
+}
+
 .invoice-email-draft-compose .inbox-editor-content p strong {
   color: #111827;
 }
