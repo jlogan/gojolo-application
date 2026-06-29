@@ -79,6 +79,17 @@ type InvoicePayment = {
 type CompanyInfo = { id: string; name: string }
 type ContactInfo = { id: string; name: string; email: string | null }
 type ProjectInfo = { id: string; name: string }
+type LinkedEmailThread = {
+  thread_id: string
+  created_at: string
+  thread: {
+    id: string
+    subject: string | null
+    from_address: string | null
+    status: string
+    last_message_at: string
+  } | null
+}
 
 /* ------------------------------------------------------------------ */
 /*  Status badge                                                       */
@@ -151,6 +162,7 @@ export default function InvoiceDetail() {
   const [invoice, setInvoice] = useState<Invoice | null>(null)
   const [items, setItems] = useState<InvoiceItem[]>([])
   const [payments, setPayments] = useState<InvoicePayment[]>([])
+  const [linkedEmailThreads, setLinkedEmailThreads] = useState<LinkedEmailThread[]>([])
   const [company, setCompany] = useState<CompanyInfo | null>(null)
   const [contact, setContact] = useState<ContactInfo | null>(null)
   const [project, setProject] = useState<ProjectInfo | null>(null)
@@ -210,6 +222,20 @@ export default function InvoiceDetail() {
     setPayments((data as InvoicePayment[]) ?? [])
   }, [id])
 
+  const fetchLinkedEmailThreads = useCallback(async () => {
+    if (!id) return
+    const { data } = await supabase
+      .from('inbox_thread_invoices')
+      .select('thread_id, created_at, inbox_threads(id, subject, from_address, status, last_message_at)')
+      .eq('invoice_id', id)
+      .order('created_at', { ascending: false })
+    setLinkedEmailThreads((data ?? []).map((row: { thread_id: string; created_at: string; inbox_threads: LinkedEmailThread['thread'] | LinkedEmailThread['thread'][] | null }) => ({
+      thread_id: row.thread_id,
+      created_at: row.created_at,
+      thread: Array.isArray(row.inbox_threads) ? row.inbox_threads[0] ?? null : row.inbox_threads,
+    })))
+  }, [id])
+
   const fetchRelated = useCallback(async (inv: Invoice) => {
     if (inv.company_id) {
       const { data } = await supabase
@@ -241,7 +267,8 @@ export default function InvoiceDetail() {
     fetchInvoice()
     fetchItems()
     fetchPayments()
-  }, [fetchInvoice, fetchItems, fetchPayments])
+    fetchLinkedEmailThreads()
+  }, [fetchInvoice, fetchItems, fetchPayments, fetchLinkedEmailThreads])
 
   useEffect(() => {
     if (invoice) fetchRelated(invoice)
@@ -513,27 +540,48 @@ export default function InvoiceDetail() {
         </div>
       )}
 
-      {invoice.email_sent_at && (
+      {(linkedEmailThreads.length > 0 || invoice.email_sent_at) && (
         <div className="mb-6 rounded-xl border border-blue-500/30 bg-blue-500/10 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5 rounded-lg bg-blue-500/20 p-2 text-blue-300">
-                <Mail size={18} />
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold text-blue-100">Invoice email sent</h2>
-                <p className="mt-1 text-sm text-blue-200/80">
-                  Sent {fmtDateTime(invoice.email_sent_at)}
-                </p>
-              </div>
+          <div className="mb-3 flex items-start gap-3">
+            <div className="mt-0.5 rounded-lg bg-blue-500/20 p-2 text-blue-300">
+              <Mail size={18} />
             </div>
-            {invoice.email_sent_thread_id && (
-              <Link
-                to={`/inbox/${invoice.email_sent_thread_id}`}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-              >
-                <Mail size={14} /> View Email Thread
-              </Link>
+            <div>
+              <h2 className="text-sm font-semibold text-blue-100">Linked email threads</h2>
+              <p className="mt-1 text-sm text-blue-200/80">
+                Emails associated with this invoice for admin visibility.
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {linkedEmailThreads.map((link) => (
+              <div key={link.thread_id} className="flex flex-col gap-2 rounded-lg border border-blue-500/20 bg-surface-elevated/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-white">{link.thread?.subject || '(No subject)'}</p>
+                  <p className="text-xs text-blue-200/70">
+                    {link.thread?.from_address ? `From ${link.thread.from_address} · ` : ''}
+                    Last message {fmtDateTime(link.thread?.last_message_at)}
+                    {link.thread?.status ? ` · ${link.thread.status}` : ''}
+                  </p>
+                </div>
+                <Link
+                  to={`/inbox/${link.thread_id}`}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  <Mail size={14} /> View Email Thread
+                </Link>
+              </div>
+            ))}
+            {linkedEmailThreads.length === 0 && invoice.email_sent_at && invoice.email_sent_thread_id && (
+              <div className="flex flex-col gap-2 rounded-lg border border-blue-500/20 bg-surface-elevated/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-blue-100">Sent {fmtDateTime(invoice.email_sent_at)}</p>
+                <Link
+                  to={`/inbox/${invoice.email_sent_thread_id}`}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  <Mail size={14} /> View Email Thread
+                </Link>
+              </div>
             )}
           </div>
         </div>

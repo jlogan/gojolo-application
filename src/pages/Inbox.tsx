@@ -7,7 +7,7 @@ import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive, ArchiveRestore,
   List, ChevronRight, Plus, Reply, ReplyAll, Forward,
   RotateCcw, RefreshCw, Paperclip, Download,
-  Search, User, Link2, Pencil, Trash2,
+  Search, User, Link2, Pencil, Trash2, FileText,
 } from 'lucide-react'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
@@ -39,6 +39,8 @@ type TimelineItem = { kind: 'message'; data: InboxMessage; ts: string } | { kind
 type InboxUser = { user_id: string; display_name: string | null; email: string | null; avatar_url?: string | null }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
 type ContactMatch = { contact_id: string; name: string; email: string | null }
+type InvoiceOption = { id: string; prefix: string | null; number: number | null; status: string; companyName?: string | null }
+type ThreadInvoiceLink = { invoice_id: string; invoice: InvoiceOption | null }
 type ReadStatus = { thread_id: string; last_read_at: string }
 
 /** PostgREST list select without embedded inbox_messages(count) — counts come from inbox_message_counts_by_thread RPC. */
@@ -145,6 +147,11 @@ function commentContentToHtml(content: string): string {
 function resolveEmail(email: string, contacts: ContactMatch[]): { name: string | null; contactId: string | null } {
   const match = contacts.find(c => c.email?.toLowerCase() === email?.toLowerCase())
   return match ? { name: match.name, contactId: match.contact_id } : { name: null, contactId: null }
+}
+
+function formatInvoiceNumber(inv: { prefix: string | null; number: number | null }): string {
+  const prefix = (inv.prefix ?? 'INV-').replace(/-+$/, '')
+  return inv.number ? `${prefix}-${String(inv.number).padStart(4, '0')}` : 'Invoice'
 }
 
 export default function Inbox() {
@@ -289,8 +296,10 @@ export default function Inbox() {
   const commentInputRef = useRef<HTMLDivElement>(null)
   const commentProgrammaticRef = useRef(false)
 
-  // Contacts, attachments, all contacts for autocomplete
+  // Contacts, invoice links, attachments, all contacts for autocomplete
   const [threadContacts, setThreadContacts] = useState<ContactMatch[]>([])
+  const [threadInvoiceLinks, setThreadInvoiceLinks] = useState<ThreadInvoiceLink[]>([])
+  const [invoiceOptions, setInvoiceOptions] = useState<InvoiceOption[]>([])
   const [allContacts, setAllContacts] = useState<{ id: string; name: string; email: string | null }[]>([])
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [toSuggestions, setToSuggestions] = useState<{ name: string; email: string }[]>([])
@@ -659,7 +668,23 @@ export default function Inbox() {
     }))
   }, [])
 
-  // Load inbox users, accounts, all contacts, read statuses
+  const fetchThreadInvoiceLinks = useCallback(async (tid: string) => {
+    const { data } = await supabase
+      .from('inbox_thread_invoices')
+      .select('invoice_id, invoices(id, prefix, number, status, companies(name))')
+      .eq('thread_id', tid)
+      .order('created_at', { ascending: false })
+    setThreadInvoiceLinks((data ?? []).map((r: { invoice_id: string; invoices: { id: string; prefix: string | null; number: number | null; status: string; companies?: { name: string | null } | { name: string | null }[] | null } | { id: string; prefix: string | null; number: number | null; status: string; companies?: { name: string | null } | { name: string | null }[] | null }[] | null }) => {
+      const inv = Array.isArray(r.invoices) ? r.invoices[0] : r.invoices
+      const company = inv?.companies ? (Array.isArray(inv.companies) ? inv.companies[0] : inv.companies) : null
+      return {
+        invoice_id: r.invoice_id,
+        invoice: inv ? { id: inv.id, prefix: inv.prefix, number: inv.number, status: inv.status, companyName: company?.name ?? null } : null,
+      }
+    }))
+  }, [])
+
+  // Load inbox users, accounts, all contacts, invoice options, read statuses
   useEffect(() => {
     if (!currentOrg?.id) return
     supabase.rpc('org_users_with_permission', { p_org_id: currentOrg.id, p_permission: 'inbox.view' })
@@ -682,6 +707,11 @@ export default function Inbox() {
       })
     supabase.from('contacts').select('id, name, email').eq('org_id', currentOrg.id).order('name')
       .then(({ data }) => setAllContacts((data as { id: string; name: string; email: string | null }[]) ?? []))
+    supabase.from('invoices').select('id, prefix, number, status, companies(name)').eq('org_id', currentOrg.id).eq('direction', 'outbound').order('created_at', { ascending: false }).limit(200)
+      .then(({ data }) => setInvoiceOptions(((data ?? []) as { id: string; prefix: string | null; number: number | null; status: string; companies?: { name: string | null } | { name: string | null }[] | null }[]).map((inv) => {
+        const company = inv.companies ? (Array.isArray(inv.companies) ? inv.companies[0] : inv.companies) : null
+        return { id: inv.id, prefix: inv.prefix, number: inv.number, status: inv.status, companyName: company?.name ?? null }
+      })))
   }, [currentOrg?.id, selectedAccountId, selectedFromAddress])
 
   useEffect(() => {
@@ -780,7 +810,7 @@ export default function Inbox() {
 
   useEffect(() => {
     if (!selectedThreadId) {
-      setMessages([]); setComments([]); setThreadContacts([]); setAttachments([]); setReplyMode(null); setExpandedMsgs(new Set()); return
+      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setExpandedMsgs(new Set()); return
     }
     debugLog('selectThread', { selectedThreadId, filter }, selectedThreadId ?? undefined)
     setExpandedMsgs(new Set()) // Reset accordion on thread change
@@ -788,9 +818,10 @@ export default function Inbox() {
     fetchMessagesRef.current(selectedThreadId)
     fetchComments(selectedThreadId)
     fetchThreadContacts(selectedThreadId)
+    fetchThreadInvoiceLinks(selectedThreadId)
     fetchAttachments(selectedThreadId)
     supabase.rpc('match_thread_contacts', { p_thread_id: selectedThreadId }).then(() => fetchThreadContacts(selectedThreadId))
-  }, [selectedThreadId, fetchComments, fetchThreadContacts, fetchAttachments, debugLog])
+  }, [selectedThreadId, fetchComments, fetchThreadContacts, fetchThreadInvoiceLinks, fetchAttachments, debugLog])
 
   /** Outbound rows from imap-sync often have null bodies until lazy IMAP fetch; helps spot stuck rows (no external_uid = cannot fetch). */
   useEffect(() => {
@@ -1423,6 +1454,28 @@ export default function Inbox() {
     }
   }
 
+  const handleLinkInvoice = async (invoiceId: string) => {
+    if (!selectedThreadId || !invoiceId) return
+    const { error } = await supabase
+      .from('inbox_thread_invoices')
+      .upsert({ thread_id: selectedThreadId, invoice_id: invoiceId }, { onConflict: 'thread_id,invoice_id' })
+    if (error) { toast(error.message); return }
+    await fetchThreadInvoiceLinks(selectedThreadId)
+    toast('Invoice linked')
+  }
+
+  const handleUnlinkInvoice = async (invoiceId: string) => {
+    if (!selectedThreadId) return
+    const { error } = await supabase
+      .from('inbox_thread_invoices')
+      .delete()
+      .eq('thread_id', selectedThreadId)
+      .eq('invoice_id', invoiceId)
+    if (error) { toast(error.message); return }
+    setThreadInvoiceLinks(prev => prev.filter(link => link.invoice_id !== invoiceId))
+    toast('Invoice unlinked')
+  }
+
 
 
   const appendReplyAttachments = (files: File[]) => {
@@ -1958,6 +2011,32 @@ export default function Inbox() {
                       <button type="button" onClick={() => handleUnassign(a.user_id)} className="text-gray-500 hover:text-red-400 ml-0.5">&times;</button>
                     </span>
                   ))}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="text-gray-500">Linked invoices:</span>
+                  {threadInvoiceLinks.length === 0 && <span className="text-gray-600">None</span>}
+                  {threadInvoiceLinks.map((link) => link.invoice ? (
+                    <span key={link.invoice_id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted px-2 py-0.5 text-gray-200">
+                      <Link to={`/invoices/${link.invoice_id}`} className="inline-flex items-center gap-1 hover:text-accent">
+                        <FileText className="h-3 w-3" />
+                        {formatInvoiceNumber(link.invoice)}
+                        {link.invoice.companyName ? ` · ${link.invoice.companyName}` : ''}
+                      </Link>
+                      <button type="button" onClick={() => handleUnlinkInvoice(link.invoice_id)} className="text-gray-500 hover:text-red-400" title="Unlink invoice">&times;</button>
+                    </span>
+                  ) : null)}
+                  <select
+                    value=""
+                    onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
+                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="">Link invoice…</option>
+                    {invoiceOptions.filter((inv) => !threadInvoiceLinks.some((link) => link.invoice_id === inv.id)).map((inv) => (
+                      <option key={inv.id} value={inv.id}>
+                        {formatInvoiceNumber(inv)}{inv.companyName ? ` · ${inv.companyName}` : ''} · {inv.status}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
