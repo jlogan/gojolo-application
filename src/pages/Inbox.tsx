@@ -5,11 +5,11 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive, ArchiveRestore,
-  List, ChevronRight, ChevronDown, Plus, Reply, ReplyAll, Forward,
-  RotateCcw, Send, RefreshCw, Paperclip, Download,
+  List, ChevronRight, Plus, Reply, ReplyAll, Forward,
+  RotateCcw, RefreshCw, Paperclip, Download,
   Search, User, Link2, Pencil, Trash2,
 } from 'lucide-react'
-import RichTextEditor from '@/components/inbox/RichTextEditor'
+import EmailComposeForm from '@/components/inbox/EmailComposeForm'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -311,7 +311,6 @@ export default function Inbox() {
     return assigns.length === 0 || assigns.some((a) => a.user_id === userId)
   }, [userId])
   const timelineEndRef = useRef<HTMLDivElement>(null)
-  const replyFileRef = useRef<HTMLInputElement>(null)
   const sendingReplyRef = useRef(false)
   const outboundEmptyWarnedKeyRef = useRef<string | null>(null)
   /** When set (from /inbox?compose=1&leadId=...), a successful send logs a lead_attempt for that lead. */
@@ -1424,6 +1423,8 @@ export default function Inbox() {
     }
   }
 
+
+
   const appendReplyAttachments = (files: File[]) => {
     if (files.length === 0) return
     console.log('[Inbox:attachment] add files', { count: files.length, names: files.map(f => f.name), sizes: files.map(f => f.size) })
@@ -1633,102 +1634,41 @@ export default function Inbox() {
 
   // Compose reply form (shared between compose mode and inline reply)
   const renderReplyForm = (isCompose: boolean) => (
-    <div className={`rounded-lg border ${isDragging ? 'border-accent bg-accent/5' : 'border-accent/30 bg-surface-elevated'} p-4 space-y-3`}
-      onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
-      {isDragging && <div className="text-center py-4 text-accent text-sm font-medium">Drop files to attach</div>}
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-accent font-medium">{replyMode === 'reply' ? 'Reply' : replyMode === 'reply_all' ? 'Reply All' : replyMode === 'forward' ? 'Forward' : 'New message'}</span>
-      </div>
-      <div className="space-y-2">
-        {sendableAddresses.length > 1 && (
-          <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">From</label>
-            <select value={selectedFromAddress} onChange={e => {
-              const email = e.target.value
-              const addr = sendableAddresses.find((a) => a.email === email)
-              setSelectedFromAddress(email)
-              if (addr) setSelectedAccountId(addr.accountId)
-            }}
-              className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent">
-              {sendableAddresses.map((a) => <option key={`${a.accountId}:${a.email}`} value={a.email}>{a.label}</option>)}
-            </select>
-          </div>
-        )}
-        <div className="flex items-center gap-2 relative"><label className="text-xs text-gray-500 w-12 shrink-0">To</label>
-          <div className="flex-1 relative">
-            <input type="text" value={replyTo} onChange={e => updateToSuggestions(e.target.value)} onBlur={() => setTimeout(() => setShowToSuggestions(false), 200)} placeholder="recipient@example.com"
-              className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
-            {showToSuggestions && (
-              <div className="absolute top-full left-0 mt-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-full z-20">
-                {toSuggestions.map(s => (
-                  <button key={s.email} type="button" onMouseDown={() => selectToSuggestion(s.email)}
-                    className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted flex items-center justify-between">
-                    <span>{s.name}</span>
-                    <span className="text-xs text-gray-500">{s.email}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          {!showCcBcc && <button type="button" onClick={() => setShowCcBcc(true)} className="text-xs text-gray-400 hover:text-accent"><ChevronDown className="w-4 h-4" /></button>}
-        </div>
-        {showCcBcc && (
-          <>
-            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Cc</label>
-              <input type="text" value={replyCc} onChange={e => setReplyCc(e.target.value)}
-                className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-            <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Bcc</label>
-              <input type="text" value={replyBcc} onChange={e => setReplyBcc(e.target.value)}
-                className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-          </>
-        )}
-        {isCompose && (
-          <div className="flex items-center gap-2"><label className="text-xs text-gray-500 w-12 shrink-0">Subject</label>
-            <input type="text" value={replySubject} onChange={e => setReplySubject(e.target.value)} placeholder="Subject"
-              className="flex-1 rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" /></div>
-        )}
-      </div>
-      <RichTextEditor content={replyHtml} onChange={setReplyHtml} placeholder="Write your message…" autofocus />
-      {replyAttachments.length > 0 && (
-        <div className="px-1 py-2 space-y-1.5">
-          <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wide">Attached to this send</div>
-          <div className="flex flex-wrap gap-2">
-            {replyAttachments.map((f, i) => (
-              <span
-                key={`${f.name}-${f.size}-${f.lastModified}-${i}`}
-                className="text-xs bg-surface-muted px-2 py-1 rounded text-gray-300 inline-flex items-center gap-1 max-w-full"
-              >
-                <Paperclip className="w-3 h-3 shrink-0" />
-                <span className="truncate" title={f.name}>{f.name}</span>
-                <button type="button" onClick={() => setReplyAttachments(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400 ml-1 shrink-0">&times;</button>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      <div className="flex items-center gap-2">
-        <button type="button" onClick={handleSendReply} disabled={sendingReply || !replyTo.trim()}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
-          <Send className="w-4 h-4" /> {sendingReply ? 'Sending…' : 'Send'}
-        </button>
-        <button type="button" onClick={() => replyFileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
-          <Paperclip className="w-4 h-4" />
-        </button>
-        <input
-          ref={replyFileRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files && e.target.files.length > 0) appendReplyAttachments(Array.from(e.target.files))
-            e.target.value = ''
-          }}
-        />
-        <button type="button" onClick={() => {
-          console.log('[Inbox:nav] Reply form Cancel click')
-          setReplyMode(null)
-        }} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">Cancel</button>
-      </div>
-    </div>
+    <EmailComposeForm
+      modeLabel={replyMode === 'reply' ? 'Reply' : replyMode === 'reply_all' ? 'Reply All' : replyMode === 'forward' ? 'Forward' : 'New message'}
+      sendableAddresses={sendableAddresses}
+      selectedFromAddress={selectedFromAddress}
+      onFromAddressChange={(email, accountId) => {
+        setSelectedFromAddress(email)
+        if (accountId) setSelectedAccountId(accountId)
+      }}
+      to={replyTo}
+      onToChange={updateToSuggestions}
+      toSuggestions={toSuggestions}
+      showToSuggestions={showToSuggestions}
+      onToBlur={() => setTimeout(() => setShowToSuggestions(false), 200)}
+      onSelectToSuggestion={selectToSuggestion}
+      cc={replyCc}
+      onCcChange={setReplyCc}
+      bcc={replyBcc}
+      onBccChange={setReplyBcc}
+      showCcBcc={showCcBcc}
+      onShowCcBccChange={setShowCcBcc}
+      subject={replySubject}
+      onSubjectChange={setReplySubject}
+      showSubject={isCompose}
+      html={replyHtml}
+      onHtmlChange={setReplyHtml}
+      attachments={replyAttachments}
+      onAttachmentsChange={setReplyAttachments}
+      onSend={handleSendReply}
+      sending={sendingReply}
+      sendDisabled={!replyTo.trim()}
+      onCancel={() => {
+        console.log('[Inbox:nav] Reply form Cancel click')
+        setReplyMode(null)
+      }}
+    />
   )
 
   // Debug: log when URL thread is not in list (explains "thread missing for this user")
