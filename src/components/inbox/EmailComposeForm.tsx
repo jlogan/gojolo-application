@@ -13,6 +13,7 @@ type Props = {
   to: string
   onToChange: (value: string) => void
   toSuggestions?: ContactSuggestion[]
+  toOptions?: ContactSuggestion[]
   showToSuggestions?: boolean
   onToBlur?: () => void
   onSelectToSuggestion?: (email: string) => void
@@ -49,6 +50,7 @@ export default function EmailComposeForm({
   to,
   onToChange,
   toSuggestions = [],
+  toOptions = [],
   showToSuggestions = false,
   onToBlur,
   onSelectToSuggestion,
@@ -131,14 +133,28 @@ export default function EmailComposeForm({
         <div className="flex items-center gap-2 relative">
           <label className="text-xs text-gray-500 w-12 shrink-0">To</label>
           <div className="flex-1 relative">
-            <input
-              type="text"
-              value={to}
-              onChange={(e) => onToChange(e.target.value)}
-              onBlur={onToBlur}
-              placeholder="recipient@example.com"
-              className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent"
-            />
+            {toOptions.length > 1 ? (
+              <select
+                value={to}
+                onChange={(e) => onToChange(e.target.value)}
+                className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent"
+              >
+                {toOptions.map((option) => (
+                  <option key={option.email} value={option.email}>
+                    {option.name ? `${option.name} <${option.email}>` : option.email}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={to}
+                onChange={(e) => onToChange(e.target.value)}
+                onBlur={onToBlur}
+                placeholder="recipient@example.com"
+                className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent"
+              />
+            )}
             {showToSuggestions && toSuggestions.length > 0 && (
               <div className="absolute top-full left-0 mt-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-full z-20">
                 {toSuggestions.map((s) => (

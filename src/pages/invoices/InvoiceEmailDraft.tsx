@@ -22,8 +22,9 @@ type Invoice = {
   hash: string | null
 }
 
-type ContactInfo = { id: string; name: string | null; email: string | null }
+type ContactInfo = { id: string; name: string | null; email: string | null; company_id?: string | null }
 type CompanyInfo = { id: string; name: string | null }
+type RecipientOption = { name: string; email: string }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
 type SendableAddress = { accountId: string; email: string; label: string }
 
@@ -56,6 +57,21 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
+}
+
+function normalizeRecipientOptions(contacts: ContactInfo[]): RecipientOption[] {
+  const seen = new Set<string>()
+  return contacts
+    .map((c) => ({
+      name: c.name?.trim() || c.email?.trim() || 'Contact',
+      email: c.email?.trim() || '',
+    }))
+    .filter((c) => {
+      const key = c.email.toLowerCase()
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
 }
 
 function buildDefaultInvoiceMessage(args: {
@@ -93,6 +109,7 @@ export default function InvoiceEmailDraft() {
   const [contact, setContact] = useState<ContactInfo | null>(null)
   const [company, setCompany] = useState<CompanyInfo | null>(null)
   const [accounts, setAccounts] = useState<ImapAccount[]>([])
+  const [recipientOptions, setRecipientOptions] = useState<RecipientOption[]>([])
   const [selectedFrom, setSelectedFrom] = useState('')
   const [subject, setSubject] = useState('')
   const [to, setTo] = useState('')
@@ -149,34 +166,49 @@ export default function InvoiceEmailDraft() {
     const number = invoiceNumber(invoiceRow)
     setSubject(`Invoice - ${number} from Brogrammers Agency`)
 
-    if (invoiceRow.contact_id) {
+    const invoiceContactRows: ContactInfo[] = []
+    const { data: invoiceContacts } = await supabase
+      .from('invoice_contacts')
+      .select('is_primary, contacts(id, name, email, company_id)')
+      .eq('invoice_id', invoiceRow.id)
+      .order('is_primary', { ascending: false })
+
+    ;(invoiceContacts ?? []).forEach((row) => {
+      const linked = row.contacts
+      const linkedContact = Array.isArray(linked) ? linked[0] : linked
+      if (linkedContact) invoiceContactRows.push(linkedContact as ContactInfo)
+    })
+
+    if (invoiceContactRows.length > 0) {
+      loadedContact = invoiceContactRows[0]
+      setContact(loadedContact)
+    } else if (invoiceRow.contact_id) {
       const { data: primaryContact } = await supabase
         .from('contacts')
-        .select('id, name, email')
+        .select('id, name, email, company_id')
         .eq('id', invoiceRow.contact_id)
         .maybeSingle()
       if (primaryContact) {
         loadedContact = primaryContact as ContactInfo
         setContact(loadedContact)
-        setTo(loadedContact.email ?? '')
+        invoiceContactRows.push(loadedContact)
       }
     }
 
-    if (!invoiceRow.contact_id) {
-      const { data: invoiceContacts } = await supabase
-        .from('invoice_contacts')
-        .select('is_primary, contacts(id, name, email)')
-        .eq('invoice_id', invoiceRow.id)
-        .order('is_primary', { ascending: false })
-        .limit(1)
-      const linked = invoiceContacts?.[0]?.contacts
-      const linkedContact = Array.isArray(linked) ? linked[0] : linked
-      if (linkedContact) {
-        loadedContact = linkedContact as ContactInfo
-        setContact(loadedContact)
-        setTo(loadedContact.email ?? '')
-      }
+    const companyContactRows: ContactInfo[] = []
+    if (invoiceRow.company_id) {
+      const { data: companyContacts } = await supabase
+        .from('contacts')
+        .select('id, name, email, company_id')
+        .eq('org_id', currentOrg.id)
+        .eq('company_id', invoiceRow.company_id)
+        .order('name')
+      companyContactRows.push(...(((companyContacts as ContactInfo[] | null) ?? [])))
     }
+
+    const recipients = normalizeRecipientOptions([...invoiceContactRows, ...companyContactRows])
+    setRecipientOptions(recipients)
+    if (recipients[0]) setTo(recipients[0].email)
 
     if (invoiceRow.company_id) {
       const { data: companyRow } = await supabase
@@ -196,7 +228,10 @@ export default function InvoiceEmailDraft() {
       .order('email')
     const activeAccounts = (accountRows as ImapAccount[]) ?? []
     setAccounts(activeAccounts)
-    if (activeAccounts[0]) setSelectedFrom(activeAccounts[0].email)
+    const flattenedAddresses = activeAccounts.flatMap((account) => [account.email, ...((account.addresses ?? []) as string[])])
+    const preferredFrom = flattenedAddresses.find((email) => email?.trim().toLowerCase() === 'jay@jaylogan.com')
+    if (preferredFrom) setSelectedFrom(preferredFrom.trim().toLowerCase())
+    else if (activeAccounts[0]) setSelectedFrom(activeAccounts[0].email)
 
     const loadedContactNameParts = splitContactName(loadedContact?.name)
     const loadedContactName = [loadedContactNameParts.first, loadedContactNameParts.last].filter(Boolean).join(' ')
@@ -330,6 +365,7 @@ export default function InvoiceEmailDraft() {
           onFromAddressChange={(email) => setSelectedFrom(email)}
           to={to}
           onToChange={setTo}
+          toOptions={recipientOptions}
           subject={subject}
           onSubjectChange={setSubject}
           html={message}
