@@ -68,11 +68,21 @@ function buildDefaultInvoiceMessage(args: {
   signature: string
 }) {
   const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
+  const payUrl = escapeHtml(args.payUrl)
   return [
+    '<h2>Invoice from Brogrammers Agency</h2>',
     `<p>Dear ${escapeHtml(args.contactName)},</p>`,
     '<p>Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.</p>',
-    `<p>Invoice amount: ${escapeHtml(args.invoiceAmountDue)}<br />Invoice No: ${escapeHtml(args.invoiceNumber)}<br />Invoice Date: ${escapeHtml(args.invoiceDate)}<br />Due Date: ${escapeHtml(args.dueDate)}</p>`,
-    `<p>Pay online: <a href="${escapeHtml(args.payUrl)}">${escapeHtml(args.payUrl)}</a></p>`,
+    '<h3>INVOICE AMOUNT</h3>',
+    `<p><strong>${escapeHtml(args.invoiceAmountDue)}</strong></p>`,
+    '<p><strong>Invoice No</strong><br />',
+    `<strong>${escapeHtml(args.invoiceNumber)}</strong></p>`,
+    '<p><strong>Invoice Date</strong><br />',
+    `<strong>${escapeHtml(args.invoiceDate)}</strong></p>`,
+    '<p><strong>Due Date</strong><br />',
+    `<strong>${escapeHtml(args.dueDate)}</strong></p>`,
+    `<p><a href="${payUrl}"><strong>PAY NOW</strong></a></p>`,
+    `<p><a href="${payUrl}">${payUrl}</a></p>`,
     '<p>Please contact us for more information.</p>',
     `<p>Kind Regards,<br />${signatureHtml}</p>`,
   ].join('')
