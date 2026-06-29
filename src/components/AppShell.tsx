@@ -44,6 +44,7 @@ import LeadDetail from '@/pages/leads/LeadDetail'
 import InvoicesList from '@/pages/invoices/InvoicesList'
 import InvoiceForm from '@/pages/invoices/InvoiceForm'
 import InvoiceDetail from '@/pages/invoices/InvoiceDetail'
+import InvoiceEmailDraft from '@/pages/invoices/InvoiceEmailDraft'
 // Expenses module hidden for now — tables remain in DB for future use
 
 type AppMode = 'software' | 'chat'
@@ -340,6 +341,7 @@ export default function AppShell() {
               <Route path="/invoices/new" element={<InvoiceForm />} />
               <Route path="/invoices/:id" element={<InvoiceDetail />} />
               <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
+              <Route path="/invoices/:id/send" element={<InvoiceEmailDraft />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />

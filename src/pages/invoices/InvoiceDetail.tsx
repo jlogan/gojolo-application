@@ -423,6 +423,15 @@ export default function InvoiceDetail() {
           </button>
         )}
 
+        {!isVendor && invoice.direction === 'outbound' && (
+          <Link
+            to={`/invoices/${invoice.id}/send`}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
+          >
+            <Send size={14} /> Send Invoice To Client
+          </Link>
+        )}
+
         {/* Edit */}
         {canEdit && (
           <Link

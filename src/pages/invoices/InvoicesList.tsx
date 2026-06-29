@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { Plus, FileText, Search } from 'lucide-react'
+import { Plus, FileText, Search, Send } from 'lucide-react'
 
 type InvoiceRow = {
   id: string
@@ -225,7 +225,7 @@ export default function InvoicesList() {
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">
           {/* Table header — hidden on mobile */}
-          <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider bg-surface-muted/50 border-b border-border">
+          <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_120px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider bg-surface-muted/50 border-b border-border">
             <span>#</span>
             <span>{counterpartyLabel}</span>
             <span>Project</span>
@@ -234,18 +234,23 @@ export default function InvoicesList() {
             <span className="text-right">Due</span>
             <span>Issued</span>
             <span>Due Date</span>
+            <span className="text-right">Action</span>
           </div>
 
           <ul className="divide-y divide-border" data-testid="invoice-list">
             {filtered.map((inv) => (
               <li key={inv.id}>
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   onClick={() => navigate(`/invoices/${inv.id}`)}
-                  className="w-full text-left hover:bg-surface-muted transition-colors"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') navigate(`/invoices/${inv.id}`)
+                  }}
+                  className="w-full text-left hover:bg-surface-muted transition-colors cursor-pointer"
                 >
                   {/* Desktop row */}
-                  <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px] gap-2 items-center px-4 py-3">
+                  <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_120px] gap-2 items-center px-4 py-3">
                     <span className="text-sm font-medium text-white truncate">{invoiceNumber(inv)}</span>
                     <span className="text-sm text-gray-300 truncate">{companyName(inv.companies)}</span>
                     <span className="text-sm text-gray-400 truncate">{projectName(inv.projects)}</span>
@@ -254,6 +259,17 @@ export default function InvoicesList() {
                     <span className="text-sm text-gray-300 text-right tabular-nums">{formatCurrency(inv.amount_due)}</span>
                     <span className="text-xs text-gray-400">{formatDate(inv.issue_date)}</span>
                     <span className="text-xs text-gray-400">{formatDate(inv.due_date)}</span>
+                    <span className="flex justify-end">
+                      {!isVendor && inv.direction === 'outbound' && (
+                        <Link
+                          to={`/invoices/${inv.id}/send`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                        >
+                          <Send className="w-3.5 h-3.5" /> Send
+                        </Link>
+                      )}
+                    </span>
                   </div>
 
                   {/* Mobile row */}
@@ -271,8 +287,17 @@ export default function InvoicesList() {
                       <span>Issued {formatDate(inv.issue_date)}</span>
                       <span>Due {formatDate(inv.due_date)}</span>
                     </div>
+                    {!isVendor && inv.direction === 'outbound' && (
+                      <Link
+                        to={`/invoices/${inv.id}/send`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                      >
+                        <Send className="w-3.5 h-3.5" /> Send Invoice To Client
+                      </Link>
+                    )}
                   </div>
-                </button>
+                </div>
               </li>
             ))}
           </ul>
