@@ -126,7 +126,7 @@ export default function InvoiceEmailDraft() {
   const [selectedFrom, setSelectedFrom] = useState('')
   const [subject, setSubject] = useState('')
   const [to, setTo] = useState('')
-  const [signature, setSignature] = useState('Brogrammers Agency')
+  const [signature, setSignature] = useState('Jay Logan\nBrogrammers Agency')
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -232,14 +232,8 @@ export default function InvoiceEmailDraft() {
     setAccounts(activeAccounts)
     if (activeAccounts[0]) setSelectedFrom(activeAccounts[0].email)
 
-    const { data: profile } = user?.id
-      ? await supabase.from('profiles').select('display_name, email').eq('id', user.id).maybeSingle()
-      : { data: null }
-    const displayName = (profile as { display_name?: string | null } | null)?.display_name || user?.email || 'Brogrammers Agency'
-    setSignature(`${displayName}\nBrogrammers Agency`)
-
     setLoading(false)
-  }, [currentOrg?.id, id, user?.email, user?.id])
+  }, [currentOrg?.id, id])
 
   useEffect(() => { load() }, [load])
 
