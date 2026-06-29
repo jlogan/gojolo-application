@@ -14,6 +14,7 @@ type Props = {
   onToChange: (value: string) => void
   toSuggestions?: ContactSuggestion[]
   toOptions?: ContactSuggestion[]
+  allowMultipleToOptions?: boolean
   showToSuggestions?: boolean
   onToBlur?: () => void
   onSelectToSuggestion?: (email: string) => void
@@ -51,6 +52,7 @@ export default function EmailComposeForm({
   onToChange,
   toSuggestions = [],
   toOptions = [],
+  allowMultipleToOptions = false,
   showToSuggestions = false,
   onToBlur,
   onSelectToSuggestion,
@@ -97,6 +99,19 @@ export default function EmailComposeForm({
     if (e.dataTransfer.files.length > 0) appendFiles(Array.from(e.dataTransfer.files))
   }
 
+  const selectedToEmails = to
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+
+  const toggleToOption = (email: string, checked: boolean) => {
+    const normalized = email.trim().toLowerCase()
+    const next = new Set(selectedToEmails)
+    if (checked) next.add(normalized)
+    else next.delete(normalized)
+    onToChange(Array.from(next).join(', '))
+  }
+
   return (
     <div
       className={`rounded-lg border ${isDragging ? 'border-accent bg-accent/5' : 'border-accent/30 bg-surface-elevated'} p-4 space-y-3`}
@@ -133,7 +148,35 @@ export default function EmailComposeForm({
         <div className="flex items-center gap-2 relative">
           <label className="text-xs text-gray-500 w-12 shrink-0">To</label>
           <div className="flex-1 relative">
-            {toOptions.length > 1 ? (
+            {allowMultipleToOptions && toOptions.length > 1 ? (
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={to}
+                  onChange={(e) => onToChange(e.target.value)}
+                  onBlur={onToBlur}
+                  placeholder="recipient@example.com, second@example.com"
+                  className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent"
+                />
+                <div className="flex flex-wrap gap-2">
+                  {toOptions.map((option) => {
+                    const email = option.email.trim().toLowerCase()
+                    return (
+                      <label key={option.email} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted px-2.5 py-1 text-xs text-gray-200">
+                        <input
+                          type="checkbox"
+                          checked={selectedToEmails.includes(email)}
+                          onChange={(e) => toggleToOption(option.email, e.target.checked)}
+                          className="accent-accent"
+                        />
+                        <span>{option.name || option.email}</span>
+                        <span className="text-gray-500">{option.email}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : toOptions.length > 1 ? (
               <select
                 value={to}
                 onChange={(e) => onToChange(e.target.value)}

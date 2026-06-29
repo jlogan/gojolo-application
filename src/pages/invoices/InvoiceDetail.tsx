@@ -37,6 +37,8 @@ type Invoice = {
   total: number
   amount_paid: number
   amount_due: number
+  email_sent_at: string | null
+  email_sent_thread_id: string | null
   notes: string | null
   terms: string | null
   hash: string | null
@@ -374,6 +376,7 @@ export default function InvoiceDetail() {
   const canDelete = !isVendor && ['draft'].includes(invoice.status)
   const showStripeButton = isVendor && invoice.direction === 'inbound' && !['paid', 'cancelled'].includes(invoice.status)
   const canRecordPayment = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
+  const canSendInvoice = !isVendor && invoice.direction === 'outbound' && !['paid', 'cancelled'].includes(invoice.status) && !invoice.email_sent_at
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
@@ -423,7 +426,7 @@ export default function InvoiceDetail() {
           </button>
         )}
 
-        {!isVendor && invoice.direction === 'outbound' && (
+        {canSendInvoice && (
           <Link
             to={`/invoices/${invoice.id}/send`}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"

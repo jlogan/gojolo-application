@@ -15,6 +15,8 @@ type InvoiceRow = {
   due_date: string | null
   total: number
   amount_due: number
+  email_sent_at: string | null
+  email_sent_thread_id: string | null
   currency_id: string | null
   created_at: string
   companies: { name: string } | { name: string }[] | null
@@ -75,6 +77,13 @@ function invoiceNumber(inv: InvoiceRow): string {
   return inv.number ? `${prefix}-${String(inv.number).padStart(4, '0')}` : '—'
 }
 
+function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
+  return !isVendor
+    && inv.direction === 'outbound'
+    && !['paid', 'cancelled'].includes(inv.status)
+    && !inv.email_sent_at
+}
+
 export default function InvoicesList() {
   const { currentOrg, isVendor } = useOrg()
   const { user } = useAuth()
@@ -93,7 +102,7 @@ export default function InvoicesList() {
     const load = async () => {
       let query = supabase
         .from('invoices')
-        .select('id, direction, number, prefix, status, issue_date, due_date, total, amount_due, currency_id, created_at, companies(name), projects(name)')
+        .select('id, direction, number, prefix, status, issue_date, due_date, total, amount_due, email_sent_at, email_sent_thread_id, currency_id, created_at, companies(name), projects(name)')
         .eq('org_id', currentOrg.id)
         .eq('direction', directionTab)
         .order('created_at', { ascending: false })
@@ -260,7 +269,7 @@ export default function InvoicesList() {
                     <span className="text-xs text-gray-400">{formatDate(inv.issue_date)}</span>
                     <span className="text-xs text-gray-400">{formatDate(inv.due_date)}</span>
                     <span className="flex justify-end">
-                      {!isVendor && inv.direction === 'outbound' && (
+                      {canSendInvoice(inv, isVendor) && (
                         <Link
                           to={`/invoices/${inv.id}/send`}
                           onClick={(e) => e.stopPropagation()}
@@ -287,7 +296,7 @@ export default function InvoicesList() {
                       <span>Issued {formatDate(inv.issue_date)}</span>
                       <span>Due {formatDate(inv.due_date)}</span>
                     </div>
-                    {!isVendor && inv.direction === 'outbound' && (
+                    {canSendInvoice(inv, isVendor) && (
                       <Link
                         to={`/invoices/${inv.id}/send`}
                         onClick={(e) => e.stopPropagation()}

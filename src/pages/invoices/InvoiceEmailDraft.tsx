@@ -18,6 +18,8 @@ type Invoice = {
   issue_date: string | null
   due_date: string | null
   amount_due: number | null
+  email_sent_at: string | null
+  email_sent_thread_id: string | null
   total: number | null
   hash: string | null
 }
@@ -255,7 +257,10 @@ export default function InvoiceEmailDraft() {
     setError(null)
     if (isVendor) { setError('Vendors cannot send invoices.'); return }
     if (invoice.direction !== 'outbound') { setError('Only outbound invoices can be sent to clients.'); return }
-    if (!to.trim() || !to.includes('@')) { setError('Enter a valid recipient email.'); return }
+    if (['paid', 'cancelled'].includes(invoice.status)) { setError('Paid or cancelled invoices cannot be sent.'); return }
+    if (invoice.email_sent_at) { setError('This invoice has already been sent by email.'); return }
+    const recipients = to.split(',').map((email) => email.trim()).filter(Boolean)
+    if (recipients.length === 0 || recipients.some((email) => !email.includes('@'))) { setError('Enter at least one valid recipient email.'); return }
     if (!selectedSendable) { setError('No active inbox email account is available for sending.'); return }
     if (!payUrl) { setError('This invoice does not have a public payment link yet.'); return }
     if (!message.trim()) { setError('Message is required.'); return }
@@ -277,7 +282,7 @@ export default function InvoiceEmailDraft() {
       },
       body: JSON.stringify({
         compose: true,
-        to: to.trim(),
+        to: recipients.join(', '),
         subject: subject.trim() || `Invoice - ${invNum} from Brogrammers Agency`,
         body: bodyHtml,
         isHtml: true,
@@ -300,9 +305,10 @@ export default function InvoiceEmailDraft() {
       await supabase.from('inbox_threads').update({ status: 'closed', updated_at: new Date().toISOString() }).eq('id', threadId)
     }
 
-    if (invoice.status === 'draft') {
-      await supabase.from('invoices').update({ status: 'unpaid', updated_at: new Date().toISOString() }).eq('id', invoice.id)
-    }
+    const sentUpdate: Record<string, string> = { updated_at: new Date().toISOString(), email_sent_at: new Date().toISOString() }
+    if (threadId) sentUpdate.email_sent_thread_id = threadId
+    if (invoice.status === 'draft') sentUpdate.status = 'unpaid'
+    await supabase.from('invoices').update(sentUpdate).eq('id', invoice.id)
 
     setSuccessThreadId(threadId ?? null)
     setSending(false)
@@ -366,6 +372,7 @@ export default function InvoiceEmailDraft() {
           to={to}
           onToChange={setTo}
           toOptions={recipientOptions}
+          allowMultipleToOptions
           subject={subject}
           onSubjectChange={setSubject}
           html={message}
