@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Send, Mail, Eye, CheckCircle, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Send, Mail, CheckCircle, AlertCircle } from 'lucide-react'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -57,7 +57,19 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#039;')
 }
 
-function buildInvoiceEmailHtml(args: {
+function plainTextToHtml(text: string): string {
+  const escaped = escapeHtml(text.trim())
+  const linked = escaped.replace(
+    /(https?:\/\/[^\s<]+)/g,
+    '<a href="$1">$1</a>',
+  )
+  return linked
+    .split(/\n{2,}/)
+    .map((paragraph) => `<p>${paragraph.replace(/\n/g, '<br />')}</p>`)
+    .join('')
+}
+
+function buildDefaultInvoiceMessage(args: {
   contactName: string
   invoiceAmountDue: string
   invoiceNumber: string
@@ -66,52 +78,17 @@ function buildInvoiceEmailHtml(args: {
   payUrl: string
   signature: string
 }) {
-  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
-  return `
-<div style="margin:0;padding:0;background:#f6f8fb;font-family:Arial,Helvetica,sans-serif;color:#172033;">
-  <div style="max-width:640px;margin:0 auto;padding:28px 18px;">
-    <div style="background:#ffffff;border:1px solid #e6eaf0;border-radius:16px;overflow:hidden;box-shadow:0 10px 30px rgba(15,23,42,0.08);">
-      <div style="background:#111827;color:#ffffff;padding:22px 28px;">
-        <div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#9ca3af;">Brogrammers Agency</div>
-        <h1 style="margin:8px 0 0;font-size:24px;line-height:1.25;">Invoice ${escapeHtml(args.invoiceNumber)}</h1>
-      </div>
-      <div style="padding:28px;">
-        <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">Dear ${escapeHtml(args.contactName)},</p>
-        <p style="margin:0 0 24px;font-size:15px;line-height:1.7;color:#374151;">
-          Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.
-        </p>
-
-        <div style="border:1px solid #e5e7eb;border-radius:14px;overflow:hidden;margin:0 0 24px;">
-          <div style="background:#f9fafb;padding:18px 20px;text-align:center;border-bottom:1px solid #e5e7eb;">
-            <div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#6b7280;">Invoice Amount</div>
-            <div style="font-size:30px;font-weight:800;color:#111827;margin-top:6px;">${escapeHtml(args.invoiceAmountDue)}</div>
-          </div>
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-            <tr>
-              <td style="padding:14px 18px;border-bottom:1px solid #eef0f3;color:#6b7280;font-size:13px;">Invoice No</td>
-              <td style="padding:14px 18px;border-bottom:1px solid #eef0f3;text-align:right;font-weight:700;color:#111827;">${escapeHtml(args.invoiceNumber)}</td>
-            </tr>
-            <tr>
-              <td style="padding:14px 18px;border-bottom:1px solid #eef0f3;color:#6b7280;font-size:13px;">Invoice Date</td>
-              <td style="padding:14px 18px;border-bottom:1px solid #eef0f3;text-align:right;font-weight:700;color:#111827;">${escapeHtml(args.invoiceDate)}</td>
-            </tr>
-            <tr>
-              <td style="padding:14px 18px;color:#6b7280;font-size:13px;">Due Date</td>
-              <td style="padding:14px 18px;text-align:right;font-weight:700;color:#111827;">${escapeHtml(args.dueDate)}</td>
-            </tr>
-          </table>
-        </div>
-
-        <div style="text-align:center;margin:26px 0;">
-          <a href="${escapeHtml(args.payUrl)}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:800;letter-spacing:.04em;border-radius:999px;padding:14px 30px;">PAY NOW</a>
-        </div>
-
-        <p style="margin:24px 0 0;font-size:15px;line-height:1.7;color:#374151;">Please contact us for more information.</p>
-        <p style="margin:20px 0 0;font-size:15px;line-height:1.7;color:#374151;">Kind Regards,<br />${signatureHtml}</p>
-      </div>
-    </div>
-  </div>
-</div>`.trim()
+  return [
+    `Dear ${args.contactName},`,
+    'Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.',
+    `Invoice amount: ${args.invoiceAmountDue}`,
+    `Invoice No: ${args.invoiceNumber}`,
+    `Invoice Date: ${args.invoiceDate}`,
+    `Due Date: ${args.dueDate}`,
+    `Pay online: ${args.payUrl}`,
+    'Please contact us for more information.',
+    `Kind Regards,\n${args.signature}`,
+  ].join('\n\n')
 }
 
 export default function InvoiceEmailDraft() {
@@ -126,7 +103,8 @@ export default function InvoiceEmailDraft() {
   const [selectedFrom, setSelectedFrom] = useState('')
   const [subject, setSubject] = useState('')
   const [to, setTo] = useState('')
-  const [signature, setSignature] = useState('Jay Logan\nBrogrammers Agency')
+  const signature = 'Jay Logan\nBrogrammers Agency'
+  const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -150,18 +128,8 @@ export default function InvoiceEmailDraft() {
   ), [sendableAddresses, selectedFrom])
 
   const invNum = invoiceNumber(invoice)
-  const contactNameParts = splitContactName(contact?.name)
-  const contactDisplayName = [contactNameParts.first, contactNameParts.last].filter(Boolean).join(' ')
   const payUrl = invoice?.hash ? `${window.location.origin}/invoice/${invoice.hash}` : ''
-  const emailHtml = useMemo(() => buildInvoiceEmailHtml({
-    contactName: contactDisplayName || 'there',
-    invoiceAmountDue: fmtCurrency(invoice?.amount_due ?? invoice?.total ?? 0),
-    invoiceNumber: invNum,
-    invoiceDate: fmtDate(invoice?.issue_date),
-    dueDate: fmtDate(invoice?.due_date),
-    payUrl,
-    signature,
-  }), [contactDisplayName, invoice?.amount_due, invoice?.total, invoice?.issue_date, invoice?.due_date, invNum, payUrl, signature])
+  const bodyHtml = useMemo(() => plainTextToHtml(message), [message])
 
   const load = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -182,6 +150,8 @@ export default function InvoiceEmailDraft() {
     }
 
     const invoiceRow = inv as Invoice
+    let loadedContact: ContactInfo | null = null
+    let loadedCompany: CompanyInfo | null = null
     setInvoice(invoiceRow)
     const number = invoiceNumber(invoiceRow)
     setSubject(`Invoice - ${number} from Brogrammers Agency`)
@@ -193,8 +163,9 @@ export default function InvoiceEmailDraft() {
         .eq('id', invoiceRow.contact_id)
         .maybeSingle()
       if (primaryContact) {
-        setContact(primaryContact as ContactInfo)
-        setTo((primaryContact as ContactInfo).email ?? '')
+        loadedContact = primaryContact as ContactInfo
+        setContact(loadedContact)
+        setTo(loadedContact.email ?? '')
       }
     }
 
@@ -208,8 +179,9 @@ export default function InvoiceEmailDraft() {
       const linked = invoiceContacts?.[0]?.contacts
       const linkedContact = Array.isArray(linked) ? linked[0] : linked
       if (linkedContact) {
-        setContact(linkedContact as ContactInfo)
-        setTo((linkedContact as ContactInfo).email ?? '')
+        loadedContact = linkedContact as ContactInfo
+        setContact(loadedContact)
+        setTo(loadedContact.email ?? '')
       }
     }
 
@@ -219,7 +191,8 @@ export default function InvoiceEmailDraft() {
         .select('id, name')
         .eq('id', invoiceRow.company_id)
         .maybeSingle()
-      setCompany((companyRow as CompanyInfo | null) ?? null)
+      loadedCompany = (companyRow as CompanyInfo | null) ?? null
+      setCompany(loadedCompany)
     }
 
     const { data: accountRows } = await supabase
@@ -231,6 +204,18 @@ export default function InvoiceEmailDraft() {
     const activeAccounts = (accountRows as ImapAccount[]) ?? []
     setAccounts(activeAccounts)
     if (activeAccounts[0]) setSelectedFrom(activeAccounts[0].email)
+
+    const loadedContactNameParts = splitContactName(loadedContact?.name)
+    const loadedContactName = [loadedContactNameParts.first, loadedContactNameParts.last].filter(Boolean).join(' ')
+    setMessage(buildDefaultInvoiceMessage({
+      contactName: loadedContactName || 'there',
+      invoiceAmountDue: fmtCurrency(invoiceRow.amount_due ?? invoiceRow.total ?? 0),
+      invoiceNumber: number,
+      invoiceDate: fmtDate(invoiceRow.issue_date),
+      dueDate: fmtDate(invoiceRow.due_date),
+      payUrl: invoiceRow.hash ? `${window.location.origin}/invoice/${invoiceRow.hash}` : '',
+      signature,
+    }))
 
     setLoading(false)
   }, [currentOrg?.id, id])
@@ -245,6 +230,7 @@ export default function InvoiceEmailDraft() {
     if (!to.trim() || !to.includes('@')) { setError('Enter a valid recipient email.'); return }
     if (!selectedSendable) { setError('No active inbox email account is available for sending.'); return }
     if (!payUrl) { setError('This invoice does not have a public payment link yet.'); return }
+    if (!message.trim()) { setError('Message is required.'); return }
 
     setSending(true)
     const { data: { session } } = await supabase.auth.getSession()
@@ -265,7 +251,7 @@ export default function InvoiceEmailDraft() {
         compose: true,
         to: to.trim(),
         subject: subject.trim() || `Invoice - ${invNum} from Brogrammers Agency`,
-        body: emailHtml,
+        body: bodyHtml,
         isHtml: true,
         accountId: selectedSendable.accountId,
         fromAddress: selectedSendable.email,
@@ -321,7 +307,7 @@ export default function InvoiceEmailDraft() {
             <Mail size={24} className="text-gray-400" /> Send Invoice To Client
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Preview and send {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
+            Compose and send {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
           </p>
         </div>
         {successThreadId && (
@@ -343,33 +329,37 @@ export default function InvoiceEmailDraft() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6">
-        <div className="rounded-xl border border-white/10 bg-white/5 p-5 space-y-4 h-fit">
-          <div>
-            <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">From</label>
-            <select
-              value={selectedFrom}
-              onChange={(e) => setSelectedFrom(e.target.value)}
-              className="w-full rounded-lg border border-white/10 bg-surface px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              {sendableAddresses.length === 0 ? (
-                <option value="">No active inbox accounts</option>
-              ) : sendableAddresses.map((addr) => (
-                <option key={`${addr.accountId}:${addr.email}`} value={addr.email}>{addr.label}</option>
-              ))}
-            </select>
-          </div>
+      <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3 text-sm font-medium text-white">
+          <Mail size={16} className="text-gray-400" /> New Email
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">From</label>
+              <select
+                value={selectedFrom}
+                onChange={(e) => setSelectedFrom(e.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-surface px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                {sendableAddresses.length === 0 ? (
+                  <option value="">No active inbox accounts</option>
+                ) : sendableAddresses.map((addr) => (
+                  <option key={`${addr.accountId}:${addr.email}`} value={addr.email}>{addr.label}</option>
+                ))}
+              </select>
+            </div>
 
-          <div>
-            <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">To</label>
-            <input
-              type="email"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              placeholder="client@example.com"
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <p className="mt-1 text-xs text-gray-500">Autopopulated from {contact?.name || company?.name || 'the invoice contact'}.</p>
+            <div>
+              <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">To</label>
+              <input
+                type="email"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                placeholder="client@example.com"
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
           </div>
 
           <div>
@@ -382,13 +372,16 @@ export default function InvoiceEmailDraft() {
           </div>
 
           <div>
-            <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Email signature</label>
+            <label className="block text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Message</label>
             <textarea
-              value={signature}
-              onChange={(e) => setSignature(e.target.value)}
-              rows={3}
-              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={16}
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
+            <p className="mt-1 text-xs text-gray-500">
+              This is the actual email body that will be sent through Inbox. Edit it like a normal compose message.
+            </p>
           </div>
 
           <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-gray-400 space-y-1">
@@ -398,26 +391,16 @@ export default function InvoiceEmailDraft() {
             <div><span className="text-gray-500">Pay link:</span> <span className="text-gray-200 break-all">{payUrl || 'Missing invoice hash'}</span></div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={sending || !!successThreadId}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Send size={16} /> {sending ? 'Sending…' : successThreadId ? 'Sent' : 'Send Invoice To Client'}
-          </button>
-        </div>
-
-        <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3 text-sm font-medium text-white">
-            <Eye size={16} className="text-gray-400" /> Email Preview
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={sending || !!successThreadId}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Send size={16} /> {sending ? 'Sending…' : successThreadId ? 'Sent' : 'Send Invoice To Client'}
+            </button>
           </div>
-          <iframe
-            title="Invoice email preview"
-            srcDoc={emailHtml}
-            className="w-full h-[720px] bg-white"
-            sandbox="allow-popups allow-top-navigation-by-user-activation"
-          />
         </div>
       </div>
     </div>
