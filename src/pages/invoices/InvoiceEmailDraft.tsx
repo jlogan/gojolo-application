@@ -380,8 +380,7 @@ export default function InvoiceEmailDraft() {
           onSend={handleSend}
           sending={sending}
           sendDisabled={!!successThreadId || !to.trim()}
-          sendLabel="Send Invoice To Client"
-          sentLabel="Sent"
+          sendLabel="Send"
           minHeight="min-h-[520px]"
           onCancel={() => window.history.back()}
         />
