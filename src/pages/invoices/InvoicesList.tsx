@@ -19,6 +19,9 @@ type InvoiceRow = {
   email_sent_thread_id: string | null
   currency_id: string | null
   created_at: string
+  is_recurring: boolean | null
+  recurring_interval: string | null
+  next_recurring_date: string | null
   companies: { name: string } | { name: string }[] | null
   projects: { name: string } | { name: string }[] | null
 }
@@ -47,6 +50,21 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border shrink-0 ${config.classes}`}>
       {config.label}
+    </span>
+  )
+}
+
+function RecurringBadge({ interval, nextDate }: { interval: string | null; nextDate: string | null }) {
+  const label = interval
+    ? interval.replace('-', ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+    : 'Recurring'
+
+  return (
+    <span
+      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 bg-purple-500/20 text-purple-300 border-purple-500/30"
+      title={nextDate ? `Next: ${formatDate(nextDate)}` : undefined}
+    >
+      {label}
     </span>
   )
 }
@@ -92,6 +110,7 @@ export default function InvoicesList() {
   const [loading, setLoading] = useState(true)
   const [directionTab, setDirectionTab] = useState<DirectionTab>(isVendor ? 'inbound' : 'outbound')
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus>('all')
+  const [recurringOnly, setRecurringOnly] = useState(false)
   const [search, setSearch] = useState('')
 
   useEffect(() => {
@@ -102,13 +121,17 @@ export default function InvoicesList() {
     const load = async () => {
       let query = supabase
         .from('invoices')
-        .select('id, direction, number, prefix, status, issue_date, due_date, total, amount_due, email_sent_at, email_sent_thread_id, currency_id, created_at, companies(name), projects(name)')
+        .select('id, direction, number, prefix, status, issue_date, due_date, total, amount_due, email_sent_at, email_sent_thread_id, currency_id, created_at, is_recurring, recurring_interval, next_recurring_date, companies(name), projects(name)')
         .eq('org_id', currentOrg.id)
         .eq('direction', directionTab)
         .order('created_at', { ascending: false })
 
       if (statusFilter !== 'all') {
         query = query.eq('status', statusFilter)
+      }
+
+      if (recurringOnly) {
+        query = query.eq('is_recurring', true)
       }
 
       const { data, error } = await query
@@ -119,7 +142,7 @@ export default function InvoicesList() {
     }
     load()
     return () => { cancelled = true }
-  }, [currentOrg?.id, user?.id, directionTab, statusFilter])
+  }, [currentOrg?.id, user?.id, directionTab, statusFilter, recurringOnly])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -159,7 +182,7 @@ export default function InvoicesList() {
         <div className="flex gap-1 mb-4 border-b border-border">
           <button
             type="button"
-            onClick={() => { setDirectionTab('outbound'); setStatusFilter('all') }}
+            onClick={() => { setDirectionTab('outbound'); setStatusFilter('all'); setRecurringOnly(false) }}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               directionTab === 'outbound' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
@@ -168,7 +191,7 @@ export default function InvoicesList() {
           </button>
           <button
             type="button"
-            onClick={() => { setDirectionTab('inbound'); setStatusFilter('all') }}
+            onClick={() => { setDirectionTab('inbound'); setStatusFilter('all'); setRecurringOnly(false) }}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               directionTab === 'inbound' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
@@ -179,7 +202,7 @@ export default function InvoicesList() {
       )}
 
       {/* Status filter pills */}
-      <div className="flex flex-wrap gap-1 mb-4 border-b border-border pb-3">
+      <div className="flex flex-wrap items-center gap-1 mb-4 border-b border-border pb-3">
         {STATUS_FILTERS.map((f) => (
           <button
             key={f.id}
@@ -194,6 +217,19 @@ export default function InvoicesList() {
             {f.label}
           </button>
         ))}
+        <span className="hidden sm:inline text-gray-600 mx-1">|</span>
+        <button
+          type="button"
+          onClick={() => setRecurringOnly((value) => !value)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+            recurringOnly
+              ? 'border-purple-500/50 text-purple-300 bg-purple-500/10'
+              : 'border-border text-gray-400 hover:text-gray-200'
+          }`}
+          data-testid="invoice-filter-recurring"
+        >
+          Recurring
+        </button>
       </div>
 
       {/* Search */}
@@ -211,7 +247,7 @@ export default function InvoicesList() {
       {/* Content */}
       {loading ? (
         <div className="text-surface-muted text-sm">Loading…</div>
-      ) : invoices.length === 0 && statusFilter === 'all' ? (
+      ) : invoices.length === 0 && statusFilter === 'all' && !recurringOnly ? (
         <div className="rounded-lg border border-border bg-surface-muted/50 p-8 text-center text-gray-400">
           <FileText className="w-10 h-10 mx-auto mb-3 opacity-60" />
           <p className="font-medium text-gray-200">No {entityLabelPlural.toLowerCase()} yet</p>
@@ -228,7 +264,9 @@ export default function InvoicesList() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface-muted/50 p-8 text-center text-gray-400">
-          <p className="font-medium text-gray-200">No {entityLabelPlural.toLowerCase()} found</p>
+          <p className="font-medium text-gray-200">
+            {recurringOnly ? `No recurring ${entityLabelPlural.toLowerCase()} found` : `No ${entityLabelPlural.toLowerCase()} found`}
+          </p>
           <p className="text-sm mt-1">Try another filter or clear your search.</p>
         </div>
       ) : (
@@ -263,7 +301,10 @@ export default function InvoicesList() {
                     <span className="text-sm font-medium text-white truncate">{invoiceNumber(inv)}</span>
                     <span className="text-sm text-gray-300 truncate">{companyName(inv.companies)}</span>
                     <span className="text-sm text-gray-400 truncate">{projectName(inv.projects)}</span>
-                    <StatusBadge status={inv.status} />
+                    <span className="flex flex-col items-start gap-1">
+                      <StatusBadge status={inv.status} />
+                      {inv.is_recurring && <RecurringBadge interval={inv.recurring_interval} nextDate={inv.next_recurring_date} />}
+                    </span>
                     <span className="text-sm text-white text-right tabular-nums">{formatCurrency(inv.total)}</span>
                     <span className="text-sm text-gray-300 text-right tabular-nums">{formatCurrency(inv.amount_due)}</span>
                     <span className="text-xs text-gray-400">{formatDate(inv.issue_date)}</span>
@@ -285,7 +326,10 @@ export default function InvoicesList() {
                   <div className="md:hidden p-4 space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium text-white truncate">{invoiceNumber(inv)}</span>
-                      <StatusBadge status={inv.status} />
+                      <span className="flex items-center gap-1.5">
+                        {inv.is_recurring && <RecurringBadge interval={inv.recurring_interval} nextDate={inv.next_recurring_date} />}
+                        <StatusBadge status={inv.status} />
+                      </span>
                     </div>
                     <p className="text-sm text-gray-300 truncate">{companyName(inv.companies)}</p>
                     <div className="flex items-center justify-between text-xs text-gray-400">
