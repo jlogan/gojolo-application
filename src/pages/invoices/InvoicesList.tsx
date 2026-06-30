@@ -13,6 +13,7 @@ type InvoiceRow = {
   status: string
   issue_date: string | null
   due_date: string | null
+  paid_date: string | null
   total: number
   amount_due: number
   email_sent_at: string | null
@@ -29,6 +30,8 @@ type InvoiceRow = {
 type InvoiceStatus = 'all' | 'draft' | 'unpaid' | 'paid' | 'cancelled'
 
 type DirectionTab = 'outbound' | 'inbound'
+type SortField = 'number' | 'company' | 'project' | 'status' | 'total' | 'amount_due' | 'issue_date' | 'due_date' | 'paid_date' | 'next_recurring_date' | 'created_at'
+type SortDir = 'asc' | 'desc'
 
 const STATUS_FILTERS: { id: InvoiceStatus; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -103,6 +106,35 @@ function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
     && !inv.email_sent_at
 }
 
+function SortHeader({
+  field,
+  label,
+  sortField,
+  sortDir,
+  onSort,
+  align = 'left',
+}: {
+  field: SortField
+  label: string
+  sortField: SortField
+  sortDir: SortDir
+  onSort: (field: SortField) => void
+  align?: 'left' | 'right'
+}) {
+  const active = sortField === field
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(field)}
+      className={`inline-flex items-center gap-1 hover:text-gray-200 ${align === 'right' ? 'justify-end w-full text-right' : ''} ${active ? 'text-gray-200' : ''}`}
+      aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <span>{label}</span>
+      <span className="text-[10px] text-gray-500">{active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+    </button>
+  )
+}
+
 export default function InvoicesList() {
   const { currentOrg, isVendor } = useOrg()
   const { user } = useAuth()
@@ -113,6 +145,10 @@ export default function InvoicesList() {
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus>('all')
   const [recurringOnly, setRecurringOnly] = useState(false)
   const [search, setSearch] = useState('')
+  const [sortField, setSortField] = useState<SortField>('created_at')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  const isPaidView = statusFilter === 'paid' && !recurringOnly
 
   useEffect(() => {
     if (!currentOrg?.id || !user?.id) return
@@ -122,7 +158,7 @@ export default function InvoicesList() {
     const load = async () => {
       let query = supabase
         .from('invoices')
-        .select('id, direction, number, prefix, status, issue_date, due_date, total, amount_due, email_sent_at, email_sent_thread_id, currency_id, created_at, is_recurring, recurring_interval, next_recurring_date, companies(name), projects(name)')
+        .select('id, direction, number, prefix, status, issue_date, due_date, paid_date, total, amount_due, email_sent_at, email_sent_thread_id, currency_id, created_at, is_recurring, recurring_interval, next_recurring_date, companies(name), projects(name)')
         .eq('org_id', currentOrg.id)
         .eq('direction', directionTab)
         .order('created_at', { ascending: false })
@@ -149,6 +185,25 @@ export default function InvoicesList() {
     return () => { cancelled = true }
   }, [currentOrg?.id, user?.id, directionTab, statusFilter, recurringOnly])
 
+  useEffect(() => {
+    if (isPaidView) {
+      setSortField('paid_date')
+      setSortDir('desc')
+    } else {
+      setSortField('created_at')
+      setSortDir('desc')
+    }
+  }, [isPaidView])
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((dir) => dir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDir(field === 'number' || field === 'company' || field === 'project' || field === 'status' ? 'asc' : 'desc')
+    }
+  }
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return invoices
@@ -159,6 +214,38 @@ export default function InvoicesList() {
       return num.includes(q) || company.includes(q) || project.includes(q) || inv.status.includes(q)
     })
   }, [invoices, search])
+
+  const sorted = useMemo(() => {
+    const rows = [...filtered]
+    const dir = sortDir === 'asc' ? 1 : -1
+    const dateValue = (value: string | null) => value ? new Date(value).getTime() : 0
+
+    rows.sort((a, b) => {
+      switch (sortField) {
+        case 'number':
+          return dir * (Number(a.number ?? 0) - Number(b.number ?? 0))
+        case 'company':
+          return dir * companyName(a.companies).localeCompare(companyName(b.companies))
+        case 'project':
+          return dir * projectName(a.projects).localeCompare(projectName(b.projects))
+        case 'status':
+          return dir * a.status.localeCompare(b.status)
+        case 'total':
+        case 'amount_due':
+          return dir * ((a[sortField] ?? 0) - (b[sortField] ?? 0))
+        case 'issue_date':
+        case 'due_date':
+        case 'paid_date':
+        case 'next_recurring_date':
+          return dir * (dateValue(a[sortField]) - dateValue(b[sortField]))
+        case 'created_at':
+        default:
+          return dir * (dateValue(a.created_at) - dateValue(b.created_at))
+      }
+    })
+
+    return rows
+  }, [filtered, sortField, sortDir])
 
   const isOutbound = directionTab === 'outbound'
   const entityLabel = isOutbound ? 'Invoice' : 'Bill'
@@ -285,19 +372,28 @@ export default function InvoicesList() {
         <div className="rounded-lg border border-border overflow-hidden">
           {/* Table header — hidden on mobile */}
           <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_120px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider bg-surface-muted/50 border-b border-border">
-            <span>#</span>
-            <span>{counterpartyLabel}</span>
-            <span>Project</span>
-            <span>Status</span>
-            <span className="text-right">Total</span>
-            <span className="text-right">Due</span>
-            <span>{recurringOnly ? 'Starts' : 'Issued'}</span>
-            <span>{recurringOnly ? 'Next Date' : 'Due Date'}</span>
+            <SortHeader field="number" label="#" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+            <SortHeader field="company" label={counterpartyLabel} sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+            <SortHeader field="project" label="Project" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+            <SortHeader field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+            <SortHeader field="total" label="Total" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
+            <SortHeader field="amount_due" label="Due" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
+            {isPaidView ? (
+              <>
+                <SortHeader field="paid_date" label="Paid Date" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <span />
+              </>
+            ) : (
+              <>
+                <SortHeader field="issue_date" label={recurringOnly ? 'Starts' : 'Issued'} sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                <SortHeader field={recurringOnly ? 'next_recurring_date' : 'due_date'} label={recurringOnly ? 'Next Date' : 'Due Date'} sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              </>
+            )}
             <span className="text-right">Action</span>
           </div>
 
           <ul className="divide-y divide-border" data-testid="invoice-list">
-            {filtered.map((inv) => (
+            {sorted.map((inv) => (
               <li key={inv.id}>
                 <div
                   role="button"
@@ -319,8 +415,17 @@ export default function InvoicesList() {
                     </span>
                     <span className="text-sm text-white text-right tabular-nums">{formatCurrency(inv.total)}</span>
                     <span className="text-sm text-gray-300 text-right tabular-nums">{formatCurrency(inv.amount_due)}</span>
-                    <span className="text-xs text-gray-400">{formatDate(inv.issue_date)}</span>
-                    <span className="text-xs text-gray-400">{formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
+                    {isPaidView ? (
+                      <>
+                        <span className="text-xs text-gray-400">{formatDate(inv.paid_date)}</span>
+                        <span />
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-xs text-gray-400">{formatDate(inv.issue_date)}</span>
+                        <span className="text-xs text-gray-400">{formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
+                      </>
+                    )}
                     <span className="flex justify-end">
                       {inv.is_recurring && !isVendor ? (
                         <Link
@@ -357,8 +462,14 @@ export default function InvoicesList() {
                       <span>Due: <span className="text-gray-200">{formatCurrency(inv.amount_due)}</span></span>
                     </div>
                     <div className="flex items-center justify-between text-xs text-gray-500">
-                      <span>Issued {formatDate(inv.issue_date)}</span>
-                      <span>{recurringOnly ? 'Next' : 'Due'} {formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
+                      {isPaidView ? (
+                        <span>Paid {formatDate(inv.paid_date)}</span>
+                      ) : (
+                        <>
+                          <span>Issued {formatDate(inv.issue_date)}</span>
+                          <span>{recurringOnly ? 'Next' : 'Due'} {formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
+                        </>
+                      )}
                     </div>
                     {inv.is_recurring && !isVendor ? (
                       <Link
