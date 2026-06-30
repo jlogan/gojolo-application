@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { Plus, FileText, Search, Send } from 'lucide-react'
+import { Plus, FileText, Search, Send, Pencil } from 'lucide-react'
 
 type InvoiceRow = {
   id: string
@@ -98,6 +98,7 @@ function invoiceNumber(inv: InvoiceRow): string {
 function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
   return !isVendor
     && inv.direction === 'outbound'
+    && !inv.is_recurring
     && !['paid', 'cancelled'].includes(inv.status)
     && !inv.email_sent_at
 }
@@ -132,6 +133,8 @@ export default function InvoicesList() {
 
       if (recurringOnly) {
         query = query.eq('is_recurring', true)
+      } else {
+        query = query.or('is_recurring.is.null,is_recurring.eq.false')
       }
 
       const { data, error } = await query
@@ -158,6 +161,7 @@ export default function InvoicesList() {
   const isOutbound = directionTab === 'outbound'
   const entityLabel = isOutbound ? 'Invoice' : 'Bill'
   const entityLabelPlural = isOutbound ? 'Invoices' : 'Bills'
+  const pageLabelPlural = recurringOnly ? 'Recurring Schedules' : entityLabelPlural
   const counterpartyLabel = isOutbound ? 'Client' : 'Vendor'
 
   return (
@@ -228,9 +232,15 @@ export default function InvoicesList() {
           }`}
           data-testid="invoice-filter-recurring"
         >
-          Recurring
+          Scheduled / Recurring
         </button>
       </div>
+
+      {recurringOnly && (
+        <div className="mb-4 rounded-lg border border-purple-500/25 bg-purple-500/10 px-4 py-3 text-sm text-purple-100">
+          These are scheduled recurring templates. They stay out of the regular {entityLabelPlural.toLowerCase()} list and are not sent to clients until a due run creates a normal draft invoice or an admin sends one manually.
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative mb-4">
@@ -239,7 +249,7 @@ export default function InvoicesList() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={`Search ${entityLabelPlural.toLowerCase()}…`}
+          placeholder={`Search ${pageLabelPlural.toLowerCase()}…`}
           className="w-full rounded-lg border border-border bg-surface-muted pl-10 pr-4 py-2.5 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
         />
       </div>
@@ -265,7 +275,7 @@ export default function InvoicesList() {
       ) : filtered.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface-muted/50 p-8 text-center text-gray-400">
           <p className="font-medium text-gray-200">
-            {recurringOnly ? `No recurring ${entityLabelPlural.toLowerCase()} found` : `No ${entityLabelPlural.toLowerCase()} found`}
+            {recurringOnly ? 'No recurring schedules found' : `No ${entityLabelPlural.toLowerCase()} found`}
           </p>
           <p className="text-sm mt-1">Try another filter or clear your search.</p>
         </div>
@@ -279,8 +289,8 @@ export default function InvoicesList() {
             <span>Status</span>
             <span className="text-right">Total</span>
             <span className="text-right">Due</span>
-            <span>Issued</span>
-            <span>Due Date</span>
+            <span>{recurringOnly ? 'Starts' : 'Issued'}</span>
+            <span>{recurringOnly ? 'Next Date' : 'Due Date'}</span>
             <span className="text-right">Action</span>
           </div>
 
@@ -308,9 +318,17 @@ export default function InvoicesList() {
                     <span className="text-sm text-white text-right tabular-nums">{formatCurrency(inv.total)}</span>
                     <span className="text-sm text-gray-300 text-right tabular-nums">{formatCurrency(inv.amount_due)}</span>
                     <span className="text-xs text-gray-400">{formatDate(inv.issue_date)}</span>
-                    <span className="text-xs text-gray-400">{formatDate(inv.due_date)}</span>
+                    <span className="text-xs text-gray-400">{formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
                     <span className="flex justify-end">
-                      {canSendInvoice(inv, isVendor) && (
+                      {inv.is_recurring && !isVendor ? (
+                        <Link
+                          to={`/invoices/${inv.id}/edit`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
+                        >
+                          <Pencil className="w-3.5 h-3.5" /> Edit
+                        </Link>
+                      ) : canSendInvoice(inv, isVendor) && (
                         <Link
                           to={`/invoices/${inv.id}/send`}
                           onClick={(e) => e.stopPropagation()}
@@ -338,9 +356,17 @@ export default function InvoicesList() {
                     </div>
                     <div className="flex items-center justify-between text-xs text-gray-500">
                       <span>Issued {formatDate(inv.issue_date)}</span>
-                      <span>Due {formatDate(inv.due_date)}</span>
+                      <span>{recurringOnly ? 'Next' : 'Due'} {formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
                     </div>
-                    {canSendInvoice(inv, isVendor) && (
+                    {inv.is_recurring && !isVendor ? (
+                      <Link
+                        to={`/invoices/${inv.id}/edit`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
+                      >
+                        <Pencil className="w-3.5 h-3.5" /> Edit Schedule
+                      </Link>
+                    ) : canSendInvoice(inv, isVendor) && (
                       <Link
                         to={`/invoices/${inv.id}/send`}
                         onClick={(e) => e.stopPropagation()}
