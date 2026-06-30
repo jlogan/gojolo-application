@@ -96,6 +96,9 @@ export default function InvoiceForm() {
   const { currentOrg } = useOrg()
   const { user } = useAuth()
   const isEdit = Boolean(id)
+  const orgSettings = (currentOrg?.settings as Record<string, unknown> | null) ?? {}
+  const savedBankTransferLabel = (orgSettings.bank_transfer_label as string | undefined) || 'Direct Bank Transfer'
+  const savedBankTransferDetails = (orgSettings.bank_transfer_details as string | undefined) || ''
 
   /* ── reference data ── */
   const [taxRates, setTaxRates] = useState<TaxRate[]>([])
@@ -258,7 +261,7 @@ export default function InvoiceForm() {
       setAcceptStripe(paymentMethods.stripe !== false)
       setAcceptPaypal(paymentMethods.paypal !== false)
       setAcceptBankTransfer(Boolean(paymentMethods.bank_transfer))
-      setBankPaymentDetails((d.bank_payment_details as string) ?? '')
+      setBankPaymentDetails((d.bank_payment_details as string) ?? savedBankTransferDetails)
 
       // load any additional invoice recipients
       const { data: contactRows } = await supabase
@@ -295,7 +298,7 @@ export default function InvoiceForm() {
         )
       }
     })()
-  }, [id, currentOrg?.id])
+  }, [id, currentOrg?.id, savedBankTransferDetails])
 
 
   /* reset contact when company changes */
@@ -1072,7 +1075,7 @@ export default function InvoiceForm() {
               {[
                 { id: 'stripe', label: 'Pay by Card', checked: acceptStripe, onChange: setAcceptStripe },
                 { id: 'paypal', label: 'Pay with PayPal', checked: acceptPaypal, onChange: setAcceptPaypal },
-                { id: 'bank', label: 'Direct to Bank', checked: acceptBankTransfer, onChange: setAcceptBankTransfer },
+                { id: 'bank', label: `Direct to Bank${savedBankTransferLabel ? ` (${savedBankTransferLabel})` : ''}`, checked: acceptBankTransfer, onChange: (checked: boolean) => { setAcceptBankTransfer(checked); if (checked && !bankPaymentDetails.trim() && savedBankTransferDetails) setBankPaymentDetails(savedBankTransferDetails) } },
               ].map((method) => (
                 <label key={method.id} className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 cursor-pointer hover:border-gray-600">
                   <input
@@ -1087,7 +1090,18 @@ export default function InvoiceForm() {
             </div>
             {acceptBankTransfer && (
               <div>
-                <label className={labelCls}>Bank Details</label>
+                <div className="flex items-center justify-between gap-3 mb-1">
+                  <label className="block text-sm font-medium text-gray-300">Bank Details</label>
+                  {savedBankTransferDetails && (
+                    <button
+                      type="button"
+                      onClick={() => setBankPaymentDetails(savedBankTransferDetails)}
+                      className="text-xs text-accent hover:underline"
+                    >
+                      Use admin saved details
+                    </button>
+                  )}
+                </div>
                 <textarea
                   value={bankPaymentDetails}
                   onChange={(e) => setBankPaymentDetails(e.target.value)}
@@ -1095,7 +1109,7 @@ export default function InvoiceForm() {
                   className={`${inputCls} resize-y font-mono text-sm`}
                   placeholder={"Bank name:\nAccount name:\nRouting / sort code:\nAccount number / IBAN:\nReference: Invoice number"}
                 />
-                <p className="text-xs text-gray-500 mt-1">These details will be visible to the client on the public invoice page.</p>
+                <p className="text-xs text-gray-500 mt-1">These details will be visible to the client on the public invoice page. Admins can edit the saved default under Admin → Payments.</p>
               </div>
             )}
           </div>

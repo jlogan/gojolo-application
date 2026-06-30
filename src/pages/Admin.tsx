@@ -96,7 +96,7 @@ const ALL_PERMISSIONS = [
 export default function Admin() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { isPlatformAdmin, currentOrg, isOrgAdmin } = useOrg()
+  const { isPlatformAdmin, currentOrg, isOrgAdmin, refetch } = useOrg()
   const [section, setSection] = useState<AdminSection>(location.pathname.includes('/admin/resume-templates') ? 'resume_templates' : 'users')
   const [roles, setRoles] = useState<Role[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
@@ -187,6 +187,12 @@ export default function Admin() {
   const [paypalTestLoading, setPaypalTestLoading] = useState(false)
   const [paypalTestMessage, setPaypalTestMessage] = useState<string | null>(null)
 
+  // Payments (Direct bank transfer)
+  const [bankTransferLabel, setBankTransferLabel] = useState('Thread Bank')
+  const [bankTransferDetails, setBankTransferDetails] = useState('')
+  const [bankTransferSaving, setBankTransferSaving] = useState(false)
+  const [bankTransferMessage, setBankTransferMessage] = useState<string | null>(null)
+
   useEffect(() => {
     if (section === 'imap') setImapView('list')
   }, [section])
@@ -201,10 +207,17 @@ export default function Admin() {
     setPaypalPassword((settings?.paypal_password as string) ?? '')
     setPaypalSignature((settings?.paypal_signature as string) ?? '')
     setPaypalMode(((settings?.paypal_mode as string) === 'live' ? 'live' : 'sandbox'))
+    setBankTransferLabel((settings?.bank_transfer_label as string) ?? 'Thread Bank')
+    setBankTransferDetails((settings?.bank_transfer_details as string) ?? `Payee Name: Brogrammers Agency
+Account Number: 200000050321
+Routing Number: 064209588
+Bank Name: Thread Bank
+Bank Address: 210 E Main St, Rogersville TN 37857`)
     setStripeMessage(null)
     setStripeTestMessage(null)
     setPaypalMessage(null)
     setPaypalTestMessage(null)
+    setBankTransferMessage(null)
   }, [section, currentOrg?.id, currentOrg?.settings])
 
   useEffect(() => {
@@ -1760,7 +1773,76 @@ export default function Admin() {
             <>
               <h2 className="text-xl font-semibold text-white mb-2">Payment Configuration</h2>
               <p className="text-gray-400 text-sm mb-6">
-                Configure Stripe and PayPal keys for your organization to accept payments on invoices. Keys are stored per organization.
+                Configure invoice payment options for your organization. These settings are stored per organization.
+              </p>
+
+              {/* ── Direct Bank Transfer ── */}
+              <h3 className="text-lg font-semibold text-white mb-2">Direct Bank Transfer</h3>
+              <p className="text-gray-400 text-sm mb-4">
+                Saved bank details can be reused on invoices that enable Direct to Bank. Edit this if BA later wants clients to pay via a different bank.
+              </p>
+              <div className="rounded-lg border border-border bg-surface-elevated p-6 max-w-lg space-y-4 mb-8">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Bank Label</label>
+                  <input
+                    type="text"
+                    value={bankTransferLabel}
+                    onChange={e => setBankTransferLabel(e.target.value)}
+                    placeholder="Thread Bank, Bank of America, etc."
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Bank Details Shown to Client</label>
+                  <textarea
+                    value={bankTransferDetails}
+                    onChange={e => setBankTransferDetails(e.target.value)}
+                    rows={6}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-gray-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-accent/50 placeholder:text-gray-600"
+                    placeholder="Payee Name: ..."
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={bankTransferSaving}
+                  onClick={async () => {
+                    if (!currentOrg?.id) return
+                    setBankTransferSaving(true)
+                    setBankTransferMessage(null)
+                    const existingSettings = (currentOrg.settings as Record<string, unknown>) ?? {}
+                    const newSettings = {
+                      ...existingSettings,
+                      bank_transfer_label: bankTransferLabel.trim() || 'Direct Bank Transfer',
+                      bank_transfer_details: bankTransferDetails.trim() || null,
+                    }
+                    const { error } = await supabase
+                      .from('organizations')
+                      .update({ settings: newSettings })
+                      .eq('id', currentOrg.id)
+                    setBankTransferSaving(false)
+                    if (error) {
+                      setBankTransferMessage(error.message)
+                    } else {
+                      setBankTransferMessage('Bank transfer details saved.')
+                      await refetch()
+                      setTimeout(() => setBankTransferMessage(null), 3000)
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                >
+                  {bankTransferSaving ? 'Saving…' : 'Save Bank Details'}
+                </button>
+                {bankTransferMessage && (
+                  <p className={`text-sm ${bankTransferMessage.includes('saved') ? 'text-accent' : 'text-red-400'}`}>
+                    {bankTransferMessage}
+                  </p>
+                )}
+              </div>
+
+              {/* ── Stripe ── */}
+              <h3 className="text-lg font-semibold text-white mb-2">Stripe</h3>
+              <p className="text-gray-400 text-sm mb-4">
+                Configure card payments through Stripe.
               </p>
               <div className="rounded-lg border border-border bg-surface-elevated p-6 max-w-lg space-y-4">
                 <div>
@@ -1808,6 +1890,7 @@ export default function Admin() {
                         setStripeMessage(error.message)
                       } else {
                         setStripeMessage('Stripe keys saved.')
+                        await refetch()
                         setTimeout(() => setStripeMessage(null), 3000)
                       }
                     }}
@@ -1931,6 +2014,7 @@ export default function Admin() {
                         setPaypalMessage(error.message)
                       } else {
                         setPaypalMessage('PayPal credentials saved.')
+                        await refetch()
                         setTimeout(() => setPaypalMessage(null), 3000)
                       }
                     }}
