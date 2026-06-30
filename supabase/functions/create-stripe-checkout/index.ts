@@ -26,7 +26,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: invoice, error: invErr } = await service
       .from('invoices')
-      .select('id, org_id, number, prefix, amount_due, status')
+      .select('id, org_id, number, prefix, amount_due, status, payment_methods')
       .eq('id', invoiceId)
       .single()
 
@@ -40,6 +40,14 @@ Deno.serve(async (req: Request) => {
     if (invoice.status === 'paid' || invoice.status === 'cancelled') {
       return new Response(
         JSON.stringify({ error: `Invoice is already ${invoice.status}` }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const paymentMethods = invoice.payment_methods as Record<string, unknown> | null
+    if (paymentMethods?.stripe === false) {
+      return new Response(
+        JSON.stringify({ error: 'Card payments are not enabled for this invoice.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
     }

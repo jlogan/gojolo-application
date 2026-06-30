@@ -133,6 +133,12 @@ export default function InvoiceForm() {
   const [isRecurring, setIsRecurring] = useState(false)
   const [recurringInterval, setRecurringInterval] = useState('monthly')
 
+  /* ── client payment options ── */
+  const [acceptStripe, setAcceptStripe] = useState(true)
+  const [acceptPaypal, setAcceptPaypal] = useState(true)
+  const [acceptBankTransfer, setAcceptBankTransfer] = useState(false)
+  const [bankPaymentDetails, setBankPaymentDetails] = useState('')
+
   /* ── vendor groups for inbound time log modal ── */
   const [vendorGroups, setVendorGroups] = useState<VendorGroup[]>([])
 
@@ -248,6 +254,11 @@ export default function InvoiceForm() {
       setInvoiceStatus((d.status as 'draft' | 'unpaid' | 'paid' | 'cancelled') ?? 'draft')
       setIsRecurring(Boolean(d.is_recurring))
       setRecurringInterval((d.recurring_interval as string) ?? 'monthly')
+      const paymentMethods = (d.payment_methods as Record<string, unknown> | null) ?? {}
+      setAcceptStripe(paymentMethods.stripe !== false)
+      setAcceptPaypal(paymentMethods.paypal !== false)
+      setAcceptBankTransfer(Boolean(paymentMethods.bank_transfer))
+      setBankPaymentDetails((d.bank_payment_details as string) ?? '')
 
       // load any additional invoice recipients
       const { data: contactRows } = await supabase
@@ -759,6 +770,12 @@ export default function InvoiceForm() {
           }
           return d.toISOString().split('T')[0]
         })() : null,
+        payment_methods: {
+          stripe: acceptStripe,
+          paypal: acceptPaypal,
+          bank_transfer: acceptBankTransfer,
+        },
+        bank_payment_details: acceptBankTransfer ? (bankPaymentDetails.trim() || null) : null,
       }
 
       let invoiceId: string
@@ -1044,6 +1061,45 @@ export default function InvoiceForm() {
             </div>
           )}
         </div>
+
+        {direction === 'outbound' && (
+          <div className="rounded-lg border border-border bg-surface-muted p-4 space-y-4">
+            <div>
+              <h2 className="text-sm font-medium text-white">Client Payment Options</h2>
+              <p className="text-xs text-gray-500 mt-1">Choose which payment methods show on the public invoice payment page.</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[
+                { id: 'stripe', label: 'Pay by Card', checked: acceptStripe, onChange: setAcceptStripe },
+                { id: 'paypal', label: 'Pay with PayPal', checked: acceptPaypal, onChange: setAcceptPaypal },
+                { id: 'bank', label: 'Direct to Bank', checked: acceptBankTransfer, onChange: setAcceptBankTransfer },
+              ].map((method) => (
+                <label key={method.id} className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 cursor-pointer hover:border-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={method.checked}
+                    onChange={(e) => method.onChange(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-500 bg-transparent text-accent focus:ring-accent"
+                  />
+                  <span className="text-sm text-gray-200">{method.label}</span>
+                </label>
+              ))}
+            </div>
+            {acceptBankTransfer && (
+              <div>
+                <label className={labelCls}>Bank Details</label>
+                <textarea
+                  value={bankPaymentDetails}
+                  onChange={(e) => setBankPaymentDetails(e.target.value)}
+                  rows={4}
+                  className={`${inputCls} resize-y font-mono text-sm`}
+                  placeholder={"Bank name:\nAccount name:\nRouting / sort code:\nAccount number / IBAN:\nReference: Invoice number"}
+                />
+                <p className="text-xs text-gray-500 mt-1">These details will be visible to the client on the public invoice page.</p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ─── Line Items ─── */}
         <div>

@@ -36,7 +36,8 @@ type PublicInvoiceData = {
     total: number
     sort_order: number
   }>
-  paymentMethods?: { stripe?: boolean; paypal?: boolean }
+  paymentMethods?: { stripe?: boolean; paypal?: boolean; bank_transfer?: boolean }
+  bankDetails?: string | null
 }
 
 // Map internal status → payment-facing label + color
@@ -349,9 +350,16 @@ export default function PublicInvoice() {
               </div>
             </div>
 
-            {/* Payment buttons */}
+            {/* Payment options */}
             {showPayButton && (
-              <div className="flex flex-col sm:flex-row justify-end gap-3">
+              <div className="space-y-3">
+                {data.paymentMethods?.bank_transfer && data.bankDetails && (
+                  <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm">
+                    <div className="font-semibold text-blue-200 mb-2">Pay direct to bank</div>
+                    <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed text-gray-200">{data.bankDetails}</pre>
+                  </div>
+                )}
+                <div className="flex flex-col sm:flex-row justify-end gap-3">
                 {data.paymentMethods?.paypal && (
                   <button
                     onClick={handlePayPalPay}
@@ -370,6 +378,7 @@ export default function PublicInvoice() {
                     {payLoading === 'stripe' ? 'Redirecting…' : 'Pay by Card'}
                   </button>
                 )}
+                </div>
               </div>
             )}
             {data.invoice.status === 'paid' && (

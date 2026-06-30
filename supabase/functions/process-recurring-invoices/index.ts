@@ -237,6 +237,8 @@ Deno.serve(async (req: Request) => {
                 amount_due: invoiceSubtotal,
                 notes: inv.notes,
                 terms: inv.terms,
+                payment_methods: inv.payment_methods,
+                bank_payment_details: inv.bank_payment_details,
                 created_by: inv.created_by,
               })
               .select('id')
@@ -295,6 +297,8 @@ Deno.serve(async (req: Request) => {
                 amount_due: inv.total,
                 notes: inv.notes,
                 terms: inv.terms,
+                payment_methods: inv.payment_methods,
+                bank_payment_details: inv.bank_payment_details,
                 created_by: inv.created_by,
               })
               .select('id')
@@ -444,6 +448,8 @@ Deno.serve(async (req: Request) => {
               amount_due: 0,
               notes: inv.notes,
               terms: inv.terms,
+              payment_methods: inv.payment_methods,
+              bank_payment_details: inv.bank_payment_details,
               created_by: inv.created_by,
             })
             .select('id')
