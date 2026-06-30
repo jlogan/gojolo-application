@@ -352,15 +352,6 @@ export default function PublicInvoice() {
             {/* Payment buttons */}
             {showPayButton && (
               <div className="flex flex-col sm:flex-row justify-end gap-3">
-                {data.paymentMethods?.stripe !== false && (
-                  <button
-                    onClick={handleStripePay}
-                    disabled={payLoading !== null}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-60 px-6 py-3 text-sm font-semibold text-white transition-colors"
-                  >
-                    {payLoading === 'stripe' ? 'Redirecting…' : `Pay by Card ${fmt(data.invoice.amount_due)}`}
-                  </button>
-                )}
                 {data.paymentMethods?.paypal && (
                   <button
                     onClick={handlePayPalPay}
@@ -368,6 +359,15 @@ export default function PublicInvoice() {
                     className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#ffc439] hover:bg-[#f4b800] disabled:opacity-60 px-6 py-3 text-sm font-semibold text-black transition-colors"
                   >
                     {payLoading === 'paypal' ? 'Redirecting…' : 'Pay with PayPal'}
+                  </button>
+                )}
+                {data.paymentMethods?.stripe !== false && (
+                  <button
+                    onClick={handleStripePay}
+                    disabled={payLoading !== null}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-60 px-6 py-3 text-sm font-semibold text-white transition-colors"
+                  >
+                    {payLoading === 'stripe' ? 'Redirecting…' : 'Pay by Card'}
                   </button>
                 )}
               </div>
