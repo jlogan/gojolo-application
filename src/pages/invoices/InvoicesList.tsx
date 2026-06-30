@@ -134,7 +134,9 @@ export default function InvoicesList() {
       if (recurringOnly) {
         query = query.eq('is_recurring', true)
       } else {
-        query = query.or('is_recurring.is.null,is_recurring.eq.false')
+        // Keep unsent recurring templates out of the normal invoice list,
+        // but still show paid recurring invoices in the regular Paid view.
+        query = query.or('is_recurring.is.null,is_recurring.eq.false,status.eq.paid')
       }
 
       const { data, error } = await query
@@ -238,7 +240,7 @@ export default function InvoicesList() {
 
       {recurringOnly && (
         <div className="mb-4 rounded-lg border border-purple-500/25 bg-purple-500/10 px-4 py-3 text-sm text-purple-100">
-          These are scheduled recurring templates. They stay out of the regular {entityLabelPlural.toLowerCase()} list and are not sent to clients until a due run creates a normal draft invoice or an admin sends one manually.
+          These are scheduled recurring templates. Draft schedules stay out of the regular {entityLabelPlural.toLowerCase()} list and are not sent to clients until a due run creates a normal draft invoice or an admin sends one manually. Paid recurring invoices still appear in the normal Paid view.
         </div>
       )}
 
