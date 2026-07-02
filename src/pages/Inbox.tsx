@@ -42,28 +42,14 @@ type ContactMatch = { contact_id: string; name: string; email: string | null }
 type InvoiceOption = { id: string; prefix: string | null; number: number | null; status: string; companyName?: string | null }
 type ThreadInvoiceLink = { invoice_id: string; invoice: InvoiceOption | null }
 type ReadStatus = { thread_id: string; last_read_at: string }
+type SearchInboxThreadRow = Omit<InboxThread, 'inbox_thread_assignments' | 'inbox_messages'> & {
+  inbox_thread_assignments: ThreadAssignment[] | null
+  message_count: number | string | null
+}
 
 /** PostgREST list select without embedded inbox_messages(count) — counts come from inbox_message_counts_by_thread RPC. */
 const INBOX_THREAD_LIST_SELECT =
   'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)' as const
-
-function isTransientPostgrestError(err: { message?: string } | null): boolean {
-  if (!err?.message) return false
-  const m = err.message.toLowerCase()
-  return (
-    m.includes('504') ||
-    m.includes('522') ||
-    m.includes('523') ||
-    m.includes('502') ||
-    m.includes('503') ||
-    m.includes('gateway') ||
-    m.includes('timeout') ||
-    m.includes('fetch failed') ||
-    m.includes('network') ||
-    m.includes('failed to fetch') ||
-    m.includes('access-control-allow-origin')
-  )
-}
 
 /** Single grouped count query (RLS on inbox_messages); avoids slow embedded aggregates that can 504. */
 async function mergeInboxMessageCounts(threads: InboxThread[]): Promise<InboxThread[]> {
@@ -272,6 +258,8 @@ export default function Inbox() {
   const [pageSize] = useState(50)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [hasMoreThreads, setHasMoreThreads] = useState(false)
+  const [loadingMoreThreads, setLoadingMoreThreads] = useState(false)
 
   // Read tracking
   const [readStatuses, setReadStatuses] = useState<ReadStatus[]>([])
@@ -314,11 +302,6 @@ export default function Inbox() {
   const [selectedAssignUserIds, setSelectedAssignUserIds] = useState<Set<string>>(new Set())
 
   const userId = user?.id ?? null
-  const threadMatchesAssignmentScope = useCallback((thread: InboxThread) => {
-    if (!userId) return false
-    const assigns = Array.isArray(thread.inbox_thread_assignments) ? thread.inbox_thread_assignments : []
-    return assigns.length === 0 || assigns.some((a) => a.user_id === userId)
-  }, [userId])
   const timelineEndRef = useRef<HTMLDivElement>(null)
   const sendingReplyRef = useRef(false)
   const outboundEmptyWarnedKeyRef = useRef<string | null>(null)
@@ -372,109 +355,91 @@ export default function Inbox() {
     ...comments.map(c => ({ kind: 'comment' as const, data: c, ts: c.created_at })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
 
+  const mapSearchInboxRows = (rows: SearchInboxThreadRow[]): InboxThread[] => rows.map((row) => ({
+    id: row.id,
+    org_id: row.org_id,
+    channel: row.channel,
+    status: row.status,
+    subject: row.subject,
+    last_message_at: row.last_message_at,
+    created_at: row.created_at,
+    from_address: row.from_address,
+    imap_account_id: row.imap_account_id,
+    inbox_thread_assignments: Array.isArray(row.inbox_thread_assignments) ? row.inbox_thread_assignments : [],
+    inbox_messages: [{ count: Number(row.message_count ?? 0) }],
+  }))
+
   const initialLoadDone = useRef(false)
   const fetchFilterRef = useRef<InboxFilter>(filter)
 
-  // Data fetching — on re-fetch, merge new threads on top instead of clearing + "Loading"
-  const fetchThreads = useCallback(async () => {
+  // Data fetching — paginated and server-side searchable so older/unloaded threads can be found.
+  const fetchThreadsPage = useCallback(async (offset = 0, append = false) => {
     fetchFilterRef.current = filter
     if (!currentOrg?.id || !userId) {
       debugLog('fetchThreads', { event: 'SKIP', orgId: currentOrg?.id, userId })
       return
     }
-    if (!initialLoadDone.current) setLoading(true)
+    if (append) setLoadingMoreThreads(true)
+    else if (!initialLoadDone.current) setLoading(true)
     try {
-      debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, pageSize })
+      const query = searchQuery.trim()
+      debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, pageSize, offset, append, query })
 
-      let assignedTids: string[] | undefined
-      if (filter === 'assigned') {
-        const { data: assigned, error: assignErr } = await supabase.from('inbox_thread_assignments').select('thread_id').eq('user_id', userId)
-        debugLog('fetchThreads', { event: 'assigned_query', userId, count: (assigned ?? []).length, tids: (assigned ?? []).map((a: { thread_id: string }) => a.thread_id), error: assignErr?.message })
-        assignedTids = (assigned ?? []).map((a: { thread_id: string }) => a.thread_id)
-        if (!assignedTids.length) { setThreads([]); setLoading(false); initialLoadDone.current = true; return }
-      }
-
-      const buildThreadsListQuery = () => {
-        let q = supabase.from('inbox_threads')
-          .select(INBOX_THREAD_LIST_SELECT)
-          .eq('org_id', currentOrg.id).order('last_message_at', { ascending: false }).limit(pageSize)
-        if (filter === 'inbox') q = q.eq('status', 'open')
-        else if (filter === 'assigned') q = q.in('id', assignedTids!).eq('status', 'open')
-        else if (filter === 'closed') q = q.eq('status', 'closed')
-        else if (filter === 'trash') q = q.eq('status', 'archived')
-        else if (filter === 'all') q = q.neq('status', 'archived')
-        return q
-      }
-
-      let data: InboxThread[] | null = null
-      let threadsErr: { message: string } | null = null
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const res = await buildThreadsListQuery()
-        data = res.data as InboxThread[] | null
-        threadsErr = res.error
-        if (!threadsErr || !isTransientPostgrestError(threadsErr)) break
-        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
-      }
-
-      let result = (data as InboxThread[]) ?? []
-      result = await mergeInboxMessageCounts(result)
-      // Hide orphan threads (no inbox_messages rows) — they break fetch-thread-bodies and confuse the UI
-      const beforeOrphans = result.length
-      result = result.filter((t) => {
-        const cnt = (t as InboxThread).inbox_messages?.[0]?.count ?? 0
-        return cnt > 0
+      const { data, error } = await supabase.rpc('search_inbox_threads', {
+        p_org_id: currentOrg.id,
+        p_user_id: userId,
+        p_filter: filter,
+        p_query: query || null,
+        p_limit: pageSize,
+        p_offset: offset,
       })
-      if (beforeOrphans !== result.length) {
-        debugLog('fetchThreads', { event: 'orphan_threads_hidden', before: beforeOrphans, after: result.length })
+
+      if (error) {
+        console.error('[Inbox] search_inbox_threads failed:', error.message, error)
+        debugLog('fetchThreads', { event: 'ERROR_rpc', error: error.message })
+        if (!append) setThreads([])
+        setHasMoreThreads(false)
+        return
       }
-      debugLog('fetchThreads', { event: 'threads_raw', count: result.length, error: threadsErr?.message, threads: result.map(t => ({ id: t.id, subject: t.subject?.slice(0, 30), status: t.status, assigns: (t.inbox_thread_assignments ?? []).map((a: { user_id: string }) => a.user_id) })) })
-      // For inbox/closed filters: only show threads assigned to me or unassigned
-      if (filter === 'inbox' || filter === 'closed') {
-        const before = result.length
-        result = result.filter(t => {
-          const show = threadMatchesAssignmentScope(t)
-          const assigns = Array.isArray(t.inbox_thread_assignments) ? t.inbox_thread_assignments : []
-          if (!show) debugLog('fetchThreads', { event: 'HIDDEN_assignment_filter', threadId: t.id, subject: t.subject, assigns, userId, filter })
-          return show
-        })
-        if (before !== result.length) debugLog('fetchThreads', { event: 'assignment_filter_applied', before, after: result.length, filter })
-      }
-      // Ensure selected thread is always in list (may be missing when filter='all' returns top 50 and our thread is older)
-      const sid = selectedThreadIdRef.current
-      if (sid && !result.some(t => t.id === sid)) {
-        const { data: single } = await supabase.from('inbox_threads')
-          .select(INBOX_THREAD_LIST_SELECT)
-          .eq('id', sid).eq('org_id', currentOrg!.id).single()
-        let thread = single as InboxThread | null
-        if (thread) {
-          const merged = await mergeInboxMessageCounts([thread])
-          thread = merged[0] ?? null
-        }
-        if (
-          thread
-          && (filter !== 'inbox' || (thread.status === 'open' && threadMatchesAssignmentScope(thread)))
-          && (filter !== 'closed' || (thread.status === 'closed' && threadMatchesAssignmentScope(thread)))
-          && (filter !== 'all' || thread.status !== 'archived')
-          && (filter !== 'assigned' || thread.status === 'open')
-          && (filter !== 'trash' || thread.status === 'archived')
-        ) {
-          result = [thread, ...result]
-          debugLog('fetchThreads', { event: 'prepended_selected_thread', threadId: sid })
-        }
-      }
-      debugLog('fetchThreads', { event: 'DONE', count: result.length, threadIds: result.map(t => t.id) })
+
+      const result = mapSearchInboxRows((data as SearchInboxThreadRow[]) ?? [])
+      const hasMore = result.length === pageSize
+      debugLog('fetchThreads', {
+        event: 'DONE',
+        count: result.length,
+        hasMore,
+        offset,
+        query,
+        threadIds: result.map(t => t.id),
+      })
       if (fetchFilterRef.current !== filter) {
         debugLog('fetchThreads', { event: 'SKIP_stale', fetchedFilter: fetchFilterRef.current, currentFilter: filter })
         return
       }
-      setThreads(result)
+
+      setThreads(prev => {
+        if (!append) return result
+        const seen = new Set(prev.map(t => t.id))
+        return [...prev, ...result.filter(t => !seen.has(t.id))]
+      })
+      setHasMoreThreads(hasMore)
       initialLoadDone.current = true
     } catch (e) {
       debugLog('fetchThreads', { event: 'ERROR', error: String(e) })
-      if (fetchFilterRef.current === filter && !initialLoadDone.current) setThreads([])
+      if (!append && fetchFilterRef.current === filter && !initialLoadDone.current) setThreads([])
+      setHasMoreThreads(false)
+    } finally {
+      if (append) setLoadingMoreThreads(false)
+      else setLoading(false)
     }
-    setLoading(false)
-  }, [currentOrg?.id, filter, userId, debugLog, threadMatchesAssignmentScope])
+  }, [currentOrg?.id, filter, userId, debugLog, pageSize, searchQuery])
+
+  const fetchThreads = useCallback(() => fetchThreadsPage(0, false), [fetchThreadsPage])
+
+  const loadOlderThreads = useCallback(() => {
+    if (loadingMoreThreads || !hasMoreThreads) return
+    void fetchThreadsPage(threads.length, true)
+  }, [fetchThreadsPage, hasMoreThreads, loadingMoreThreads, threads.length])
 
   const fetchAttachments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_attachments').select('*').eq('thread_id', tid).order('created_at')
@@ -873,12 +838,9 @@ export default function Inbox() {
     return true
   }
 
-  // Filtered threads by search; include selectedThreadFallback when not in list so it can be highlighted in sidebar
+  // Display threads returned by the server-side search/page query; include selectedThreadFallback when not in list so it can be highlighted in sidebar
   const filteredThreads = (() => {
-    let base = searchQuery.trim()
-      ? threads.filter(t => t.subject?.toLowerCase().includes(searchQuery.toLowerCase()) || t.from_address?.toLowerCase().includes(searchQuery.toLowerCase()))
-      : threads
-    base = base.filter(threadMatchesFilter)
+    let base = threads.filter(threadMatchesFilter)
     const fallbackMatches = selectedThreadFallback && threadMatchesFilter(selectedThreadFallback)
     const fallbackMissing = selectedThreadFallback && !base.some(t => t.id === selectedThreadFallback.id)
     if (fallbackMatches && fallbackMissing) {
@@ -1747,7 +1709,7 @@ export default function Inbox() {
           {FILTERS.map(f => (
             <button key={f.id} type="button" onClick={() => {
               console.log('[Inbox:nav] filter tab click', { filterId: f.id, label: f.label })
-              setFilter(f.id); setSelectedThreadId(null); initialLoadDone.current = false
+              setFilter(f.id); setSelectedThreadId(null); setThreads([]); setHasMoreThreads(false); initialLoadDone.current = false
             }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
                 filter === f.id ? 'bg-accent text-white' : 'bg-surface-muted text-gray-300 hover:bg-surface-muted/80'}`}>
@@ -1794,7 +1756,7 @@ export default function Inbox() {
           <div className="p-2 border-b border-border">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
-              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search threads…"
+              <input type="text" value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setThreads([]); setHasMoreThreads(false); initialLoadDone.current = false }} placeholder="Search email, subject, or body…"
                 className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
             </div>
           </div>
@@ -1905,6 +1867,18 @@ export default function Inbox() {
                   </li>
                 )
               })}
+              {hasMoreThreads && (
+                <li className="p-3">
+                  <button
+                    type="button"
+                    onClick={loadOlderThreads}
+                    disabled={loadingMoreThreads}
+                    className="w-full rounded border border-border bg-surface-muted px-3 py-2 text-xs font-medium text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50"
+                  >
+                    {loadingMoreThreads ? 'Loading older emails…' : searchQuery.trim() ? 'Load more search results' : 'Load older emails'}
+                  </button>
+                </li>
+              )}
             </ul>
           )}
         </div>
