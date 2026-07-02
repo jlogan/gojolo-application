@@ -12,6 +12,7 @@ function advanceDate(fromDate: string, interval: string): string {
       d.setUTCDate(d.getUTCDate() + 7)
       break
     case 'biweekly':
+    case 'bi-weekly':
       d.setUTCDate(d.getUTCDate() + 14)
       break
     case 'monthly':
@@ -550,9 +551,8 @@ Deno.serve(async (req: Request) => {
 // deno-lint-ignore no-explicit-any
 async function advanceRecurringDate(supabase: any, inv: Record<string, any>, today: string) {
   const interval = inv.recurring_interval ?? 'monthly'
-  // For weekly/biweekly, always jump from today (the Monday the cron runs)
-  // to ensure we stay aligned to Mondays
-  const baseDate = (interval === 'weekly' || interval === 'biweekly') ? today : (inv.next_recurring_date ?? today)
+  // For weekly/biweekly, jump from the processing date so delayed runs do not drift backward.
+  const baseDate = (interval === 'weekly' || interval === 'biweekly' || interval === 'bi-weekly') ? today : (inv.next_recurring_date ?? today)
   const nextDate = advanceDate(baseDate, interval)
 
   const { error } = await supabase

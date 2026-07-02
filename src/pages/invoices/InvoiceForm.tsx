@@ -135,6 +135,7 @@ export default function InvoiceForm() {
   /* ── recurring ── */
   const [isRecurring, setIsRecurring] = useState(false)
   const [recurringInterval, setRecurringInterval] = useState('monthly')
+  const [nextRecurringDate, setNextRecurringDate] = useState<string | null>(null)
 
   /* ── client payment options ── */
   const [acceptStripe, setAcceptStripe] = useState(true)
@@ -257,6 +258,7 @@ export default function InvoiceForm() {
       setInvoiceStatus((d.status as 'draft' | 'unpaid' | 'paid' | 'cancelled') ?? 'draft')
       setIsRecurring(Boolean(d.is_recurring))
       setRecurringInterval((d.recurring_interval as string) ?? 'monthly')
+      setNextRecurringDate((d.next_recurring_date as string | null) ?? null)
       const paymentMethods = (d.payment_methods as Record<string, unknown> | null) ?? {}
       setAcceptStripe(paymentMethods.stripe !== false)
       setAcceptPaypal(paymentMethods.paypal !== false)
@@ -762,17 +764,10 @@ export default function InvoiceForm() {
         vendor_user_id: direction === 'inbound' ? (selectedVendorIds[0] || null) : null,
         is_recurring: isRecurring,
         recurring_interval: isRecurring ? recurringInterval : null,
-        next_recurring_date: isRecurring ? (() => {
-          const d = new Date(issueDate)
-          switch (recurringInterval) {
-            case 'weekly': d.setDate(d.getDate() + 7); break
-            case 'bi-weekly': d.setDate(d.getDate() + 14); break
-            case 'monthly': d.setMonth(d.getMonth() + 1); break
-            case 'quarterly': d.setMonth(d.getMonth() + 3); break
-            case 'yearly': d.setFullYear(d.getFullYear() + 1); break
-          }
-          return d.toISOString().split('T')[0]
-        })() : null,
+        // Recurring records are schedules/templates. The next run should be the
+        // schedule start date for new schedules so the first normal draft is
+        // created on that day; existing schedules keep their current next date.
+        next_recurring_date: isRecurring ? (isEdit ? (nextRecurringDate ?? issueDate) : issueDate) : null,
         payment_methods: {
           stripe: acceptStripe,
           paypal: acceptPaypal,
