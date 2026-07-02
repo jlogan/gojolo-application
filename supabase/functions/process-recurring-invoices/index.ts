@@ -260,6 +260,8 @@ Deno.serve(async (req: Request) => {
               throw new Error(`Failed to create outbound time-log line items: ${itemInsertErr.message}`)
             }
 
+            await markGeneratedInvoiceDraft(supabase, newInvoice.id)
+
             created.push({
               invoice_id: newInvoice.id,
               direction: 'outbound',
@@ -334,6 +336,8 @@ Deno.serve(async (req: Request) => {
                 throw new Error(`Failed to duplicate items: ${itemInsertErr.message}`)
               }
             }
+
+            await markGeneratedInvoiceDraft(supabase, newInvoice.id)
 
             created.push({
               invoice_id: newInvoice.id,
@@ -490,6 +494,8 @@ Deno.serve(async (req: Request) => {
             throw new Error(`Failed to create inbound line items: ${itemInsertErr.message}`)
           }
 
+          await markGeneratedInvoiceDraft(supabase, newInvoice.id)
+
           created.push({
             invoice_id: newInvoice.id,
             direction: 'inbound',
@@ -544,6 +550,20 @@ Deno.serve(async (req: Request) => {
     )
   }
 })
+
+// ── Helper: force generated invoice rows to remain drafts after total recalculation ──
+
+// deno-lint-ignore no-explicit-any
+async function markGeneratedInvoiceDraft(supabase: any, invoiceId: string) {
+  const { error } = await supabase
+    .from('invoices')
+    .update({ status: 'draft' })
+    .eq('id', invoiceId)
+
+  if (error) {
+    throw new Error(`Failed to keep generated invoice as draft: ${error.message}`)
+  }
+}
 
 // ── Helper: advance the recurring date on the original invoice ──
 // Always anchors to today (Monday) for weekly/biweekly intervals
