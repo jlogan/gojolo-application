@@ -309,6 +309,14 @@ export default function InvoiceEmailDraft() {
     if (threadId) sentUpdate.email_sent_thread_id = threadId
     if (invoice.status === 'draft') sentUpdate.status = 'unpaid'
     await supabase.from('invoices').update(sentUpdate).eq('id', invoice.id)
+    if (threadId) {
+      await supabase
+        .from('inbox_thread_invoices')
+        .upsert({ thread_id: threadId, invoice_id: invoice.id, created_by: user.id }, { onConflict: 'thread_id,invoice_id' })
+        .then(({ error }) => {
+          if (error) console.warn('[InvoiceEmailDraft] invoice/thread link failed', error.message)
+        })
+    }
 
     setSuccessThreadId(threadId ?? null)
     setSending(false)
