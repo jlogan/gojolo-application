@@ -3,14 +3,13 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 
-type Vendor = { user_id: string; profiles: { display_name: string | null; email: string | null } | { display_name: string | null; email: string | null }[] | null }
+type Vendor = { user_id: string; profiles: { display_name: string | null; email: string | null } | null }
 type Project = { id: string; name: string }
 type VendorProfile = { id: string; vendor_user_id: string; default_billing_type: 'hourly' | 'fixed'; default_hourly_rate: number | null; default_fixed_amount: number | null; effective_from: string; effective_to: string | null; notes: string | null }
 type ProjectProfile = { id: string; vendor_user_id: string; project_id: string; billing_type: 'hourly' | 'fixed'; hourly_rate: number | null; fixed_amount: number | null; effective_from: string; effective_to: string | null; notes: string | null }
 
 function profileName(row: Vendor['profiles']) {
-  const profile = Array.isArray(row) ? row[0] : row
-  return profile?.display_name || profile?.email || 'Vendor'
+  return row?.display_name || row?.email || 'Vendor'
 }
 function today() { return new Date().toISOString().split('T')[0] }
 
@@ -38,10 +37,10 @@ export default function VendorBillingSettings() {
   const load = async () => {
     if (!currentOrg?.id) return
     setLoading(true)
-    const [{ data: vendorRows }, { data: projectRows }, { data: profileRows }, { data: projectProfileRows }] = await Promise.all([
+    const [vendorResult, projectResult, profileResult, projectProfileResult] = await Promise.all([
       supabase
         .from('organization_users')
-        .select('user_id, profiles(display_name, email), roles!inner(name)')
+        .select('user_id, profiles:user_id(display_name, email), roles!inner(name)')
         .eq('org_id', currentOrg.id)
         .eq('roles.name', 'vendor')
         .order('user_id'),
@@ -49,10 +48,12 @@ export default function VendorBillingSettings() {
       supabase.from('vendor_billing_profiles').select('*').eq('org_id', currentOrg.id).order('effective_from', { ascending: false }),
       supabase.from('vendor_project_billing_profiles').select('*').eq('org_id', currentOrg.id).order('effective_from', { ascending: false }),
     ])
-    setVendors((vendorRows ?? []) as unknown as Vendor[])
-    setProjects((projectRows ?? []) as Project[])
-    setProfiles((profileRows ?? []) as VendorProfile[])
-    setProjectProfiles((projectProfileRows ?? []) as ProjectProfile[])
+    const firstError = vendorResult.error || projectResult.error || profileResult.error || projectProfileResult.error
+    if (firstError) setMessage(firstError.message)
+    setVendors((vendorResult.data ?? []) as unknown as Vendor[])
+    setProjects((projectResult.data ?? []) as Project[])
+    setProfiles((profileResult.data ?? []) as VendorProfile[])
+    setProjectProfiles((projectProfileResult.data ?? []) as ProjectProfile[])
     setLoading(false)
   }
 
@@ -141,6 +142,9 @@ export default function VendorBillingSettings() {
           {vendors.map((vendor) => <option key={vendor.user_id} value={vendor.user_id}>{profileName(vendor.profiles)}</option>)}
         </select>
         {loading && <p className="text-xs text-gray-500 mt-2">Loading...</p>}
+        {!loading && vendors.length === 0 && (
+          <p className="text-xs text-amber-300 mt-2">No vendor users found for this organization. Add the person to the org with the vendor role first, then return here.</p>
+        )}
       </div>
 
       {vendorId && (
