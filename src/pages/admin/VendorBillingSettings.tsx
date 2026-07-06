@@ -73,6 +73,10 @@ export default function VendorBillingSettings() {
 
   useEffect(() => { load() }, [currentOrg?.id])
 
+  const activeProfileVendorIds = useMemo(() => new Set(profiles.filter((p) => !p.effective_to).map((p) => p.vendor_user_id)), [profiles])
+  const billableVendors = useMemo(() => vendors.filter((vendor) => activeProfileVendorIds.has(vendor.user_id)), [vendors, activeProfileVendorIds])
+  const addableUsers = useMemo(() => vendors.filter((vendor) => !activeProfileVendorIds.has(vendor.user_id)), [vendors, activeProfileVendorIds])
+  const selectedVendor = useMemo(() => vendors.find((vendor) => vendor.user_id === vendorId) ?? null, [vendors, vendorId])
   const selectedProfile = useMemo(() => profiles.find((p) => p.vendor_user_id === vendorId && !p.effective_to), [profiles, vendorId])
   const vendorOverrides = useMemo(() => projectProfiles.filter((p) => p.vendor_user_id === vendorId && !p.effective_to), [projectProfiles, vendorId])
 
@@ -162,22 +166,41 @@ export default function VendorBillingSettings() {
       <p className="text-sm text-gray-400 mb-5">Set billable team members/vendors as hourly or fixed weekly. This does not change their GoJolo role; admins can also be configured for vendor bills. Project overrides win over the default and changes are effective-dated for historical bills.</p>
       {message && <div className="mb-4 rounded-lg border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">{message}</div>}
 
-      <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-4">
-        <label className="block text-xs text-gray-500 mb-1">Vendor</label>
-        <select value={vendorId} onChange={(e) => setVendorId(e.target.value)} className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white">
-          <option value="">Select vendor...</option>
-          {vendors.map((vendor) => <option key={vendor.user_id} value={vendor.user_id}>{profileName(vendor.profiles)}</option>)}
-        </select>
-        {loading && <p className="text-xs text-gray-500 mt-2">Loading...</p>}
-        {!loading && vendors.length === 0 && (
-          <p className="text-xs text-amber-300 mt-2">No organization users found. Add the person to the org first, then return here.</p>
-        )}
+      <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-4 space-y-4">
+        <div>
+          <h2 className="font-medium text-white">Step 1: Choose who should receive bills</h2>
+          <p className="text-xs text-gray-500 mt-1">Only users added here will have bill profiles and be included in vendor bill generation. This is separate from their GoJolo role.</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Billable vendors</label>
+            <select value={vendorId} onChange={(e) => setVendorId(e.target.value)} className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white">
+              <option value="">Select billable vendor...</option>
+              {billableVendors.map((vendor) => <option key={vendor.user_id} value={vendor.user_id}>{profileName(vendor.profiles)}</option>)}
+              {selectedVendor && !activeProfileVendorIds.has(selectedVendor.user_id) && <option value={selectedVendor.user_id}>{profileName(selectedVendor.profiles)} (new)</option>}
+            </select>
+            {!loading && billableVendors.length === 0 && (
+              <p className="text-xs text-amber-300 mt-2">No billable vendors added yet. Choose a user on the right to start their billing profile.</p>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Add user to billable vendors</label>
+            <select value="" onChange={(e) => e.target.value && setVendorId(e.target.value)} className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white">
+              <option value="">Choose an org user...</option>
+              {addableUsers.map((vendor) => <option key={vendor.user_id} value={vendor.user_id}>{profileName(vendor.profiles)}</option>)}
+            </select>
+            {!loading && vendors.length === 0 && (
+              <p className="text-xs text-amber-300 mt-2">No organization users found. Add the person to the org first, then return here.</p>
+            )}
+          </div>
+        </div>
+        {loading && <p className="text-xs text-gray-500">Loading...</p>}
       </div>
 
       {vendorId && (
         <div className="grid gap-4 lg:grid-cols-2">
           <form onSubmit={saveDefault} className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
-            <h2 className="font-medium text-white">Default billing profile</h2>
+            <h2 className="font-medium text-white">Step 2: Set billing profile{selectedVendor ? ` for ${profileName(selectedVendor.profiles)}` : ''}</h2>
             <div className="grid grid-cols-2 gap-2">
               <button type="button" onClick={() => setBillingType('hourly')} className={`rounded-lg border px-3 py-2 text-sm ${billingType === 'hourly' ? 'border-accent text-white bg-accent/20' : 'border-border text-gray-400'}`}>Hourly</button>
               <button type="button" onClick={() => setBillingType('fixed')} className={`rounded-lg border px-3 py-2 text-sm ${billingType === 'fixed' ? 'border-accent text-white bg-accent/20' : 'border-border text-gray-400'}`}>Fixed weekly</button>
