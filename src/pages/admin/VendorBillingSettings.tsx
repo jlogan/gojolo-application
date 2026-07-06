@@ -78,13 +78,26 @@ export default function VendorBillingSettings() {
   const vendorOverrides = useMemo(() => projectProfiles.filter((p) => p.vendor_user_id === vendorId && !p.effective_to), [projectProfiles, vendorId])
 
   useEffect(() => {
-    if (!selectedProfile) return
+    setOverrideProjectId('')
+    setOverrideType('hourly')
+    setOverrideHourlyRate('')
+    setOverrideFixedAmount('')
+
+    if (!vendorId || !selectedProfile) {
+      setBillingType('hourly')
+      setHourlyRate('')
+      setFixedAmount('')
+      setEffectiveFrom(today())
+      setNotes('')
+      return
+    }
+
     setBillingType(selectedProfile.default_billing_type)
     setHourlyRate(selectedProfile.default_hourly_rate?.toString() ?? '')
     setFixedAmount(selectedProfile.default_fixed_amount?.toString() ?? '')
     setEffectiveFrom(today())
     setNotes(selectedProfile.notes ?? '')
-  }, [selectedProfile?.id])
+  }, [vendorId, selectedProfile?.id])
 
   const saveDefault = async (e: FormEvent) => {
     e.preventDefault()
