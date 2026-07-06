@@ -141,7 +141,7 @@ export default function InvoicesList() {
   const navigate = useNavigate()
   const [invoices, setInvoices] = useState<InvoiceRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [directionTab, setDirectionTab] = useState<DirectionTab>(isVendor ? 'inbound' : 'outbound')
+  const directionTab: DirectionTab = 'outbound'
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus>('all')
   const [recurringOnly, setRecurringOnly] = useState(false)
   const [search, setSearch] = useState('')
@@ -257,7 +257,7 @@ export default function InvoicesList() {
     <div className="p-4 md:p-6" data-testid="invoices-page">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
-        <h1 className="text-xl font-semibold text-white">Accounting</h1>
+        <h1 className="text-xl font-semibold text-white">Invoices</h1>
         {!isVendor && (
           <Link
             to={`/invoices/new?direction=${directionTab}`}
@@ -270,29 +270,6 @@ export default function InvoicesList() {
         )}
       </div>
 
-      {/* Direction tabs — vendors only see Bills */}
-      {!isVendor && (
-        <div className="flex gap-1 mb-4 border-b border-border">
-          <button
-            type="button"
-            onClick={() => { setDirectionTab('outbound'); setStatusFilter('all'); setRecurringOnly(false) }}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              directionTab === 'outbound' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            Invoices
-          </button>
-          <button
-            type="button"
-            onClick={() => { setDirectionTab('inbound'); setStatusFilter('all'); setRecurringOnly(false) }}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              directionTab === 'inbound' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            Bills
-          </button>
-        </div>
-      )}
 
       {/* Status filter pills */}
       <div className="flex flex-wrap items-center gap-1 mb-4 border-b border-border pb-3">

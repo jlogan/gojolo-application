@@ -18,6 +18,7 @@ import {
   Clock,
   Target,
   FileText,
+  ReceiptText,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -45,6 +46,9 @@ import InvoicesList from '@/pages/invoices/InvoicesList'
 import InvoiceForm from '@/pages/invoices/InvoiceForm'
 import InvoiceDetail from '@/pages/invoices/InvoiceDetail'
 import InvoiceEmailDraft from '@/pages/invoices/InvoiceEmailDraft'
+import BillsList from '@/pages/bills/BillsList'
+import BillDetail from '@/pages/bills/BillDetail'
+import VendorBillingSettings from '@/pages/admin/VendorBillingSettings'
 // Expenses module hidden for now — tables remain in DB for future use
 
 type AppMode = 'software' | 'chat'
@@ -55,14 +59,15 @@ const NAV = [
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/leads', label: 'Leads', icon: Target, testId: 'nav-leads' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
-  { to: '/invoices', label: 'Accounting', icon: FileText, testId: 'nav-invoices' },
+  { to: '/invoices', label: 'Invoices', icon: FileText, testId: 'nav-invoices' },
+  { to: '/bills', label: 'Bills', icon: ReceiptText, testId: 'nav-bills' },
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
 ]
 
 const VENDOR_NAV = [
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
-  { to: '/invoices', label: 'Accounting', icon: FileText, testId: 'nav-bills' },
+  { to: '/bills', label: 'Bills', icon: ReceiptText, testId: 'nav-bills' },
 ]
 
 export default function AppShell() {
@@ -342,6 +347,9 @@ export default function AppShell() {
               <Route path="/invoices/:id" element={<InvoiceDetail />} />
               <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
               <Route path="/invoices/:id/send" element={<InvoiceEmailDraft />} />
+              <Route path="/bills" element={<BillsList />} />
+              <Route path="/bills/:id" element={<BillDetail />} />
+              <Route path="/admin/vendor-billing" element={<VendorBillingSettings />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
               <Route path="/companies/new" element={<CompanyForm />} />
               <Route path="/companies/:id" element={<CompanyDetail />} />
