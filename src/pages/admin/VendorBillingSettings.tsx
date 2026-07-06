@@ -40,7 +40,7 @@ export default function VendorBillingSettings() {
     const [vendorResult, projectResult, profileResult, projectProfileResult] = await Promise.all([
       supabase
         .from('organization_users')
-        .select('user_id, profiles:user_id(display_name, email), roles!inner(name)')
+        .select('user_id, roles!inner(name)')
         .eq('org_id', currentOrg.id)
         .eq('roles.name', 'vendor')
         .order('user_id'),
@@ -50,7 +50,22 @@ export default function VendorBillingSettings() {
     ])
     const firstError = vendorResult.error || projectResult.error || profileResult.error || projectProfileResult.error
     if (firstError) setMessage(firstError.message)
-    setVendors((vendorResult.data ?? []) as unknown as Vendor[])
+
+    const vendorUserIds = ((vendorResult.data ?? []) as { user_id: string }[]).map((row) => row.user_id)
+    let vendorProfileMap = new Map<string, { display_name: string | null; email: string | null }>()
+    if (vendorUserIds.length > 0) {
+      const { data: profileRows, error: vendorProfileError } = await supabase
+        .from('profiles')
+        .select('id, display_name, email')
+        .in('id', vendorUserIds)
+      if (vendorProfileError) setMessage(vendorProfileError.message)
+      vendorProfileMap = new Map((profileRows ?? []).map((profile) => [profile.id, { display_name: profile.display_name, email: profile.email }]))
+    }
+
+    setVendors(((vendorResult.data ?? []) as { user_id: string }[]).map((row) => ({
+      user_id: row.user_id,
+      profiles: vendorProfileMap.get(row.user_id) ?? null,
+    })))
     setProjects((projectResult.data ?? []) as Project[])
     setProfiles((profileResult.data ?? []) as VendorProfile[])
     setProjectProfiles((projectProfileResult.data ?? []) as ProjectProfile[])
