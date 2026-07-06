@@ -40,9 +40,8 @@ export default function VendorBillingSettings() {
     const [vendorResult, projectResult, profileResult, projectProfileResult] = await Promise.all([
       supabase
         .from('organization_users')
-        .select('user_id, roles!inner(name)')
+        .select('user_id')
         .eq('org_id', currentOrg.id)
-        .eq('roles.name', 'vendor')
         .order('user_id'),
       supabase.from('projects').select('id, name').eq('org_id', currentOrg.id).order('name'),
       supabase.from('vendor_billing_profiles').select('*').eq('org_id', currentOrg.id).order('effective_from', { ascending: false }),
@@ -65,7 +64,7 @@ export default function VendorBillingSettings() {
     setVendors(((vendorResult.data ?? []) as { user_id: string }[]).map((row) => ({
       user_id: row.user_id,
       profiles: vendorProfileMap.get(row.user_id) ?? null,
-    })))
+    })).sort((a, b) => profileName(a.profiles).localeCompare(profileName(b.profiles))))
     setProjects((projectResult.data ?? []) as Project[])
     setProfiles((profileResult.data ?? []) as VendorProfile[])
     setProjectProfiles((projectProfileResult.data ?? []) as ProjectProfile[])
@@ -160,7 +159,7 @@ export default function VendorBillingSettings() {
   return (
     <div className="p-4 md:p-6 max-w-5xl" data-testid="vendor-billing-settings">
       <h1 className="text-xl font-semibold text-white mb-1">Vendor Billing Setup</h1>
-      <p className="text-sm text-gray-400 mb-5">Set vendors as hourly or fixed weekly. Project overrides win over the vendor default and changes are effective-dated for historical bills.</p>
+      <p className="text-sm text-gray-400 mb-5">Set billable team members/vendors as hourly or fixed weekly. This does not change their GoJolo role; admins can also be configured for vendor bills. Project overrides win over the default and changes are effective-dated for historical bills.</p>
       {message && <div className="mb-4 rounded-lg border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">{message}</div>}
 
       <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-4">
@@ -171,7 +170,7 @@ export default function VendorBillingSettings() {
         </select>
         {loading && <p className="text-xs text-gray-500 mt-2">Loading...</p>}
         {!loading && vendors.length === 0 && (
-          <p className="text-xs text-amber-300 mt-2">No vendor users found for this organization. Add the person to the org with the vendor role first, then return here.</p>
+          <p className="text-xs text-amber-300 mt-2">No organization users found. Add the person to the org first, then return here.</p>
         )}
       </div>
 

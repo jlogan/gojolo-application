@@ -201,7 +201,6 @@ Deno.serve(async (req: Request) => {
         const { data: logRows, error: logErr } = await supabase
           .from('time_logs')
           .select('id, user_id, task_id, project_id, hours, minutes, work_date, description, hourly_rate')
-          .eq('billed', false)
           .gte('work_date', range.start)
           .lte('work_date', range.end)
           .in('project_id', orgProjectIds)
