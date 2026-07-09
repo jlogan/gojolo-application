@@ -43,10 +43,51 @@ const STATUS_FLOW = [
 
 const PRIORITY_COLORS: Record<string, string> = { low: 'text-gray-400', medium: 'text-yellow-400', high: 'text-orange-400', urgent: 'text-red-400' }
 
+const LOOM_URL_RE = /https?:\/\/(?:www\.)?loom\.com\/(?:share|embed)\/([a-zA-Z0-9]+)/gi
+
 function isLoomUrl(url: string): boolean { return /loom\.com\/(share|embed)\//.test(url) }
 function getLoomEmbedUrl(url: string): string {
   const match = url.match(/loom\.com\/(?:share|embed)\/([a-zA-Z0-9]+)/)
   return match ? `https://www.loom.com/embed/${match[1]}` : url
+}
+function extractLoomUrls(text: string): string[] {
+  const seen = new Set<string>()
+  const urls: string[] = []
+  for (const match of text.matchAll(LOOM_URL_RE)) {
+    const id = match[1]
+    if (!seen.has(id)) {
+      seen.add(id)
+      urls.push(`https://www.loom.com/share/${id}`)
+    }
+  }
+  return urls
+}
+function stripLoomFromDescriptionHtml(html: string): string {
+  let result = html
+  result = result.replace(/<iframe[^>]*loom\.com[^>]*>[\s\S]*?<\/iframe>/gi, '')
+  result = result.replace(/<a[^>]*href=["'][^"']*loom\.com\/(?:share|embed)\/[^"']*["'][^>]*>[\s\S]*?<\/a>/gi, '')
+  result = result.replace(/https?:\/\/(?:www\.)?loom\.com\/(?:share|embed)\/[a-zA-Z0-9]+/gi, '')
+  result = result.replace(/<p>\s*<\/p>/gi, '')
+  result = result.replace(/<p><br\s*\/?>\s*<\/p>/gi, '')
+  return result.trim()
+}
+function isHtmlEffectivelyEmpty(html: string): boolean {
+  const stripped = html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .trim()
+  return stripped.length === 0
+}
+function looksLikeHtml(s: string): boolean {
+  return /<[a-z][\s\S]*>/i.test(s)
+}
+function cleanHtmlForDisplay(html: string): string {
+  return sanitizeEmailHtml(html)
+    .replace(/<p>\s*<\/p>/gi, '')
+    .replace(/<p><br\s*\/?>\s*<\/p>/gi, '')
+    .trim()
 }
 
 function parseInboxThreadId(url: string): string | null {
@@ -65,7 +106,7 @@ function getTaskArtifactsPath(url: string): string | null {
   return m ? m[1] : null
 }
 
-type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[] }
+type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[]; isHtml: boolean }
 function parseCommentContent(content: string): ParsedComment {
   const attachments: { href: string; label: string; isImage: boolean }[] = []
   let text = content.replace(PAPERCLIP_EMOJI, '')
@@ -76,7 +117,9 @@ function parseCommentContent(content: string): ParsedComment {
     return ''
   })
   text = text.trim()
-  return { text, attachments }
+  const isHtml = looksLikeHtml(text)
+  if (isHtml) text = cleanHtmlForDisplay(text)
+  return { text, attachments, isHtml }
 }
 
 const THUMB_SIZE = 72
@@ -123,11 +166,34 @@ function CommentAttachmentCard({ href, label, isImage }: { href: string; label: 
   )
 }
 
-function CommentContent({ content }: { content: string }) {
-  const { text, attachments } = parseCommentContent(content)
+function LoomCompactPreview({ url, onExpand }: { url: string; onExpand: (url: string) => void }) {
   return (
-    <span>
-      {text && <span className="whitespace-pre-wrap">{text}</span>}
+    <div
+      className="inline-block w-52 rounded-lg overflow-hidden border border-border cursor-pointer hover:border-accent/30"
+      onClick={() => onExpand(url)}
+    >
+      <div className="relative aspect-video">
+        <iframe src={getLoomEmbedUrl(url)} className="w-full h-full pointer-events-none" frameBorder="0" title="Loom preview" />
+        <div className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/10 transition-colors">
+          <span className="px-2 py-1 rounded bg-black/60 text-white text-xs">▶ Expand</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CommentContent({ content }: { content: string }) {
+  const { text, attachments, isHtml } = parseCommentContent(content)
+  const hasText = isHtml ? !isHtmlEffectivelyEmpty(text) : !!text
+  return (
+    <div>
+      {hasText && (
+        isHtml ? (
+          <div className="prose prose-sm prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: text }} />
+        ) : (
+          <span className="whitespace-pre-wrap">{text}</span>
+        )
+      )}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-3 mt-2">
           {attachments.map((a, i) => (
@@ -135,7 +201,7 @@ function CommentContent({ content }: { content: string }) {
           ))}
         </div>
       )}
-    </span>
+    </div>
   )
 }
 
@@ -412,7 +478,7 @@ export default function TaskDetail() {
   }
 
   const handleAddComment = async () => {
-    if (!taskId || (!commentText.trim() && !commentFile) || !user?.id) return
+    if (!taskId || ((isHtmlEffectivelyEmpty(commentText) || !commentText.trim()) && !commentFile) || !user?.id) return
     let fileUrl: string | null = null
     let fileName: string | null = null
     if (commentFile && currentOrg?.id) {
@@ -657,28 +723,32 @@ export default function TaskDetail() {
               ))}
             </div>
 
-            {/* Description (click to edit) */}
-            {task.description ? (
-              <div className="text-sm text-gray-300 mb-4 border-l-2 border-accent/30 pl-4 cursor-pointer hover:border-accent/60" onClick={handleStartEdit} title="Click to edit">
-                <div className="prose prose-sm prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: task.description }} />
-              </div>
-            ) : (
-              <button type="button" onClick={handleStartEdit} className="text-sm text-gray-500 hover:text-accent mb-4">+ Add description</button>
-            )}
-
-            {/* Loom embeds in description — inline, clickable to modal */}
-            {task.description && (() => {
-              const loomMatches = task.description.match(/https:\/\/www\.loom\.com\/share\/[a-zA-Z0-9]+/g)
-              return loomMatches?.map((url, i) => (
-                <div key={i} className="mb-4 rounded-lg overflow-hidden border border-border cursor-pointer hover:border-accent/30" onClick={() => setLoomModalUrl(url)}>
-                  <div className="relative">
-                    <iframe src={getLoomEmbedUrl(url)} className="w-full aspect-video pointer-events-none" frameBorder="0" />
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/10 transition-colors">
-                      <span className="px-3 py-1.5 rounded-lg bg-black/60 text-white text-sm">▶ Click to expand</span>
+            {/* Description (click to edit) — Loom URLs shown once as compact previews */}
+            {(() => {
+              const loomUrls = task.description ? extractLoomUrls(task.description) : []
+              const descHtml = task.description ? stripLoomFromDescriptionHtml(task.description) : ''
+              const hasDescText = !!descHtml && !isHtmlEffectivelyEmpty(descHtml)
+              if (!task.description) {
+                return (
+                  <button type="button" onClick={handleStartEdit} className="text-sm text-gray-500 hover:text-accent mb-4">+ Add description</button>
+                )
+              }
+              return (
+                <>
+                  {hasDescText && (
+                    <div className="text-sm text-gray-300 mb-4 border-l-2 border-accent/30 pl-4 cursor-pointer hover:border-accent/60" onClick={handleStartEdit} title="Click to edit">
+                      <div className="prose prose-sm prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: descHtml }} />
                     </div>
-                  </div>
-                </div>
-              ))
+                  )}
+                  {loomUrls.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      {loomUrls.map(url => (
+                        <LoomCompactPreview key={url} url={url} onExpand={setLoomModalUrl} />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )
             })()}
           </>
         )}
