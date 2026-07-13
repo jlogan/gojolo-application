@@ -66,9 +66,9 @@ function stripLoomFromDescriptionHtml(html: string): string {
   let result = html
   result = result.replace(/<iframe[^>]*loom\.com[^>]*>[\s\S]*?<\/iframe>/gi, '')
   result = result.replace(/<a[^>]*href=["'][^"']*loom\.com\/(?:share|embed)\/[^"']*["'][^>]*>[\s\S]*?<\/a>/gi, '')
+  // Drop paragraphs that only contained a Loom URL (shown separately as compact previews).
+  result = result.replace(/<p[^>]*>\s*(?:https?:\/\/(?:www\.)?loom\.com\/(?:share|embed)\/[a-zA-Z0-9]+|&nbsp;|\s|<br\s*\/?>)*\s*<\/p>/gi, '')
   result = result.replace(/https?:\/\/(?:www\.)?loom\.com\/(?:share|embed)\/[a-zA-Z0-9]+/gi, '')
-  result = result.replace(/<p>\s*<\/p>/gi, '')
-  result = result.replace(/<p><br\s*\/?>\s*<\/p>/gi, '')
   return result.trim()
 }
 function isHtmlEffectivelyEmpty(html: string): boolean {
@@ -84,10 +84,7 @@ function looksLikeHtml(s: string): boolean {
   return /<[a-z][\s\S]*>/i.test(s)
 }
 function cleanHtmlForDisplay(html: string): string {
-  return sanitizeEmailHtml(html)
-    .replace(/<p>\s*<\/p>/gi, '')
-    .replace(/<p><br\s*\/?>\s*<\/p>/gi, '')
-    .trim()
+  return sanitizeEmailHtml(html).trim()
 }
 
 function parseInboxThreadId(url: string): string | null {
@@ -189,7 +186,7 @@ function CommentContent({ content }: { content: string }) {
     <div>
       {hasText && (
         isHtml ? (
-          <div className="prose prose-sm prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: text }} />
+          <div className="inbox-editor-content max-w-none" dangerouslySetInnerHTML={{ __html: text }} />
         ) : (
           <span className="whitespace-pre-wrap">{text}</span>
         )
@@ -737,7 +734,7 @@ export default function TaskDetail() {
                 <>
                   {hasDescText && (
                     <div className="text-sm text-gray-300 mb-4 border-l-2 border-accent/30 pl-4 cursor-pointer hover:border-accent/60" onClick={handleStartEdit} title="Click to edit">
-                      <div className="prose prose-sm prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: descHtml }} />
+                      <div className="inbox-editor-content max-w-none" dangerouslySetInnerHTML={{ __html: descHtml }} />
                     </div>
                   )}
                   {loomUrls.length > 0 && (

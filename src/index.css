@@ -90,6 +90,25 @@ select option {
   color: #fff;
 }
 
+/* TipTap rich text: paragraph spacing in editor and read-only display */
+.inbox-editor-content p {
+  margin: 0.5em 0;
+}
+
+.inbox-editor-content p:first-child {
+  margin-top: 0;
+}
+
+.inbox-editor-content p:last-child {
+  margin-bottom: 0;
+}
+
+/* Preserve intentional blank lines (TipTap empty paragraphs) */
+.inbox-editor-content p:empty,
+.inbox-editor-content p:has(> br:only-child) {
+  min-height: 1.25em;
+}
+
 /* TipTap editor list styles (bullets, numbers, indentation) */
 .inbox-editor-content ul,
 .inbox-editor-content ol {
