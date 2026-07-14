@@ -376,7 +376,15 @@ export default function TaskDetail() {
         const uids = (data ?? []).map((r: { user_id: string }) => r.user_id)
         if (!uids.length) { setOrgUsers([]); return }
         const { data: profiles } = await supabase.from('profiles').select('id, display_name, avatar_url').in('id', uids)
-        setOrgUsers((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => ({ user_id: p.id, display_name: p.display_name, avatar_url: p.avatar_url })))
+        const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => [p.id, p]))
+        setOrgUsers(
+          uids
+            .map(uid => {
+              const p = profileMap.get(uid)
+              return { user_id: uid, display_name: p?.display_name ?? null, avatar_url: p?.avatar_url ?? null }
+            })
+            .sort((a, b) => (a.display_name ?? a.user_id).localeCompare(b.display_name ?? b.user_id))
+        )
       })
   }, [projectId])
 
