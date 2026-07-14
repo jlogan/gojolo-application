@@ -80,6 +80,45 @@ function isHtmlEffectivelyEmpty(html: string): boolean {
     .trim()
   return stripped.length === 0
 }
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .trim()
+}
+function parseMentionUserIds(html: string, users: OrgUser[]): string[] {
+  const plain = htmlToPlainText(html)
+  const labels = users
+    .map(u => ({ user_id: u.user_id, label: u.display_name ?? u.email ?? '' }))
+    .filter(u => u.label)
+    .sort((a, b) => b.label.length - a.label.length)
+
+  const found = new Set<string>()
+  let i = 0
+  while (i < plain.length) {
+    if (plain[i] !== '@') {
+      i++
+      continue
+    }
+    const rest = plain.slice(i + 1)
+    let matched = false
+    for (const { user_id, label } of labels) {
+      if (rest.toLowerCase().startsWith(label.toLowerCase())) {
+        const after = rest[label.length]
+        if (!after || after === ' ' || after === '\n') {
+          found.add(user_id)
+          i += 1 + label.length
+          matched = true
+          break
+        }
+      }
+    }
+    if (!matched) i++
+  }
+  return [...found]
+}
 function looksLikeHtml(s: string): boolean {
   return /<[a-z][\s\S]*>/i.test(s)
 }
@@ -495,13 +534,53 @@ export default function TaskDetail() {
         fileName = commentFile.name
       }
     }
-    const content = commentText.trim() + (fileUrl && fileName ? `\n\n📎 [${fileName}](${fileUrl})` : '')
+    const trimmedComment = commentText.trim()
+    const content = trimmedComment + (fileUrl && fileName ? `\n\n📎 [${fileName}](${fileUrl})` : '')
     if (!content.trim()) return
-    await supabase.from('task_comments').insert({ task_id: taskId, user_id: user.id, content }).select('id').single()
+    const mentionIds = parseMentionUserIds(trimmedComment, orgUsers)
+    const { error: insertErr } = await supabase.from('task_comments').insert({
+      task_id: taskId,
+      user_id: user.id,
+      content,
+      mentions: mentionIds.length > 0 ? mentionIds : null,
+    }).select('id').single()
+    if (insertErr) return
+    const plainPreview = htmlToPlainText(trimmedComment)
+    const contentPreview = plainPreview.slice(0, 200) + (plainPreview.length > 200 ? '...' : '')
+    const commenterProfile = orgUsers.find(u => u.user_id === user.id)
+    const commenterName = commenterProfile?.display_name ?? commenterProfile?.email ?? 'Someone'
+    const taskTitle = task?.title ?? 'Task'
     setCommentText('')
     setCommentFile(null)
     await fetchAll()
     // Slack alert is sent by DB trigger (notify_slack_on_task_comment) on insert
+
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token || !currentOrg?.id || !projectId) return
+    const payload = {
+      task_id: taskId,
+      project_id: projectId,
+      task_title: taskTitle,
+      commenter_name: commenterName,
+      content_preview: contentPreview,
+    }
+    for (const mentionedId of mentionIds) {
+      if (mentionedId === user.id) continue
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-user-notification`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({
+          event_type: 'mentioned_in_task',
+          user_id: mentionedId,
+          org_id: currentOrg.id,
+          payload,
+        }),
+      }).catch(() => {})
+    }
   }
 
   const handleEditComment = (c: TaskComment) => {

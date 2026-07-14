@@ -13,7 +13,7 @@ const resendFrom = Deno.env.get('RESEND_FROM') ?? 'jolo <onboarding@resend.dev>'
 const internalSecret = Deno.env.get('NOTIFICATION_INTERNAL_SECRET') ?? ''
 
 type Channel = 'slack' | 'email' | 'both'
-type EventType = 'task_assigned' | 'thread_assigned' | 'mentioned_in_thread'
+type EventType = 'task_assigned' | 'thread_assigned' | 'mentioned_in_thread' | 'mentioned_in_task'
 
 type NotificationItem = {
   user_id: string
@@ -46,6 +46,12 @@ function buildMessages(item: NotificationItem): { subject: string; htmlBody: str
     subject = `${p.commenter_name ?? 'Someone'} mentioned you in: ${p.subject ?? 'Thread'}`
     slackText = `*${p.commenter_name ?? 'Someone'}* mentioned you in a thread: _${p.subject ?? 'Thread'}_\n${escapeSlack(p.content_preview ?? '')}\n<${threadUrl}|Open thread>`
     htmlBody = `<p><strong>${p.commenter_name ?? 'Someone'}</strong> mentioned you in an inbox thread.</p><p><strong>Subject:</strong> ${escapeHtml(p.subject ?? 'Thread')}</p><p>${escapeHtml(p.content_preview ?? '')}</p><p><a href="${threadUrl}">Open thread in jolo</a></p>`
+  } else if (item.event_type === 'mentioned_in_task') {
+    const p = item.payload as { task_id?: string; project_id?: string; task_title?: string; commenter_name?: string; content_preview?: string }
+    const taskUrl = `${appUrl}/projects/${p.project_id}/tasks/${p.task_id}`
+    subject = `${p.commenter_name ?? 'Someone'} mentioned you in: ${p.task_title ?? 'Task'}`
+    slackText = `*${p.commenter_name ?? 'Someone'}* mentioned you in a task: _${p.task_title ?? 'Task'}_\n${escapeSlack(p.content_preview ?? '')}\n<${taskUrl}|Open task>`
+    htmlBody = `<p><strong>${p.commenter_name ?? 'Someone'}</strong> mentioned you in a task comment.</p><p><strong>Task:</strong> ${escapeHtml(p.task_title ?? 'Task')}</p><p>${escapeHtml(p.content_preview ?? '')}</p><p><a href="${taskUrl}">Open task in jolo</a></p>`
   }
 
   return { subject, htmlBody, slackText }
@@ -184,7 +190,7 @@ Deno.serve(async (req: Request) => {
     if (!event_type || !user_id || !org_id) {
       return new Response(JSON.stringify({ error: 'event_type, user_id, and org_id required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
-    if (!['task_assigned', 'thread_assigned', 'mentioned_in_thread'].includes(event_type)) {
+    if (!['task_assigned', 'thread_assigned', 'mentioned_in_thread', 'mentioned_in_task'].includes(event_type)) {
       return new Response(JSON.stringify({ error: 'Invalid event_type' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 

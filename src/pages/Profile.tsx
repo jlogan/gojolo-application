@@ -11,6 +11,7 @@ const NOTIFICATION_TYPES = [
   { id: 'task_assigned', label: 'Task Assigned To You', description: 'When a task is assigned to you' },
   { id: 'thread_assigned', label: 'Thread Assigned To You', description: 'When an inbox thread is assigned to you' },
   { id: 'mentioned_in_thread', label: 'Mentioned In Thread Internal Comment', description: 'When someone @mentions you in an internal thread comment' },
+  { id: 'mentioned_in_task', label: 'Mentioned In Task Comment', description: 'When someone @mentions you in a task comment' },
 ] as const
 
 type NotificationChannel = 'slack' | 'email' | 'both'
