@@ -10,6 +10,7 @@ import {
 import { type Project, StatusBadge } from './ProjectsList'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 import LinkedInvoices from '@/components/LinkedInvoices'
+import CredentialsPanel from '@/components/CredentialsPanel'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -494,6 +495,14 @@ export default function ProjectDetail() {
 
         {/* Sidebar (1/3) */}
         <div className="space-y-6">
+          <CredentialsPanel
+            orgId={currentOrg!.id}
+            projectId={project.id}
+            companyId={linkedCompanyId}
+            title="Credentials"
+            description="Project-specific credentials plus credentials inherited from the linked company. Reveal/copy requires a GoJolo password prompt."
+          />
+
           {/* Billing Summary */}
           <section className="rounded-lg border border-border bg-surface-elevated p-4">
             <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3"><DollarSign className="w-4 h-4" /> Billing</h2>

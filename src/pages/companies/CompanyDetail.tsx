@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { Users, Pencil, ArrowLeft, X, Trash2 } from 'lucide-react'
 import type { Company } from './CompaniesList'
 import LinkedInvoices from '@/components/LinkedInvoices'
+import CredentialsPanel from '@/components/CredentialsPanel'
 
 type ContactRow = { id: string; name: string; email: string | null; phone: string | null }
 type SearchContact = { id: string; name: string; email: string | null; phone: string | null }
@@ -327,6 +328,12 @@ export default function CompanyDetail() {
           </div>
         </form>
       </section>
+      <CredentialsPanel
+        orgId={currentOrg!.id}
+        companyId={company.id}
+        title="Credentials"
+        description="Store client logins for this company. Passwords stay masked until the user confirms their GoJolo password."
+      />
       <LinkedInvoices companyId={company.id} />
 
       {deleteOpen && (
