@@ -29,7 +29,7 @@ type InboxMessage = {
 }
 type SlackMsg = { id: string; user_name: string | null; content: string; received_at: string }
 type VaultCred = { id: string; credential_id: string; label: string; url: string | null; username: string | null }
-type OrgUser = { user_id: string; display_name: string | null; avatar_url: string | null }
+type OrgUser = { user_id: string; display_name: string | null; avatar_url: string | null; email?: string | null }
 type TaskAssignee = { user_id: string; display_name?: string | null; avatar_url?: string | null }
 
 const STATUS_FLOW = [
@@ -375,13 +375,13 @@ export default function TaskDetail() {
       .then(async ({ data }) => {
         const uids = (data ?? []).map((r: { user_id: string }) => r.user_id)
         if (!uids.length) { setOrgUsers([]); return }
-        const { data: profiles } = await supabase.from('profiles').select('id, display_name, avatar_url').in('id', uids)
-        const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null }) => [p.id, p]))
+        const { data: profiles } = await supabase.from('profiles').select('id, display_name, avatar_url, email').in('id', uids)
+        const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null; avatar_url: string | null; email: string | null }) => [p.id, p]))
         setOrgUsers(
           uids
             .map(uid => {
               const p = profileMap.get(uid)
-              return { user_id: uid, display_name: p?.display_name ?? null, avatar_url: p?.avatar_url ?? null }
+              return { user_id: uid, display_name: p?.display_name ?? null, avatar_url: p?.avatar_url ?? null, email: p?.email ?? null }
             })
             .sort((a, b) => (a.display_name ?? a.user_id).localeCompare(b.display_name ?? b.user_id))
         )
@@ -925,6 +925,7 @@ export default function TaskDetail() {
                         content={editDraft}
                         onChange={html => setEditDraft(html === '<p></p>' ? '' : html)}
                         minHeight="min-h-[80px]"
+                        mentionableUsers={orgUsers}
                       />
                       <div className="flex gap-2">
                         <button type="button" onClick={handleSaveComment} className="px-2 py-1 rounded bg-accent text-white text-xs font-medium">Save</button>
@@ -944,9 +945,10 @@ export default function TaskDetail() {
             <RichTextEditor
               key={`new-comment-${comments.length}`}
               content={commentText}
-              placeholder="Add a comment…"
+              placeholder="Add a comment… (type @ to mention)"
               onChange={html => setCommentText(html === '<p></p>' ? '' : html)}
               minHeight="min-h-[80px]"
+              mentionableUsers={orgUsers}
             />
             {commentFile && (
               <span className="text-xs text-gray-400 flex items-center gap-1">
