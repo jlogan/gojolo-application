@@ -500,7 +500,7 @@ export default function ProjectDetail() {
             projectId={project.id}
             companyId={linkedCompanyId}
             title="Credentials"
-            description="Project-specific credentials plus credentials inherited from the linked company. Reveal/copy requires a GoJolo password prompt."
+            description="Project-specific credentials plus credentials inherited from the linked company. Reveal/copy requires identity confirmation."
           />
 
           {/* Billing Summary */}

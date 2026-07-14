@@ -332,7 +332,7 @@ export default function CompanyDetail() {
         orgId={currentOrg!.id}
         companyId={company.id}
         title="Credentials"
-        description="Store client logins for this company. Passwords stay masked until the user confirms their GoJolo password."
+        description="Store client logins for this company. Passwords stay masked until you confirm your identity."
       />
       <LinkedInvoices companyId={company.id} />
 

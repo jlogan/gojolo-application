@@ -45,6 +45,20 @@ const emptyForm = (scope: 'company' | 'project'): CredentialForm => ({
   scope,
 })
 
+
+const PENDING_UNLOCK_KEY = 'jolo_vault_pending_unlock'
+
+type PendingUnlock = {
+  orgId: string
+  credentialId: string
+  copyAfterUnlock: boolean
+  label: string
+}
+
+function providerLabel(provider: string) {
+  return provider === 'google' ? 'Google' : provider.charAt(0).toUpperCase() + provider.slice(1)
+}
+
 async function callVault(sessionToken: string, body: Record<string, unknown>) {
   const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/vault-credentials`, {
     method: 'POST',
@@ -104,6 +118,50 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
   useEffect(() => {
     void fetchCredentials()
   }, [fetchCredentials])
+
+  const completeReveal = useCallback(async (freshToken: string, credential: Credential, copy: boolean) => {
+    const data = await callVault(freshToken, { action: 'reveal', orgId, credentialId: credential.id })
+    const password = String(data.password ?? '')
+    setRevealed((prev) => ({ ...prev, [credential.id]: password }))
+    if (copy && password) await navigator.clipboard.writeText(password)
+    setUnlockCredential(null)
+    setUnlockPassword('')
+    setCopyAfterUnlock(false)
+  }, [orgId])
+
+  useEffect(() => {
+    const resumePendingUnlock = async () => {
+      const raw = sessionStorage.getItem(PENDING_UNLOCK_KEY)
+      if (!raw || !session?.access_token) return
+      let pending: PendingUnlock
+      try {
+        pending = JSON.parse(raw) as PendingUnlock
+      } catch {
+        sessionStorage.removeItem(PENDING_UNLOCK_KEY)
+        return
+      }
+      if (pending.orgId !== orgId) return
+      sessionStorage.removeItem(PENDING_UNLOCK_KEY)
+      try {
+        await completeReveal(session.access_token, {
+          id: pending.credentialId,
+          org_id: orgId,
+          company_id: null,
+          project_id: null,
+          label: pending.label,
+          credential_type: 'login',
+          username: null,
+          url: null,
+          notes: null,
+          created_at: '',
+          updated_at: null,
+        }, pending.copyAfterUnlock)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not reveal password after sign-in')
+      }
+    }
+    void resumePendingUnlock()
+  }, [completeReveal, orgId, session?.access_token])
 
   const startNew = () => {
     setEditing(null)
@@ -197,24 +255,42 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
     setUnlocking(true)
     setUnlockError(null)
     try {
-      if (needsOAuthUnlock) {
-        throw new Error('This account signs in with Google. Please sign out/in with Google again to refresh your session, then reveal the password.')
-      }
       const { error: authError } = await supabase.auth.signInWithPassword({ email: user.email, password: unlockPassword })
-      if (authError) throw new Error('Password prompt failed. Please check your GoJolo password and try again.')
+      if (authError) throw new Error('Identity confirmation failed. Check your password and try again.')
       const { data: sessionData } = await supabase.auth.getSession()
       const freshToken = sessionData.session?.access_token
       if (!freshToken) throw new Error('Could not refresh your secure session.')
-      const data = await callVault(freshToken, { action: 'reveal', orgId, credentialId: unlockCredential.id })
-      const password = String(data.password ?? '')
-      setRevealed((prev) => ({ ...prev, [unlockCredential.id]: password }))
-      if (copyAfterUnlock && password) await navigator.clipboard.writeText(password)
-      setUnlockCredential(null)
-      setUnlockPassword('')
-      setCopyAfterUnlock(false)
+      await completeReveal(freshToken, unlockCredential, copyAfterUnlock)
     } catch (err) {
       setUnlockError(err instanceof Error ? err.message : 'Could not reveal password')
     } finally {
+      setUnlocking(false)
+    }
+  }
+
+  const unlockWithOAuth = async () => {
+    if (!unlockCredential || !authProvider) return
+    setUnlocking(true)
+    setUnlockError(null)
+    try {
+      const pending: PendingUnlock = {
+        orgId,
+        credentialId: unlockCredential.id,
+        copyAfterUnlock,
+        label: unlockCredential.label,
+      }
+      sessionStorage.setItem(PENDING_UNLOCK_KEY, JSON.stringify(pending))
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: authProvider as 'google',
+        options: {
+          redirectTo: window.location.href,
+          queryParams: { prompt: 'login' },
+        },
+      })
+      if (oauthError) throw oauthError
+    } catch (err) {
+      sessionStorage.removeItem(PENDING_UNLOCK_KEY)
+      setUnlockError(err instanceof Error ? err.message : 'Could not start identity confirmation')
       setUnlocking(false)
     }
   }
@@ -232,7 +308,7 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
             {title} ({credentials.length})
           </h2>
           <p className="text-gray-500 text-xs mt-1">
-            {description ?? 'Store site, hosting, and service logins. Passwords stay locked until the user confirms their GoJolo password.'}
+            {description ?? 'Store site, hosting, and service logins. Passwords stay locked until you confirm your identity.'}
           </p>
         </div>
         <button
@@ -357,22 +433,20 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
               <div className="w-10 h-10 rounded-full bg-accent/10 flex items-center justify-center text-accent"><Lock className="w-5 h-5" /></div>
               <div>
                 <h2 className="text-lg font-semibold text-white">Unlock credential</h2>
-                <p className="text-sm text-gray-400">Confirm your GoJolo password to reveal “{unlockCredential.label}”.</p>
+                <p className="text-sm text-gray-400">Confirm your identity to reveal “{unlockCredential.label}”.</p>
               </div>
             </div>
             {unlockError && <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{unlockError}</div>}
             {needsOAuthUnlock ? (
-              <p className="text-sm text-gray-400">Your account uses {authProvider} sign-in, so there is no GoJolo password to enter. Sign out and back in with {authProvider}, then try reveal again.</p>
+              <p className="text-sm text-gray-400">Use {providerLabel(authProvider)} to confirm it&apos;s you.</p>
             ) : (
-              <input type="password" value={unlockPassword} onChange={e => setUnlockPassword(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void revealWithFreshSession() }} autoFocus placeholder="GoJolo password" className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+              <input type="password" value={unlockPassword} onChange={e => setUnlockPassword(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void revealWithFreshSession() }} autoFocus placeholder="Your password" className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
             )}
             <div className="flex justify-end gap-2 mt-5">
               <button type="button" onClick={() => setUnlockCredential(null)} disabled={unlocking} className="px-4 py-2 rounded-lg border border-border text-gray-200 hover:bg-surface-muted text-sm">Cancel</button>
-              {!needsOAuthUnlock && (
-                <button type="button" onClick={revealWithFreshSession} disabled={unlocking || !unlockPassword} className="px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50">
-                  {unlocking ? 'Unlocking…' : copyAfterUnlock ? 'Unlock & copy' : 'Unlock'}
-                </button>
-              )}
+              <button type="button" onClick={needsOAuthUnlock ? unlockWithOAuth : revealWithFreshSession} disabled={unlocking || (!needsOAuthUnlock && !unlockPassword)} className="px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                {unlocking ? 'Confirming…' : needsOAuthUnlock ? `Unlock with ${providerLabel(authProvider)}` : copyAfterUnlock ? 'Unlock & copy' : 'Unlock'}
+              </button>
             </div>
           </div>
         </div>
