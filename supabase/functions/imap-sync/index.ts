@@ -7,6 +7,16 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { logThreadArchiveDebug } from '../_shared/inboxThreadArchiveLog.ts'
+import {
+  buildRefThreadMap,
+  buildSubjectThreadMap,
+  deriveMailboxAddress,
+  normalizeEmail,
+  normalizeSubject,
+  refMapKey,
+  resolveThreadIdFromMaps,
+  subjectMapKey,
+} from '../_shared/inboxThreadResolve.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -64,13 +74,6 @@ function getMailboxPath(host: string): string {
 
 function getTrashMailboxPath(host: string): string {
   return host && host.toLowerCase().includes('gmail.com') ? '[Gmail]/Trash' : 'Trash'
-}
-
-/** Extract email from "Name <email>" or return trimmed lowercase. */
-function normalizeEmail(addr: string): string {
-  if (!addr?.trim()) return ''
-  const m = addr.trim().match(/<([^>]+)>/)
-  return (m ? m[1] : addr).trim().toLowerCase()
 }
 
 /** Build set of our org addresses (email + aliases) from accounts being synced. */
@@ -346,10 +349,10 @@ serve(async (req) => {
       const backfillThreadId = body.backfillForThread
       if (backfillThreadId) {
         const { data: threadRow } = await service.from('inbox_threads')
-          .select('id, subject, from_address, imap_account_id')
+          .select('id, subject, from_address, imap_account_id, mailbox_address')
           .eq('id', backfillThreadId)
           .single()
-        const bt = threadRow as { id: string; subject: string | null; from_address: string | null; imap_account_id: string | null } | null
+        const bt = threadRow as { id: string; subject: string | null; from_address: string | null; imap_account_id: string | null; mailbox_address: string | null } | null
         const backfillForThisAccount =
           bt &&
           (bt.imap_account_id === acc.id ||
@@ -357,8 +360,9 @@ serve(async (req) => {
         if (backfillForThisAccount) {
           const { count } = await service.from('inbox_messages').select('id', { count: 'exact', head: true }).eq('thread_id', backfillThreadId)
           if ((count ?? 0) === 0) {
-            const threadSubjectNorm = (bt.subject ?? '').replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+            const threadSubjectNorm = normalizeSubject(bt.subject ?? '')
             const threadFromNorm = (bt.from_address ?? '').trim().toLowerCase()
+            const threadMailboxNorm = normalizeEmail(bt.mailbox_address ?? '')
             const hasSubject = threadSubjectNorm && threadSubjectNorm !== '(no subject)'
             const hasFrom = !!threadFromNorm
 
@@ -400,17 +404,19 @@ serve(async (req) => {
                 const fromAddr = envelope?.from?.[0]?.address ?? ''
                 const fromNorm = fromAddr.trim().toLowerCase()
                 const msgSubject = envelope?.subject ?? ''
-                const msgSubjectNorm = msgSubject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
+                const msgSubjectNorm = normalizeSubject(msgSubject)
                 const msgText = (msgSubjectNorm + ' ' + fromNorm).toLowerCase()
+                const toNorm = normalizeEmail(toAddr)
+                const matchesMailbox = !threadMailboxNorm || !toNorm || toNorm === threadMailboxNorm
 
-                const matchesSubject = hasSubject && msgSubjectNorm && (msgSubjectNorm === threadSubjectNorm || msgSubjectNorm.includes(threadSubjectNorm) || threadSubjectNorm.includes(msgSubjectNorm))
+                const matchesSubject = hasSubject && msgSubjectNorm && matchesMailbox && (msgSubjectNorm === threadSubjectNorm || msgSubjectNorm.includes(threadSubjectNorm) || threadSubjectNorm.includes(msgSubjectNorm))
                 const matchesFromExact = hasFrom && fromNorm === threadFromNorm
                 const matchesToken = uniqueTokens.length > 0 && uniqueTokens.some((tok) => msgText.includes(tok))
                 const matchesFromOnly = !matchesSubject && !matchesToken && matchesFromExact
                 const matchesTokenOnly = !matchesSubject && !matchesFromExact && matchesToken
                 if (matchesFromOnly && insertRows.length >= maxFromOnly) continue
                 if (matchesTokenOnly && insertRows.length >= maxTokenOnly) continue
-                const matchesFrom = matchesSubject || matchesFromOnly || matchesToken
+                const matchesFrom = (matchesSubject || matchesFromOnly || matchesToken) && matchesMailbox
 
                 if (!matchesFrom) continue
 
@@ -446,6 +452,9 @@ serve(async (req) => {
                   if (touchBfErr) console.log('[imap-sync] backfill touch_inbox_thread_on_new_message', touchBfErr.message)
                   if (bt.imap_account_id == null) {
                     await service.from('inbox_threads').update({ imap_account_id: acc.id }).eq('id', backfillThreadId)
+                  }
+                  if (!bt.mailbox_address && threadMailboxNorm) {
+                    await service.from('inbox_threads').update({ mailbox_address: threadMailboxNorm }).eq('id', backfillThreadId)
                   }
                 }
               } else {
@@ -614,25 +623,19 @@ serve(async (req) => {
       const refMap = new Map<string, string>()
       if (allRefIds.length > 0) {
         const { data: refRows } = await service.from('inbox_messages')
-          .select('external_id, thread_id, inbox_threads(imap_account_id)').eq('imap_account_id', acc.id)
+          .select('external_id, thread_id, inbox_threads(imap_account_id, mailbox_address)').eq('imap_account_id', acc.id)
           .in('external_id', allRefIds.slice(0, 200))
-        for (const r of (refRows ?? []) as { external_id: string; thread_id: string; inbox_threads: { imap_account_id: string | null } | null }[]) {
-          const threadAccId = r.inbox_threads?.imap_account_id
-          if (threadAccId != null && threadAccId !== acc.id) continue
-          refMap.set(r.external_id, r.thread_id)
+        for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.id)) {
+          refMap.set(k, v)
         }
       }
 
-      // Batch pre-fetch: recent threads for subject matching (same IMAP account only — avoid cross-mailbox collisions)
+      // Batch pre-fetch: recent threads for subject matching (same IMAP account + mailbox)
       const { data: recentThreads } = await service.from('inbox_threads')
-        .select('id, subject').eq('org_id', acc.org_id).eq('channel', 'email').eq('imap_account_id', acc.id)
+        .select('id, subject, mailbox_address').eq('org_id', acc.org_id).eq('channel', 'email').eq('imap_account_id', acc.id)
         .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
         .order('last_message_at', { ascending: false }).limit(100)
-      const subjectThreadMap = new Map<string, string>()
-      for (const t of (recentThreads ?? []) as { id: string; subject: string }[]) {
-        const norm = (t.subject ?? '').replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-        if (norm && !subjectThreadMap.has(norm)) subjectThreadMap.set(norm, t.id)
-      }
+      const subjectThreadMap = buildSubjectThreadMap((recentThreads ?? []) as { id: string; subject: string | null; mailbox_address: string | null }[])
 
       let highestUid = lastUid
       let threadsCreated = 0
@@ -660,12 +663,19 @@ serve(async (req) => {
           const draftCutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
           // Find the thread this draft belongs to (same matching logic as normal messages)
           let draftThreadId: string | undefined
+          const draftDirection = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+          const draftMailbox = deriveMailboxAddress(draftDirection, p.toAddr, p.fromAddr, acc.email)
           for (const refId of [p.inReplyTo, ...p.refsList]) {
-            if (refId && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
+            if (refId && refMap.has(refMapKey(refId, draftMailbox))) { draftThreadId = refMap.get(refMapKey(refId, draftMailbox)); break }
+            if (!draftMailbox && refId && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
           }
           if (!draftThreadId) {
-            const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-            if (normSubject) draftThreadId = subjectThreadMap.get(normSubject)
+            const normSubject = normalizeSubject(p.subject)
+            if (normSubject) {
+              draftThreadId = draftMailbox
+                ? subjectThreadMap.get(subjectMapKey(normSubject, draftMailbox))
+                : subjectThreadMap.get(normSubject)
+            }
           }
           if (draftThreadId) {
             const { data: draftRows } = await service.from('inbox_messages')
@@ -687,27 +697,34 @@ serve(async (req) => {
           continue
         }
 
-        // Thread matching: references → subject → new thread
-        let threadId: string | undefined
-        for (const refId of [p.inReplyTo, ...p.refsList]) {
-          if (refId && refMap.has(refId)) { threadId = refMap.get(refId); break }
-        }
-        if (!threadId) {
-          const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-          if (normSubject) threadId = subjectThreadMap.get(normSubject)
-        }
         const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+        const mailboxAddress = deriveMailboxAddress(direction, p.toAddr, p.fromAddr, acc.email)
+
+        // Thread matching: references + mailbox → subject + mailbox → new thread
+        let threadId = resolveThreadIdFromMaps({
+          inReplyTo: p.inReplyTo,
+          refsList: p.refsList,
+          subject: p.subject,
+          mailboxAddress,
+          refMap,
+          subjectThreadMap,
+        })
 
         if (!threadId) {
           const { data: newThread, error: threadErr } = await service.from('inbox_threads')
-            .insert({ org_id: acc.org_id, channel: 'email', status: 'open', subject: p.subject || '(No subject)', last_message_at: p.date.toISOString(), imap_account_id: acc.id, from_address: p.fromAddr })
+            .insert({
+              org_id: acc.org_id, channel: 'email', status: 'open', subject: p.subject || '(No subject)',
+              last_message_at: p.date.toISOString(), imap_account_id: acc.id, from_address: p.fromAddr,
+              mailbox_address: mailboxAddress || null,
+            })
             .select('id').single()
           if (threadErr || !newThread) { errors.push(`${acc.imap_username}: thread: ${threadErr?.message}`); continue }
           threadId = newThread.id
           threadsCreated++
           newlyCreatedThreadIds.add(threadId)
-          const norm = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-          if (norm) subjectThreadMap.set(norm, threadId)
+          const norm = normalizeSubject(p.subject)
+          if (norm && mailboxAddress) subjectThreadMap.set(subjectMapKey(norm, mailboxAddress), threadId)
+          else if (norm) subjectThreadMap.set(norm, threadId)
         } else {
           const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
             p_thread_id: threadId,
@@ -718,7 +735,8 @@ serve(async (req) => {
         }
 
         // Track for future reference lookups within this batch
-        if (p.messageId) refMap.set(p.messageId, threadId)
+        if (p.messageId && mailboxAddress) refMap.set(refMapKey(p.messageId, mailboxAddress), threadId)
+        else if (p.messageId && !mailboxAddress) refMap.set(p.messageId, threadId)
 
         // Skip outbound if we already have it from inbox-send-reply (app insert has no external_uid)
         if (direction === 'outbound' && threadId) {
@@ -952,13 +970,17 @@ serve(async (req) => {
             const { data: existingByMsgId } = messageId
               ? await service
                   .from('inbox_messages')
-                  .select('thread_id')
+                  .select('thread_id, inbox_threads(mailbox_address)')
                   .eq('imap_account_id', acc.id)
                   .eq('external_id', messageId)
-                  .limit(1)
               : { data: null }
-            if (existingByMsgId?.[0]?.thread_id) {
-              const tid = existingByMsgId[0].thread_id as string
+            const trashMailbox = normalizeEmail(toAddr)
+            const msgMatch = (existingByMsgId ?? []).find((row) => {
+              const threadMailbox = normalizeEmail((row as { inbox_threads: { mailbox_address: string | null } | null }).inbox_threads?.mailbox_address ?? '')
+              return !trashMailbox || !threadMailbox || trashMailbox === threadMailbox
+            })
+            if (msgMatch?.thread_id) {
+              const tid = msgMatch.thread_id as string
               await service
                 .from('inbox_threads')
                 .update({ status: 'archived', updated_at: date.toISOString(), last_message_at: date.toISOString() })
@@ -997,6 +1019,9 @@ serve(async (req) => {
                 status: 'archived',
                 subject: subject || '(No subject)',
                 last_message_at: date.toISOString(),
+                imap_account_id: acc.id,
+                from_address: fromAddr,
+                mailbox_address: normalizeEmail(toAddr) || null,
               })
               .select('id')
               .single()

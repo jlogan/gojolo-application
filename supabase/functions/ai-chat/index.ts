@@ -443,9 +443,9 @@ async function executeTool(name: string, args: Record<string, unknown>, orgId: s
     }
     case 'search_inbox': {
       const limit = parseInt(args.limit) || 10
-      let q = admin.from('inbox_threads').select('id, subject, status, from_address, last_message_at, channel').eq('org_id', orgId).order('last_message_at', { ascending: false }).limit(limit)
+      let q = admin.from('inbox_threads').select('id, subject, status, from_address, mailbox_address, last_message_at, channel').eq('org_id', orgId).order('last_message_at', { ascending: false }).limit(limit)
       if (args.status) q = q.eq('status', args.status)
-      if (args.query) q = q.or(`subject.ilike.%${args.query}%,from_address.ilike.%${args.query}%`)
+      if (args.query) q = q.or(`subject.ilike.%${args.query}%,from_address.ilike.%${args.query}%,mailbox_address.ilike.%${args.query}%`)
       const { data, error } = await q
       return error ? { error: error.message } : data
     }
@@ -459,7 +459,7 @@ async function executeTool(name: string, args: Record<string, unknown>, orgId: s
       }))
     }
     case 'summarize_thread': {
-      const { data: thread } = await admin.from('inbox_threads').select('id, subject, status, from_address, channel, last_message_at, created_at').eq('id', args.thread_id).single()
+      const { data: thread } = await admin.from('inbox_threads').select('id, subject, status, from_address, mailbox_address, channel, last_message_at, created_at').eq('id', args.thread_id).single()
       if (!thread) return { error: 'Thread not found' }
       const { count } = await admin.from('inbox_messages').select('id', { count: 'exact', head: true }).eq('thread_id', args.thread_id)
       const { data: participants } = await admin.from('inbox_messages').select('from_identifier, to_identifier').eq('thread_id', args.thread_id)

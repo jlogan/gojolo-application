@@ -18,6 +18,7 @@ type InboxThread = {
   id: string; org_id: string; channel: string; status: string
   subject: string | null; last_message_at: string; created_at: string
   from_address: string | null; imap_account_id: string | null
+  mailbox_address: string | null
   inbox_thread_assignments?: ThreadAssignment[] | null
   /** Message count (from mergeInboxMessageCounts / inbox_message_counts_by_thread RPC) */
   inbox_messages?: { count: number }[] | null
@@ -49,7 +50,7 @@ type SearchInboxThreadRow = Omit<InboxThread, 'inbox_thread_assignments' | 'inbo
 
 /** PostgREST list select without embedded inbox_messages(count) — counts come from inbox_message_counts_by_thread RPC. */
 const INBOX_THREAD_LIST_SELECT =
-  'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, inbox_thread_assignments(user_id)' as const
+  'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, mailbox_address, inbox_thread_assignments(user_id)' as const
 
 /** Single grouped count query (RLS on inbox_messages); avoids slow embedded aggregates that can 504. */
 async function mergeInboxMessageCounts(threads: InboxThread[]): Promise<InboxThread[]> {
@@ -365,6 +366,7 @@ export default function Inbox() {
     created_at: row.created_at,
     from_address: row.from_address,
     imap_account_id: row.imap_account_id,
+    mailbox_address: row.mailbox_address,
     inbox_thread_assignments: Array.isArray(row.inbox_thread_assignments) ? row.inbox_thread_assignments : [],
     inbox_messages: [{ count: Number(row.message_count ?? 0) }],
   }))
@@ -1063,6 +1065,14 @@ export default function Inbox() {
     } else {
       toast(opts?.restoreFromTrash ? 'Restored from trash' : 'Thread re-opened')
     }
+  }
+
+  const getMailboxLabel = (thread: InboxThread): string | null => {
+    const account = imapAccounts.find(acc => acc.id === thread.imap_account_id)
+    if (account?.label && account.email) return `${account.label} <${account.email}>`
+    if (account?.email) return account.email
+    if (thread.mailbox_address?.trim()) return thread.mailbox_address.trim()
+    return null
   }
 
   const getSendableAddresses = (): { accountId: string; email: string; label: string }[] => {
@@ -1842,7 +1852,12 @@ export default function Inbox() {
                                 : d.toLocaleDateString([], { month: 'short', day: 'numeric' })
                             })()}</span>
                           </div>
-                          <p className="text-xs text-gray-400 truncate mt-0.5">{t.from_address ?? ''}</p>
+                          <p className="text-xs text-gray-400 truncate mt-0.5">
+                            {t.from_address ?? '(unknown sender)'}
+                            {getMailboxLabel(t) && (
+                              <span className="text-gray-500"> · Mailbox {getMailboxLabel(t)}</span>
+                            )}
+                          </p>
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${t.status === 'open' ? 'bg-accent/20 text-accent' : t.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{t.status === 'archived' ? 'trash' : t.status}</span>
                             {assignees.length > 0 && (
@@ -1908,6 +1923,11 @@ export default function Inbox() {
                     setSelectedThreadId(null); setReplyMode(null)
                   }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                   <h2 className="text-white font-medium truncate flex-1 text-sm">{selectedThread.subject || '(No subject)'}</h2>
+                  {getMailboxLabel(selectedThread) && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 bg-surface-muted text-gray-300" title="Mailbox/account">
+                      Mailbox {getMailboxLabel(selectedThread)}
+                    </span>
+                  )}
                   <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${selectedThread.status === 'open' ? 'bg-accent/20 text-accent' : selectedThread.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{selectedThread.status}</span>
                   <button type="button" onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/inbox/${selectedThread.id}`); toast('Thread link copied') }}
                     className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted" title="Copy thread link">

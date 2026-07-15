@@ -8,6 +8,16 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import { corsHeaders } from '../_shared/cors.ts'
+import {
+  buildRefThreadMap,
+  buildSubjectThreadMap,
+  deriveMailboxAddress,
+  normalizeEmail,
+  normalizeSubject,
+  refMapKey,
+  resolveThreadIdFromMaps,
+  subjectMapKey,
+} from '../_shared/inboxThreadResolve.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -183,11 +193,6 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
   const { data: orgAccounts } = await service.from('imap_accounts').select('email, addresses').eq('org_id', acc.org_id).eq('is_active', true)
   const ourAddressesSet = new Set<string>()
-  const normalizeEmail = (addr: string) => {
-    if (!addr?.trim()) return ''
-    const m = addr.trim().match(/<([^>]+)>/)
-    return (m ? m[1] : addr).trim().toLowerCase()
-  }
   for (const a of (orgAccounts ?? []) as { email?: string; addresses?: string[] }[]) {
     if (a.email) ourAddressesSet.add(normalizeEmail(a.email))
     for (const alias of a.addresses ?? []) {
@@ -368,31 +373,25 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
     if (allRefIds.length > 0) {
       const { data: refRows } = await service
         .from('inbox_messages')
-        .select('external_id, thread_id, inbox_threads(imap_account_id)')
+        .select('external_id, thread_id, inbox_threads(imap_account_id, mailbox_address)')
         .eq('imap_account_id', acc.id)
         .in('external_id', allRefIds.slice(0, 200))
-      for (const r of (refRows ?? []) as { external_id: string; thread_id: string; inbox_threads: { imap_account_id: string | null } | null }[]) {
-        const threadAccId = r.inbox_threads?.imap_account_id
-        if (threadAccId != null && threadAccId !== acc.id) continue
-        refMap.set(r.external_id, r.thread_id)
+      for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.id)) {
+        refMap.set(k, v)
       }
       console.log('[refresh-email] refMap size:', refMap.size)
     }
 
     const { data: recentThreads } = await service
       .from('inbox_threads')
-      .select('id, subject')
+      .select('id, subject, mailbox_address')
       .eq('org_id', acc.org_id)
       .eq('channel', 'email')
       .eq('imap_account_id', acc.id)
       .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
       .order('last_message_at', { ascending: false })
       .limit(100)
-    const subjectThreadMap = new Map<string, string>()
-    for (const t of (recentThreads ?? []) as { id: string; subject: string }[]) {
-      const norm = (t.subject ?? '').replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-      if (norm && !subjectThreadMap.has(norm)) subjectThreadMap.set(norm, t.id)
-    }
+    const subjectThreadMap = buildSubjectThreadMap((recentThreads ?? []) as { id: string; subject: string | null; mailbox_address: string | null }[])
     console.log('[refresh-email] subjectThreadMap size:', subjectThreadMap.size)
 
     let highestUid = lastUid
@@ -412,13 +411,20 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       if (p.isDraft) {
         console.log('[refresh-email] draft envelope uid=', p.uid, '— checking for matching app row to flag')
         const draftCutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
+        const draftDirection = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+        const draftMailbox = deriveMailboxAddress(draftDirection, p.toAddr, p.fromAddr, acc.email)
         let draftThreadId: string | undefined
         for (const refId of [p.inReplyTo, ...p.refsList]) {
-          if (refId && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
+          if (refId && draftMailbox && refMap.has(refMapKey(refId, draftMailbox))) { draftThreadId = refMap.get(refMapKey(refId, draftMailbox)); break }
+          if (refId && !draftMailbox && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
         }
         if (!draftThreadId) {
-          const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-          if (normSubject) draftThreadId = subjectThreadMap.get(normSubject)
+          const normSubject = normalizeSubject(p.subject)
+          if (normSubject) {
+            draftThreadId = draftMailbox
+              ? subjectThreadMap.get(subjectMapKey(normSubject, draftMailbox))
+              : subjectThreadMap.get(normSubject)
+          }
         }
         if (draftThreadId) {
           const { data: draftRows } = await service.from('inbox_messages')
@@ -440,19 +446,17 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         continue
       }
 
-      let threadId: string | undefined
-      for (const refId of [p.inReplyTo, ...p.refsList]) {
-        if (refId && refMap.has(refId)) {
-          threadId = refMap.get(refId)
-          break
-        }
-      }
-      if (!threadId) {
-        const normSubject = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-        if (normSubject) threadId = subjectThreadMap.get(normSubject)
-      }
-
       const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+      const mailboxAddress = deriveMailboxAddress(direction, p.toAddr, p.fromAddr, acc.email)
+
+      let threadId = resolveThreadIdFromMaps({
+        inReplyTo: p.inReplyTo,
+        refsList: p.refsList,
+        subject: p.subject,
+        mailboxAddress,
+        refMap,
+        subjectThreadMap,
+      })
 
       if (!threadId) {
         const { data: newThread, error: threadErr } = await service
@@ -465,6 +469,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
             last_message_at: p.date.toISOString(),
             imap_account_id: acc.id,
             from_address: p.fromAddr,
+            mailbox_address: mailboxAddress || null,
           })
           .select('id')
           .single()
@@ -474,8 +479,9 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         }
         threadId = newThread.id
         threadsCreated++
-        const norm = p.subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-        if (norm && threadId) subjectThreadMap.set(norm, threadId)
+        const norm = normalizeSubject(p.subject)
+        if (norm && mailboxAddress) subjectThreadMap.set(subjectMapKey(norm, mailboxAddress), threadId)
+        else if (norm) subjectThreadMap.set(norm, threadId)
       } else {
         const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
           p_thread_id: threadId!,
@@ -488,7 +494,8 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       if (!threadId) continue
 
       const tid = threadId as string
-      if (p.messageId) refMap.set(p.messageId, tid)
+      if (p.messageId && mailboxAddress) refMap.set(refMapKey(p.messageId, mailboxAddress), tid)
+      else if (p.messageId) refMap.set(p.messageId, tid)
 
       // Skip outbound insert if we already have it from inbox-send-reply (app insert has no external_uid)
       if (direction === 'outbound') {

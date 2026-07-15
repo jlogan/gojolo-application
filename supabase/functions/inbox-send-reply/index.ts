@@ -79,6 +79,7 @@ Deno.serve(async (req: Request) => {
   let subject: string
   let inReplyTo: string | undefined
   let references: string | undefined
+  let replyThreadMailbox: string | null = null
 
   if (threadId && !compose) {
     console.log(`[inbox-send-reply] ${reqId} resolving reply: threadId=${threadId}`)
@@ -86,13 +87,14 @@ Deno.serve(async (req: Request) => {
       global: { headers: { Authorization: auth } },
     })
     const { data: thread, error: tErr } = await userClient.from('inbox_threads')
-      .select('id, org_id, channel, subject').eq('id', threadId).single()
+      .select('id, org_id, channel, subject, mailbox_address').eq('id', threadId).single()
     if (tErr || !thread) {
       console.log(`[inbox-send-reply] ${reqId} thread lookup failed:`, tErr?.message ?? 'not found')
       return jsonRes({ error: 'Thread not found or access denied' })
     }
     if (thread.channel !== 'email') return jsonRes({ error: 'Reply only supported for email threads' })
     orgId = thread.org_id as string
+    replyThreadMailbox = (thread.mailbox_address as string | null) ?? null
     subject = reqSubject?.trim() || (thread.subject as string) || 'Re: (No subject)'
 
     const { data: msgs } = await userClient.from('inbox_messages')
@@ -217,6 +219,7 @@ Deno.serve(async (req: Request) => {
       org_id: orgId, channel: 'email', status: 'closed', subject,
       last_message_at: now, imap_account_id: imapAccountId,
       from_address: effectiveFromAddress,
+      mailbox_address: effectiveFromAddress.toLowerCase(),
     }).select('id').single()
     if (threadErr) console.log(`[inbox-send-reply] ${reqId} thread insert error:`, threadErr.message)
     saveThreadId = (newThread as { id: string })?.id ?? null
@@ -263,6 +266,12 @@ Deno.serve(async (req: Request) => {
     if (touchErr) {
       console.log(`[inbox-send-reply] ${reqId} touch_inbox_thread_on_new_message failed:`, touchErr.message)
       return jsonRes({ error: 'Failed to update thread' })
+    }
+    if (threadId && !compose && !replyThreadMailbox?.trim()) {
+      await service.from('inbox_threads')
+        .update({ mailbox_address: effectiveFromAddress.toLowerCase() })
+        .eq('id', saveThreadId)
+        .is('mailbox_address', null)
     }
   }
 

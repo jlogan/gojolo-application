@@ -15,6 +15,16 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { corsHeaders } from '../_shared/cors.ts'
+import {
+  buildRefThreadMap,
+  buildSubjectThreadMap,
+  deriveMailboxAddress,
+  normalizeEmail,
+  normalizeSubject,
+  refMapKey,
+  resolveThreadIdFromMaps,
+  subjectMapKey,
+} from '../_shared/inboxThreadResolve.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -62,7 +72,7 @@ function getHeader(source: Uint8Array | Buffer, name: string): string | null {
 
 interface ImapAccountRow {
   id: string; org_id: string; host: string; port: number
-  imap_encryption: string; imap_username: string
+  email: string; imap_encryption: string; imap_username: string
   credentials_encrypted: string; last_fetched_uid: number | null
 }
 
@@ -85,7 +95,7 @@ Deno.serve(async (req: Request) => {
   }
 
   let q = service.from('imap_accounts')
-    .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid')
+    .select('id, org_id, email, host, port, imap_encryption, imap_username, credentials_encrypted, last_fetched_uid')
     .eq('is_active', true)
   if (body.orgId) q = q.eq('org_id', body.orgId)
   if (body.accountId) q = q.eq('id', body.accountId)
@@ -118,6 +128,15 @@ Deno.serve(async (req: Request) => {
       const isGmail = acc.host.toLowerCase().includes('gmail.com')
       const mailboxPath = isGmail ? '[Gmail]/All Mail' : 'INBOX'
       const lock = await client.getMailboxLock(mailboxPath)
+
+      const { data: orgAccounts } = await service.from('imap_accounts').select('email, addresses').eq('org_id', acc.org_id).eq('is_active', true)
+      const ourAddressesSet = new Set<string>()
+      for (const a of (orgAccounts ?? []) as { email?: string; addresses?: string[] }[]) {
+        if (a.email) ourAddressesSet.add(normalizeEmail(a.email))
+        for (const alias of a.addresses ?? []) {
+          if (alias?.trim()) ourAddressesSet.add(normalizeEmail(alias))
+        }
+      }
 
       try {
         // Enter IDLE and wait for new mail notification
@@ -206,32 +225,40 @@ Deno.serve(async (req: Request) => {
           const { data: existing } = await service.from('inbox_messages').select('id').eq('imap_account_id', acc.id).eq('external_uid', uid).limit(1)
           if (existing?.length) continue
 
-          // Thread matching
-          let threadId: string | undefined
-          const refIds = [inReplyTo, ...refsList].filter(Boolean)
-          for (const refId of refIds) {
-            const { data: refMsg } = await service.from('inbox_messages')
-              .select('thread_id, inbox_threads(imap_account_id)')
-              .eq('imap_account_id', acc.id).eq('external_id', refId!).limit(1)
-            const row = refMsg?.[0] as { thread_id: string; inbox_threads: { imap_account_id: string | null } | null } | undefined
-            if (!row?.thread_id) continue
-            const threadAccId = row.inbox_threads?.imap_account_id
-            if (threadAccId != null && threadAccId !== acc.id) continue
-            threadId = row.thread_id
-            break
+          // Thread matching (mailbox-disambiguated)
+          const direction = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
+          const mailboxAddress = deriveMailboxAddress(direction, toAddr, fromAddr, acc.email)
+
+          const allRefIds = [messageId, inReplyTo, ...refsList].filter(Boolean) as string[]
+          const refMap = new Map<string, string>()
+          if (allRefIds.length > 0) {
+            const { data: refRows } = await service.from('inbox_messages')
+              .select('external_id, thread_id, inbox_threads(imap_account_id, mailbox_address)')
+              .eq('imap_account_id', acc.id)
+              .in('external_id', allRefIds.slice(0, 50))
+            for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.id)) {
+              refMap.set(k, v)
+            }
           }
 
+          let threadId = resolveThreadIdFromMaps({
+            inReplyTo,
+            refsList,
+            subject,
+            mailboxAddress,
+            refMap,
+            subjectThreadMap: new Map(),
+          })
+
           if (!threadId && subject) {
-            const normSubject = subject.replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-            if (normSubject) {
-              const { data: recentThreads } = await service.from('inbox_threads').select('id, subject')
+            const normSubject = normalizeSubject(subject)
+            if (normSubject && mailboxAddress) {
+              const { data: recentThreads } = await service.from('inbox_threads').select('id, subject, mailbox_address')
                 .eq('org_id', acc.org_id).eq('channel', 'email').eq('imap_account_id', acc.id)
                 .gte('last_message_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
                 .order('last_message_at', { ascending: false }).limit(50)
-              for (const t of recentThreads ?? []) {
-                const existing = ((t as { subject?: string }).subject ?? '').replace(/^\s*(Re:\s*|Fwd:\s*|Fw:\s*)+/gi, '').trim().toLowerCase()
-                if (existing === normSubject) { threadId = (t as { id: string }).id; break }
-              }
+              const subjectThreadMap = buildSubjectThreadMap((recentThreads ?? []) as { id: string; subject: string | null; mailbox_address: string | null }[])
+              threadId = subjectThreadMap.get(subjectMapKey(normSubject, mailboxAddress))
             }
           }
 
@@ -240,6 +267,7 @@ Deno.serve(async (req: Request) => {
               org_id: acc.org_id, channel: 'email', status: 'open',
               subject: subject || '(No subject)', last_message_at: date.toISOString(),
               imap_account_id: acc.id, from_address: fromAddr,
+              mailbox_address: mailboxAddress || null,
             }).select('id').single()
             if (!newThread) continue
             threadId = newThread.id
@@ -272,7 +300,7 @@ Deno.serve(async (req: Request) => {
 
           const externalId = messageId ?? `uid-${acc.id}-${uid}`
           const { data: insertedMsg } = await service.from('inbox_messages').insert({
-            thread_id: threadId, channel: 'email', direction: 'inbound',
+            thread_id: threadId, channel: 'email', direction,
             from_identifier: fromAddr, to_identifier: toAddr,
             cc: ccStr?.trim() || null, bcc: bccStr?.trim() || null,
             body: bodyText, html_body: htmlBody,

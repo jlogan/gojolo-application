@@ -86,6 +86,7 @@ type LinkedEmailThread = {
     id: string
     subject: string | null
     from_address: string | null
+    mailbox_address: string | null
     status: string
     last_message_at: string
   } | null
@@ -226,7 +227,7 @@ export default function InvoiceDetail() {
     if (!id) return
     const { data } = await supabase
       .from('inbox_thread_invoices')
-      .select('thread_id, created_at, inbox_threads(id, subject, from_address, status, last_message_at)')
+      .select('thread_id, created_at, inbox_threads(id, subject, from_address, mailbox_address, status, last_message_at)')
       .eq('invoice_id', id)
       .order('created_at', { ascending: false })
     setLinkedEmailThreads((data ?? []).map((row: { thread_id: string; created_at: string; inbox_threads: LinkedEmailThread['thread'] | LinkedEmailThread['thread'][] | null }) => ({
@@ -560,6 +561,7 @@ export default function InvoiceDetail() {
                   <p className="truncate text-sm font-medium text-white">{link.thread?.subject || '(No subject)'}</p>
                   <p className="text-xs text-blue-200/70">
                     {link.thread?.from_address ? `From ${link.thread.from_address} · ` : ''}
+                    {link.thread?.mailbox_address ? `To ${link.thread.mailbox_address} · ` : ''}
                     Last message {fmtDateTime(link.thread?.last_message_at)}
                     {link.thread?.status ? ` · ${link.thread.status}` : ''}
                   </p>
