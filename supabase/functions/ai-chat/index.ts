@@ -75,7 +75,9 @@ const TOOLS = [
           title: { type: 'string' }, description: { type: 'string' },
           status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-          due_date: { type: 'string' }, assigned_to: { type: 'string', description: 'User UUID to assign' },
+          due_date: { type: 'string' },
+          assigned_to: { type: 'string', description: 'User UUID to assign (legacy single assignee)' },
+          assignee_ids: { type: 'array', items: { type: 'string' }, description: 'User UUIDs to assign (supports multiple)' },
         },
         required: ['project_id', 'title'],
       },
@@ -93,7 +95,9 @@ const TOOLS = [
           title: { type: 'string' }, description: { type: 'string' },
           status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-          due_date: { type: 'string' }, assigned_to: { type: 'string' },
+          due_date: { type: 'string' },
+          assigned_to: { type: 'string', description: 'User UUID to assign (legacy single assignee)' },
+          assignee_ids: { type: 'array', items: { type: 'string' }, description: 'User UUIDs to assign (replaces current assignees when provided)' },
         },
         required: ['task_id'],
       },
@@ -287,7 +291,37 @@ const TOOLS = [
   },
 ]
 
-async function executeTool(name: string, args: Record<string, string>, orgId: string, userId: string) {
+function resolveAssigneeIds(args: Record<string, unknown>): string[] {
+  if ('assignee_ids' in args) {
+    const raw = args.assignee_ids
+    if (Array.isArray(raw)) {
+      return raw.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    }
+    return []
+  }
+  const single = args.assigned_to
+  if (typeof single === 'string' && single) return [single]
+  return []
+}
+
+async function syncTaskAssignees(
+  admin: ReturnType<typeof createClient>,
+  taskId: string,
+  selectedIds: string[],
+) {
+  const { data: existing } = await admin.from('task_assignees').select('user_id').eq('task_id', taskId)
+  const existingIds = ((existing ?? []) as { user_id: string }[]).map(r => r.user_id)
+  const toRemove = existingIds.filter(id => !selectedIds.includes(id))
+  const toAdd = selectedIds.filter(id => !existingIds.includes(id))
+  if (toRemove.length > 0) {
+    await admin.from('task_assignees').delete().eq('task_id', taskId).in('user_id', toRemove)
+  }
+  if (toAdd.length > 0) {
+    await admin.from('task_assignees').insert(toAdd.map(user_id => ({ task_id: taskId, user_id })))
+  }
+}
+
+async function executeTool(name: string, args: Record<string, unknown>, orgId: string, userId: string) {
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
   switch (name) {
@@ -324,13 +358,20 @@ async function executeTool(name: string, args: Record<string, string>, orgId: st
       return error ? { error: error.message } : data
     }
     case 'create_task': {
+      const assigneeIds = resolveAssigneeIds(args)
+      const primaryAssignee = assigneeIds[0] ?? null
       const { data, error } = await admin.from('tasks').insert({
         project_id: args.project_id, org_id: orgId, title: args.title,
         description: args.description || null, status: args.status || 'todo',
         priority: args.priority || 'medium', due_date: args.due_date || null,
-        assigned_to: args.assigned_to || null, created_by: userId,
+        assigned_to: primaryAssignee, created_by: userId,
       }).select('id, title, status').single()
-      return error ? { error: error.message } : data
+      if (error) return { error: error.message }
+      const taskId = (data as { id: string }).id
+      if (assigneeIds.length > 0) {
+        await admin.from('task_assignees').insert(assigneeIds.map(user_id => ({ task_id: taskId, user_id })))
+      }
+      return data
     }
     case 'update_task': {
       const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -339,9 +380,17 @@ async function executeTool(name: string, args: Record<string, string>, orgId: st
       if (args.status) updates.status = args.status
       if (args.priority) updates.priority = args.priority
       if (args.due_date !== undefined) updates.due_date = args.due_date || null
-      if (args.assigned_to !== undefined) updates.assigned_to = args.assigned_to || null
+      const assigneeUpdate = 'assignee_ids' in args || 'assigned_to' in args
+      if (assigneeUpdate) {
+        const assigneeIds = resolveAssigneeIds(args)
+        updates.assigned_to = assigneeIds[0] ?? null
+      }
       const { data, error } = await admin.from('tasks').update(updates).eq('id', args.task_id).eq('org_id', orgId).select('id, title, status').single()
-      return error ? { error: error.message } : data
+      if (error) return { error: error.message }
+      if (assigneeUpdate) {
+        await syncTaskAssignees(admin, args.task_id as string, resolveAssigneeIds(args))
+      }
+      return data
     }
     case 'delete_task': {
       const { error } = await admin.from('tasks').delete().eq('id', args.task_id).eq('org_id', orgId)

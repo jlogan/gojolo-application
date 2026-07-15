@@ -48,7 +48,7 @@ export default function ProjectDetail() {
   const [taskStatus, setTaskStatus] = useState('todo')
   const [taskPriority, setTaskPriority] = useState('medium')
   const [taskDue, setTaskDue] = useState('')
-  const [taskAssigned, setTaskAssigned] = useState('')
+  const [taskAssigneeIds, setTaskAssigneeIds] = useState<string[]>([])
   const [taskSaving, setTaskSaving] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
   const [taskFiles, setTaskFiles] = useState<File[]>([])
@@ -161,26 +161,51 @@ export default function ProjectDetail() {
   useEffect(() => { fetchAttachments() }, [fetchAttachments])
 
   const resetTaskForm = () => {
-    setTaskTitle(''); setTaskDesc(''); setTaskStatus('todo'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigned('')
+    setTaskTitle(''); setTaskDesc(''); setTaskStatus('todo'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigneeIds([])
     setEditingTaskId(null); setShowTaskForm(false); setTaskFiles([])
+  }
+
+  const toggleTaskAssignee = (userId: string) => {
+    setTaskAssigneeIds(prev =>
+      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
+    )
+  }
+
+  const syncTaskAssignees = async (taskId: string, selectedIds: string[]) => {
+    const existingIds = taskAssignees.filter(a => a.task_id === taskId).map(a => a.user_id)
+    const toRemove = existingIds.filter(id => !selectedIds.includes(id))
+    const toAdd = selectedIds.filter(id => !existingIds.includes(id))
+    if (toRemove.length > 0) {
+      await supabase.from('task_assignees').delete().eq('task_id', taskId).in('user_id', toRemove)
+    }
+    if (toAdd.length > 0) {
+      await supabase.from('task_assignees').insert(toAdd.map(user_id => ({ task_id: taskId, user_id })))
+    }
   }
 
   const handleTaskSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!id || !currentOrg?.id) return
     setTaskSaving(true)
+    const primaryAssignee = taskAssigneeIds[0] ?? null
     const payload = {
       project_id: id, org_id: currentOrg.id, title: taskTitle.trim(),
       description: taskDesc.trim() || null, status: taskStatus, priority: taskPriority,
-      due_date: taskDue || null, assigned_to: taskAssigned || null, updated_at: new Date().toISOString(),
+      due_date: taskDue || null, assigned_to: primaryAssignee, updated_at: new Date().toISOString(),
     }
     let newTaskId: string | null = null
     if (editingTaskId) {
       await supabase.from('tasks').update(payload).eq('id', editingTaskId)
       newTaskId = editingTaskId
+      await syncTaskAssignees(editingTaskId, taskAssigneeIds)
     } else {
       const { data: insertedTask } = await supabase.from('tasks').insert({ ...payload, created_by: user?.id ?? null }).select('id').single()
       newTaskId = (insertedTask as { id: string } | null)?.id ?? null
+      if (newTaskId && taskAssigneeIds.length > 0) {
+        await supabase.from('task_assignees').insert(
+          taskAssigneeIds.map(user_id => ({ task_id: newTaskId!, user_id }))
+        )
+      }
     }
     // Upload any attached files
     if (newTaskId && taskFiles.length > 0) {
@@ -194,10 +219,6 @@ export default function ProjectDetail() {
           })
         }
       }
-    }
-    // Assign team member via join table
-    if (newTaskId && taskAssigned) {
-      await supabase.from('task_assignees').upsert({ task_id: newTaskId, user_id: taskAssigned }, { onConflict: 'task_id,user_id' })
     }
     resetTaskForm()
     setTaskSaving(false)
@@ -214,7 +235,9 @@ export default function ProjectDetail() {
   const startEditTask = (t: Task) => {
     setEditingTaskId(t.id); setTaskTitle(t.title); setTaskDesc(t.description ?? '')
     setTaskStatus(t.status); setTaskPriority(t.priority); setTaskDue(t.due_date ?? '')
-    setTaskAssigned(t.assigned_to ?? ''); setTaskFiles([]); setShowTaskForm(true)
+    const fromJoin = taskAssignees.filter(a => a.task_id === t.id).map(a => a.user_id)
+    setTaskAssigneeIds(fromJoin.length > 0 ? fromJoin : (t.assigned_to ? [t.assigned_to] : []))
+    setTaskFiles([]); setShowTaskForm(true)
   }
 
   const handleAddMember = async () => {
@@ -380,13 +403,25 @@ export default function ProjectDetail() {
                   <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)}
                     className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
                 </div>
-                <div>
-                  <label className="block text-[10px] text-gray-500 mb-0.5">Assignee</label>
-                  <select value={taskAssigned} onChange={e => setTaskAssigned(e.target.value)}
-                    className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent appearance-none">
-                    <option value="">Unassigned</option>
-                    {assignableMembers.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name ?? u.user_id.slice(0, 8)}</option>)}
-                  </select>
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] text-gray-500 mb-0.5">Assignees</label>
+                  {assignableMembers.length === 0 ? (
+                    <p className="text-xs text-gray-500 py-2">Add project team members to assign tasks.</p>
+                  ) : (
+                    <div className="max-h-28 overflow-y-auto rounded-lg border border-border bg-surface-muted px-2 py-1.5 space-y-1">
+                      {assignableMembers.map(u => (
+                        <label key={u.user_id} className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer hover:text-white py-0.5">
+                          <input
+                            type="checkbox"
+                            checked={taskAssigneeIds.includes(u.user_id)}
+                            onChange={() => toggleTaskAssignee(u.user_id)}
+                            className="rounded border-border bg-surface-elevated text-accent focus:ring-accent"
+                          />
+                          <span className="truncate">{u.display_name ?? u.user_id.slice(0, 8)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               {/* Attachments */}
