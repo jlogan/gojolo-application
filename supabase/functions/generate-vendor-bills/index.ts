@@ -80,27 +80,47 @@ async function resolveConfig(supabase: any, orgId: string, vendorUserId: string,
   }
 }
 
-async function billExists(supabase: any, orgId: string, vendorUserId: string, projectId: string, periodStart: string, periodEnd: string) {
-  const { data, error } = await supabase
+async function billExists(supabase: any, orgId: string, vendorUserId: string, projectId: string | null, periodStart: string, periodEnd: string) {
+  let query = supabase
     .from('invoices')
     .select('id')
     .eq('org_id', orgId)
     .eq('direction', 'inbound')
     .eq('vendor_user_id', vendorUserId)
-    .eq('project_id', projectId)
     .eq('billing_period_start', periodStart)
     .eq('billing_period_end', periodEnd)
     .neq('status', 'cancelled')
-    .limit(1)
-    .maybeSingle()
+  query = projectId === null ? query.is('project_id', null) : query.eq('project_id', projectId)
+  const { data, error } = await query.limit(1).maybeSingle()
   if (error) throw new Error(`Bill lookup failed: ${error.message}`)
   return data?.id as string | undefined
+}
+
+async function resolveVendorDefaultConfig(supabase: any, orgId: string, vendorUserId: string, periodEnd: string): Promise<BillingConfig | null> {
+  const { data: profile, error: profileErr } = await supabase
+    .from('vendor_billing_profiles')
+    .select('default_billing_type, default_hourly_rate, default_fixed_amount')
+    .eq('org_id', orgId)
+    .eq('vendor_user_id', vendorUserId)
+    .lte('effective_from', periodEnd)
+    .or(`effective_to.is.null,effective_to.gte.${periodEnd}`)
+    .order('effective_from', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (profileErr) throw new Error(`Vendor billing config error: ${profileErr.message}`)
+  if (!profile) return null
+  return {
+    billing_type: profile.default_billing_type,
+    hourly_rate: profile.default_hourly_rate,
+    fixed_amount: profile.default_fixed_amount,
+    source: 'vendor',
+  }
 }
 
 async function createBill(supabase: any, params: {
   orgId: string
   vendorUserId: string
-  projectId: string
+  projectId: string | null
   periodStart: string
   periodEnd: string
   billingType: 'hourly' | 'fixed'
@@ -167,7 +187,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const range = body.periodStart && body.periodEnd ? { start: body.periodStart, end: body.periodEnd } : previousWeekRange(localToday)
-  const created: Array<{ bill_id: string; org_id: string; vendor_user_id: string; project_id: string; amount: number }> = []
+  const created: Array<{ bill_id: string; org_id: string; vendor_user_id: string; project_id: string | null; amount: number }> = []
   const skipped: Array<{ org_id: string; vendor_user_id?: string; project_id?: string; reason: string }> = []
   const errors: Array<{ org_id?: string; vendor_user_id?: string; project_id?: string; error: string }> = []
 
@@ -215,10 +235,8 @@ Deno.serve(async (req: Request) => {
         logGroups.set(key, [...(logGroups.get(key) ?? []), log])
       }
 
-      const billKeys = new Set<string>()
       for (const [key, group] of logGroups) {
         const [vendorUserId, projectId] = key.split(':')
-        billKeys.add(key)
         try {
           if (await billExists(supabase, orgId, vendorUserId, projectId, range.start, range.end)) {
             skipped.push({ org_id: orgId, vendor_user_id: vendorUserId, project_id: projectId, reason: 'Bill already exists for period' })
@@ -263,7 +281,8 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      // Fixed bills from active project overrides.
+      // Project-level fixed bills (explicit per-project overrides only).
+      const projectFixedKeys = new Set<string>()
       const { data: fixedOverrides } = await supabase
         .from('vendor_project_billing_profiles')
         .select('vendor_user_id, project_id, fixed_amount')
@@ -272,41 +291,24 @@ Deno.serve(async (req: Request) => {
         .lte('effective_from', range.end)
         .or(`effective_to.is.null,effective_to.gte.${range.end}`)
       for (const fixed of fixedOverrides ?? []) {
-        const key = `${fixed.vendor_user_id}:${fixed.project_id}`
-        billKeys.add(key)
+        projectFixedKeys.add(`${fixed.vendor_user_id}:${fixed.project_id}`)
       }
+      for (const key of logGroups.keys()) projectFixedKeys.add(key)
 
-      // Fixed bills from default fixed vendor profiles for every active project membership.
-      const { data: fixedDefaults } = await supabase
-        .from('vendor_billing_profiles')
-        .select('vendor_user_id')
-        .eq('org_id', orgId)
-        .eq('default_billing_type', 'fixed')
-        .lte('effective_from', range.end)
-        .or(`effective_to.is.null,effective_to.gte.${range.end}`)
-      const fixedVendorIds = [...new Set((fixedDefaults ?? []).map((p: { vendor_user_id: string }) => p.vendor_user_id))]
-      if (fixedVendorIds.length > 0) {
-        const { data: memberships } = await supabase
-          .from('project_members')
-          .select('project_id, user_id, projects!inner(org_id, status)')
-          .in('user_id', fixedVendorIds)
-          .eq('projects.org_id', orgId)
-        for (const membership of memberships ?? []) {
-          billKeys.add(`${membership.user_id}:${membership.project_id}`)
-        }
-      }
-
-      for (const key of billKeys) {
+      for (const key of projectFixedKeys) {
         const [vendorUserId, projectId] = key.split(':')
         try {
           const config = await resolveConfig(supabase, orgId, vendorUserId, projectId, range.end)
-          if (config?.billing_type !== 'fixed') continue
+          if (config?.billing_type !== 'fixed' || config.source !== 'project') continue
           const amount = Number(config.fixed_amount ?? 0)
           if (!amount) {
             skipped.push({ org_id: orgId, vendor_user_id: vendorUserId, project_id: projectId, reason: 'Missing fixed weekly amount' })
             continue
           }
-          if (await billExists(supabase, orgId, vendorUserId, projectId, range.start, range.end)) continue
+          if (await billExists(supabase, orgId, vendorUserId, projectId, range.start, range.end)) {
+            skipped.push({ org_id: orgId, vendor_user_id: vendorUserId, project_id: projectId, reason: 'Bill already exists for period' })
+            continue
+          }
           const { data: project } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle()
           const group = logGroups.get(key) ?? []
           const inv = await createBill(supabase, {
@@ -326,6 +328,49 @@ Deno.serve(async (req: Request) => {
           created.push({ bill_id: inv.id, org_id: orgId, vendor_user_id: vendorUserId, project_id: projectId, amount })
         } catch (e) {
           errors.push({ org_id: orgId, vendor_user_id: vendorUserId, project_id: projectId, error: (e as Error).message })
+        }
+      }
+
+      // Vendor-level fixed bills: one inbound bill per vendor per period (not per project membership).
+      const { data: fixedDefaults } = await supabase
+        .from('vendor_billing_profiles')
+        .select('vendor_user_id')
+        .eq('org_id', orgId)
+        .eq('default_billing_type', 'fixed')
+        .lte('effective_from', range.end)
+        .or(`effective_to.is.null,effective_to.gte.${range.end}`)
+      const fixedVendorIds = [...new Set((fixedDefaults ?? []).map((p: { vendor_user_id: string }) => p.vendor_user_id))]
+      for (const vendorUserId of fixedVendorIds) {
+        try {
+          const config = await resolveVendorDefaultConfig(supabase, orgId, vendorUserId, range.end)
+          if (config?.billing_type !== 'fixed') continue
+          const amount = Number(config.fixed_amount ?? 0)
+          if (!amount) {
+            skipped.push({ org_id: orgId, vendor_user_id: vendorUserId, reason: 'Missing fixed weekly amount' })
+            continue
+          }
+          if (await billExists(supabase, orgId, vendorUserId, null, range.start, range.end)) {
+            skipped.push({ org_id: orgId, vendor_user_id: vendorUserId, reason: 'Bill already exists for period' })
+            continue
+          }
+          const vendorLogs = logs.filter((l) => l.user_id === vendorUserId)
+          const inv = await createBill(supabase, {
+            orgId, vendorUserId, projectId: null, periodStart: range.start, periodEnd: range.end, billingType: 'fixed', currencyId,
+            lineItems: [{
+              description: 'Weekly fixed fee',
+              long_description: `Fixed weekly vendor bill for ${range.start} to ${range.end}.${vendorLogs.length ? `\nReference time logs: ${vendorLogs.length}` : ''}`,
+              quantity: 1,
+              unit_price: amount,
+              unit: 'week',
+              subtotal: amount,
+              total: amount,
+              time_log_ids: vendorLogs.map((l) => l.id),
+              sort_order: 1,
+            }],
+          })
+          created.push({ bill_id: inv.id, org_id: orgId, vendor_user_id: vendorUserId, project_id: null, amount })
+        } catch (e) {
+          errors.push({ org_id: orgId, vendor_user_id: vendorUserId, error: (e as Error).message })
         }
       }
 
