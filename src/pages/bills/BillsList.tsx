@@ -5,7 +5,7 @@ import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { BILL_STATUS_CLASSES, billStatusLabel } from '@/lib/billStatus'
+import { BILL_OPEN_STATUSES, BILL_STATUS_CLASSES, billStatusLabel, canRecordBillPayment } from '@/lib/billStatus'
 
 type BillRow = {
   id: string
@@ -84,7 +84,8 @@ export default function BillsList() {
       .order('created_at', { ascending: false })
 
     if (isVendor) query = query.eq('vendor_user_id', user.id)
-    if (status !== 'all') query = query.eq('status', status)
+    if (status === 'approved') query = query.in('status', [...BILL_OPEN_STATUSES])
+    else if (status !== 'all') query = query.eq('status', status)
 
     const { data, error } = await query
     if (signal?.cancelled) return
@@ -376,7 +377,7 @@ export default function BillsList() {
                       <td className="px-4 py-3 text-right text-white font-medium">{formatCurrency(bill.total)}</td>
                       {canRecordPayment && (
                         <td className="px-4 py-3 text-right">
-                          {bill.status === 'approved' ? (
+                          {canRecordBillPayment(bill.status) ? (
                             <button
                               type="button"
                               onClick={() => setPaymentBill(bill)}

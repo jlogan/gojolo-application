@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
 import { billPaymentMethodLabel } from '@/lib/billPaymentMethods'
-import { billStatusLabel } from '@/lib/billStatus'
+import { billStatusLabel, canRecordBillPayment } from '@/lib/billStatus'
 import { supabase } from '@/lib/supabase'
 
 type Bill = {
@@ -117,7 +117,7 @@ export default function BillDetail() {
     setSavingStatus(null)
   }
 
-  const canRecordPayment = isOrgAdmin && bill?.status === 'approved'
+  const canRecordPayment = isOrgAdmin && bill != null && canRecordBillPayment(bill.status)
 
   if (loading) return <div className="p-6 text-gray-400">Loading bill...</div>
   if (!bill) {
