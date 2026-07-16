@@ -27,6 +27,8 @@ type BillRow = {
 
 type ProfileRow = { id: string; display_name: string | null; email: string | null }
 type StatusFilter = 'all' | 'draft' | 'approved' | 'paid' | 'cancelled'
+type BillSortField = 'bill' | 'vendor' | 'project' | 'period' | 'status' | 'total' | 'created_at'
+type SortDir = 'asc' | 'desc'
 
 const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -55,6 +57,41 @@ function projectName(projects: BillRow['projects']) {
   return Array.isArray(projects) ? projects[0]?.name ?? '-' : projects.name
 }
 
+function vendorName(vendor: ProfileRow | null | undefined) {
+  return vendor?.display_name || vendor?.email || 'Vendor'
+}
+
+function SortHeader({
+  field,
+  label,
+  sortField,
+  sortDir,
+  onSort,
+  align = 'left',
+}: {
+  field: BillSortField
+  label: string
+  sortField: BillSortField
+  sortDir: SortDir
+  onSort: (field: BillSortField) => void
+  align?: 'left' | 'right'
+}) {
+  const active = sortField === field
+  return (
+    <th className={`px-4 py-3 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={`inline-flex items-center gap-1 hover:text-gray-200 uppercase tracking-wide ${align === 'right' ? 'justify-end w-full' : ''} ${active ? 'text-gray-200' : ''}`}
+        aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      >
+        <span>{label}</span>
+        <span className="text-[10px] text-gray-500 normal-case tracking-normal">{active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+      </button>
+    </th>
+  )
+}
+
 export default function BillsList() {
   const { currentOrg, isVendor, isOrgAdmin } = useOrg()
   const { user } = useAuth()
@@ -70,6 +107,8 @@ export default function BillsList() {
   const [paymentBill, setPaymentBill] = useState<BillRow | null>(null)
   const [cancelBill, setCancelBill] = useState<BillRow | null>(null)
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [sortField, setSortField] = useState<BillSortField>('created_at')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
   const selectAllRef = useRef<HTMLInputElement>(null)
 
   const canBulkEdit = isOrgAdmin && !isVendor
@@ -142,6 +181,47 @@ export default function BillsList() {
         .some((value) => String(value).toLowerCase().includes(q))
     })
   }, [bills, profiles, search])
+
+  const handleSort = (field: BillSortField) => {
+    if (sortField === field) {
+      setSortDir((dir) => (dir === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortField(field)
+      const ascFields: BillSortField[] = ['bill', 'vendor', 'project', 'status']
+      setSortDir(ascFields.includes(field) ? 'asc' : 'desc')
+    }
+  }
+
+  const sorted = useMemo(() => {
+    const rows = [...filtered]
+    const dir = sortDir === 'asc' ? 1 : -1
+    const dateValue = (value: string | null | undefined) => (value ? new Date(`${value}T00:00:00`).getTime() : 0)
+
+    rows.sort((a, b) => {
+      switch (sortField) {
+        case 'bill':
+          return dir * (Number(a.number ?? 0) - Number(b.number ?? 0))
+        case 'vendor': {
+          const aVendor = a.vendor_user_id ? profiles[a.vendor_user_id] : null
+          const bVendor = b.vendor_user_id ? profiles[b.vendor_user_id] : null
+          return dir * vendorName(aVendor).localeCompare(vendorName(bVendor))
+        }
+        case 'project':
+          return dir * projectName(a.projects).localeCompare(projectName(b.projects))
+        case 'period':
+          return dir * (dateValue(a.billing_period_start) - dateValue(b.billing_period_start))
+        case 'status':
+          return dir * billStatusLabel(a.status).localeCompare(billStatusLabel(b.status))
+        case 'total':
+          return dir * (Number(a.total ?? 0) - Number(b.total ?? 0))
+        case 'created_at':
+        default:
+          return dir * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      }
+    })
+
+    return rows
+  }, [filtered, sortField, sortDir, profiles])
 
   const draftVisible = useMemo(
     () => filtered.filter((bill) => bill.status === 'draft'),
@@ -326,7 +406,7 @@ export default function BillsList() {
       <div className="rounded-lg border border-border overflow-hidden bg-surface-elevated">
         {loading ? (
           <div className="p-8 text-center text-gray-400">Loading bills...</div>
-        ) : filtered.length === 0 ? (
+        ) : sorted.length === 0 ? (
           <div className="p-10 text-center text-gray-400">
             <FileText className="w-10 h-10 mx-auto mb-3 opacity-60" />
             <p className="text-white font-medium">No bills yet</p>
@@ -351,17 +431,17 @@ export default function BillsList() {
                       />
                     </th>
                   )}
-                  <th className="px-4 py-3 text-left">Bill</th>
-                  <th className="px-4 py-3 text-left">Vendor</th>
-                  <th className="px-4 py-3 text-left">Project</th>
-                  <th className="px-4 py-3 text-left">Period</th>
-                  <th className="px-4 py-3 text-left">Status</th>
-                  <th className="px-4 py-3 text-right">Total</th>
+                  <SortHeader field="bill" label="Bill" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader field="vendor" label="Vendor" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader field="project" label="Project" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader field="period" label="Period" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                  <SortHeader field="total" label="Total" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
                   {canAdminBillActions && <th className="px-4 py-3 text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filtered.map((bill) => {
+                {sorted.map((bill) => {
                   const vendor = bill.vendor_user_id ? profiles[bill.vendor_user_id] : null
                   const isDraft = bill.status === 'draft'
                   const isSelected = selectedIds.has(bill.id)
@@ -382,7 +462,7 @@ export default function BillsList() {
                         </td>
                       )}
                       <td className="px-4 py-3"><Link to={`/bills/${bill.id}`} className="text-accent hover:underline font-medium">{billNumber(bill)}</Link></td>
-                      <td className="px-4 py-3 text-gray-200">{vendor?.display_name || vendor?.email || 'Vendor'}</td>
+                      <td className="px-4 py-3 text-gray-200">{vendorName(vendor)}</td>
                       <td className="px-4 py-3 text-gray-300">{projectName(bill.projects)}</td>
                       <td className="px-4 py-3 text-gray-400">{formatDate(bill.billing_period_start)} - {formatDate(bill.billing_period_end)}</td>
                       <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${BILL_STATUS_CLASSES[bill.status] ?? BILL_STATUS_CLASSES.draft}`}>{billStatusLabel(bill.status)}</span></td>

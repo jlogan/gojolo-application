@@ -33,3 +33,11 @@ export function canRecordBillPayment(status: string): boolean {
 export function canCancelBill(status: string): boolean {
   return status !== 'cancelled' && status !== 'paid'
 }
+
+/** Appends an auditable cancellation line to invoice notes without overwriting prior content. */
+export function appendBillCancellationNote(existingNotes: string | null | undefined, reason: string): string {
+  const trimmedReason = reason.trim()
+  const line = `Cancellation reason: ${trimmedReason}`
+  const base = existingNotes?.trim()
+  return base ? `${base}\n\n${line}` : line
+}

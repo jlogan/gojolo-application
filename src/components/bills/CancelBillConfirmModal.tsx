@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { appendBillCancellationNote } from '@/lib/billStatus'
 import { supabase } from '@/lib/supabase'
 
 type Props = {
@@ -18,25 +19,53 @@ export default function CancelBillConfirmModal({
   onClose,
   onSuccess,
 }: Props) {
+  const [reason, setReason] = useState('')
   const [cancelling, setCancelling] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reasonError, setReasonError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
+    setReason('')
     setCancelling(false)
     setError(null)
+    setReasonError(null)
   }, [open, billId])
 
   if (!open) return null
 
   const handleConfirm = async () => {
     if (cancelling) return
+
+    const trimmedReason = reason.trim()
+    if (!trimmedReason) {
+      setReasonError('Enter a cancellation reason before confirming.')
+      return
+    }
+
     setCancelling(true)
     setError(null)
+    setReasonError(null)
+
+    const { data: existing, error: fetchError } = await supabase
+      .from('invoices')
+      .select('notes')
+      .eq('id', billId)
+      .eq('org_id', orgId)
+      .eq('direction', 'inbound')
+      .maybeSingle()
+
+    if (fetchError) {
+      setError(fetchError.message || 'Failed to load bill notes.')
+      setCancelling(false)
+      return
+    }
+
+    const notes = appendBillCancellationNote(existing?.notes ?? null, trimmedReason)
 
     const { data, error: updateError } = await supabase
       .from('invoices')
-      .update({ status: 'cancelled' })
+      .update({ status: 'cancelled', notes })
       .eq('id', billId)
       .eq('org_id', orgId)
       .eq('direction', 'inbound')
@@ -74,7 +103,30 @@ export default function CancelBillConfirmModal({
         <p className="text-sm text-gray-400 mt-2">
           <span className="text-gray-300">{billLabel}</span> will be marked cancelled. This cannot be undone from the bills list.
         </p>
-        {error && <p className="text-sm text-red-400 mt-3">{error}</p>}
+        <div className="mt-4">
+          <label htmlFor="cancel-bill-reason" className="block text-xs font-medium text-gray-400 mb-1">
+            Cancellation reason <span className="text-red-400">*</span>
+          </label>
+          <textarea
+            id="cancel-bill-reason"
+            value={reason}
+            onChange={(e) => {
+              setReason(e.target.value)
+              if (reasonError) setReasonError(null)
+            }}
+            rows={3}
+            disabled={cancelling}
+            placeholder="Why is this bill being cancelled?"
+            className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+            data-testid="cancel-bill-reason"
+          />
+          {reasonError && (
+            <p className="text-sm text-red-400 mt-1" data-testid="cancel-bill-reason-error">
+              {reasonError}
+            </p>
+          )}
+        </div>
+        {error && <p className="text-sm text-red-400 mt-3" data-testid="cancel-bill-error">{error}</p>}
         <div className="flex justify-end gap-2 mt-6">
           <button
             type="button"

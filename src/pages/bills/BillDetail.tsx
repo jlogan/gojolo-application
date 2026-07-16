@@ -235,6 +235,13 @@ export default function BillDetail() {
         </div>
       </div>
 
+      {bill.notes?.trim() && (
+        <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-4">
+          <h2 className="text-sm font-medium text-white mb-2">Notes</h2>
+          <p className="text-gray-300 text-sm whitespace-pre-wrap">{bill.notes}</p>
+        </div>
+      )}
+
       {payments.length > 0 && (
         <div className="rounded-lg border border-border bg-surface-elevated overflow-hidden">
           <h2 className="px-4 py-3 text-sm font-medium text-white border-b border-border">Payment history</h2>
