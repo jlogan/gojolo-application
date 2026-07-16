@@ -139,6 +139,7 @@ export default function BillDetail() {
   }
 
   const defaultPaymentAmount = bill.amount_due != null && bill.amount_due > 0 ? bill.amount_due : Number(bill.total ?? 0)
+  const displayAmountDue = bill.status === 'paid' ? 0 : Number(bill.amount_due ?? bill.total ?? 0)
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto">
@@ -153,12 +154,34 @@ export default function BillDetail() {
               <p className="text-sm text-green-400 mt-1">Paid on {formatDate(bill.paid_date)}</p>
             )}
           </div>
-          <div className="text-left md:text-right">
-            <div className="text-3xl font-semibold text-white">{formatCurrency(bill.total)}</div>
-            <div className="text-sm text-gray-400 mt-1">{billStatusLabel(bill.status)}</div>
-            {(bill.amount_paid ?? 0) > 0 && bill.status !== 'paid' && (
-              <div className="text-sm text-gray-500 mt-1">Paid so far: {formatCurrency(bill.amount_paid)}</div>
-            )}
+          <div className="text-left md:text-right md:min-w-[220px]">
+            <div className="text-sm text-gray-400 mb-3">{billStatusLabel(bill.status)}</div>
+            <div className="rounded-lg border border-border bg-surface-muted/40 p-3 space-y-2 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-400">Total</span>
+                <span className="text-white font-medium tabular-nums">{formatCurrency(bill.total)}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-400">Paid</span>
+                <span className={`tabular-nums ${(bill.amount_paid ?? 0) > 0 ? 'text-green-400' : 'text-gray-300'}`}>
+                  {formatCurrency(bill.amount_paid)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4 border-t border-border pt-2">
+                <span className="text-gray-300 font-medium">Amount Due</span>
+                <span
+                  className={`text-base font-semibold tabular-nums ${
+                    bill.status === 'cancelled'
+                      ? 'text-gray-400'
+                      : displayAmountDue > 0
+                        ? 'text-amber-400'
+                        : 'text-green-400'
+                  }`}
+                >
+                  {formatCurrency(displayAmountDue)}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
         {canAdminBillActions && (

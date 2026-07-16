@@ -16,6 +16,7 @@ type BillRow = {
   issue_date: string | null
   paid_date: string | null
   total: number | null
+  amount_paid: number | null
   amount_due: number | null
   billing_period_start: string | null
   billing_period_end: string | null
@@ -27,7 +28,7 @@ type BillRow = {
 
 type ProfileRow = { id: string; display_name: string | null; email: string | null }
 type StatusFilter = 'all' | 'draft' | 'approved' | 'paid' | 'cancelled'
-type BillSortField = 'bill' | 'vendor' | 'project' | 'period' | 'status' | 'total' | 'created_at'
+type BillSortField = 'bill' | 'vendor' | 'project' | 'period' | 'status' | 'total' | 'amount_due' | 'created_at'
 type SortDir = 'asc' | 'desc'
 
 const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
@@ -59,6 +60,17 @@ function projectName(projects: BillRow['projects']) {
 
 function vendorName(vendor: ProfileRow | null | undefined) {
   return vendor?.display_name || vendor?.email || 'Vendor'
+}
+
+function billAmountDue(bill: BillRow): number {
+  if (bill.status === 'paid') return 0
+  if (bill.amount_due != null) return Number(bill.amount_due)
+  return Number(bill.total ?? 0)
+}
+
+function billHasPartialPayment(bill: BillRow): boolean {
+  const paid = Number(bill.amount_paid ?? 0)
+  return paid > 0 && bill.status !== 'paid' && bill.status !== 'cancelled'
 }
 
 function SortHeader({
@@ -120,7 +132,7 @@ export default function BillsList() {
 
     let query = supabase
       .from('invoices')
-      .select('id, number, prefix, status, issue_date, paid_date, total, amount_due, billing_period_start, billing_period_end, billing_source, created_at, vendor_user_id, projects(name)')
+      .select('id, number, prefix, status, issue_date, paid_date, total, amount_paid, amount_due, billing_period_start, billing_period_end, billing_source, created_at, vendor_user_id, projects(name)')
       .eq('org_id', currentOrg.id)
       .eq('direction', 'inbound')
       .order('created_at', { ascending: false })
@@ -214,6 +226,8 @@ export default function BillsList() {
           return dir * billStatusLabel(a.status).localeCompare(billStatusLabel(b.status))
         case 'total':
           return dir * (Number(a.total ?? 0) - Number(b.total ?? 0))
+        case 'amount_due':
+          return dir * (billAmountDue(a) - billAmountDue(b))
         case 'created_at':
         default:
           return dir * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
@@ -437,6 +451,7 @@ export default function BillsList() {
                   <SortHeader field="period" label="Period" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader field="total" label="Total" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
+                  <SortHeader field="amount_due" label="Amount Due" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
                   {canAdminBillActions && <th className="px-4 py-3 text-right">Actions</th>}
                 </tr>
               </thead>
@@ -445,6 +460,8 @@ export default function BillsList() {
                   const vendor = bill.vendor_user_id ? profiles[bill.vendor_user_id] : null
                   const isDraft = bill.status === 'draft'
                   const isSelected = selectedIds.has(bill.id)
+                  const amountDue = billAmountDue(bill)
+                  const partialPayment = billHasPartialPayment(bill)
                   return (
                     <tr key={bill.id} className={`hover:bg-surface-muted/40 ${isSelected ? 'bg-accent/5' : ''}`}>
                       {canBulkEdit && (
@@ -466,7 +483,25 @@ export default function BillsList() {
                       <td className="px-4 py-3 text-gray-300">{projectName(bill.projects)}</td>
                       <td className="px-4 py-3 text-gray-400">{formatDate(bill.billing_period_start)} - {formatDate(bill.billing_period_end)}</td>
                       <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${BILL_STATUS_CLASSES[bill.status] ?? BILL_STATUS_CLASSES.draft}`}>{billStatusLabel(bill.status)}</span></td>
-                      <td className="px-4 py-3 text-right text-white font-medium">{formatCurrency(bill.total)}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="text-white font-medium tabular-nums">{formatCurrency(bill.total)}</div>
+                        {partialPayment && (
+                          <div className="text-xs text-gray-500 mt-0.5 tabular-nums">Paid {formatCurrency(bill.amount_paid)}</div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div
+                          className={`font-medium tabular-nums ${
+                            bill.status === 'cancelled'
+                              ? 'text-gray-500'
+                              : amountDue > 0
+                                ? 'text-amber-400'
+                                : 'text-green-400'
+                          }`}
+                        >
+                          {formatCurrency(amountDue)}
+                        </div>
+                      </td>
                       {canAdminBillActions && (
                         <td className="px-4 py-3 text-right">
                           <div className="inline-flex flex-wrap items-center justify-end gap-2">
