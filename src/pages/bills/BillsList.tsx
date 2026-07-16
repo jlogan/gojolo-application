@@ -25,6 +25,14 @@ type BillRow = {
 type ProfileRow = { id: string; display_name: string | null; email: string | null }
 type StatusFilter = 'all' | 'draft' | 'approved' | 'paid' | 'cancelled'
 
+const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'draft', label: 'Draft' },
+  { id: 'approved', label: 'Unpaid' },
+  { id: 'paid', label: 'Paid' },
+  { id: 'cancelled', label: 'Cancelled' },
+]
+
 const STATUS_CLASSES: Record<string, string> = {
   draft: 'bg-gray-500/20 text-gray-300 border-gray-500/30',
   approved: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
@@ -128,18 +136,32 @@ export default function BillsList() {
         )}
       </div>
 
-      <div className="rounded-lg border border-border bg-surface-muted/30 p-3 mb-4 grid gap-3 md:grid-cols-[220px_1fr]">
-        <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white">
-          <option value="all">All statuses</option>
-          <option value="draft">Draft</option>
-          <option value="approved">Approved</option>
-          <option value="paid">Paid</option>
-          <option value="cancelled">Cancelled</option>
-        </select>
-        <div className="relative">
-          <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-500" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search vendor, project, bill number..." className="w-full rounded-lg border border-border bg-surface-muted pl-9 pr-3 py-2 text-sm text-white placeholder-gray-500" />
-        </div>
+      <div className="flex flex-wrap items-center gap-1 mb-4 border-b border-border pb-3">
+        {STATUS_FILTERS.map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            onClick={() => setStatus(f.id)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+              status === f.id
+                ? 'border-accent text-accent bg-accent/10'
+                : 'border-border text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search vendor, project, bill number..."
+          className="w-full rounded-lg border border-border bg-surface-muted pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+        />
       </div>
 
       <div className="rounded-lg border border-border overflow-hidden bg-surface-elevated">
