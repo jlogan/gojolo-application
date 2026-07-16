@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Bell, X } from 'lucide-react'
 import { useNotifications } from '@/contexts/NotificationsContext'
 
 export default function NotificationBell() {
+  const navigate = useNavigate()
   const { notifications, unreadCount, markRead, markAllRead } = useNotifications()
   const [open, setOpen] = useState(false)
 
@@ -34,24 +35,32 @@ export default function NotificationBell() {
                 <p className="p-4 text-sm text-gray-400 text-center">No notifications</p>
               ) : (
                 notifications.map(n => (
-                  <div key={n.id} className={`px-4 py-3 border-b border-border hover:bg-surface-muted/50 cursor-pointer ${!n.read_at ? 'bg-accent/5' : ''}`}
-                    onClick={() => { markRead(n.id); setOpen(false) }}>
-                    {n.link ? (
-                      <Link to={n.link} className="block">
-                        <p className={`text-sm ${!n.read_at ? 'text-white font-medium' : 'text-gray-300'}`}>{n.title}</p>
-                        {n.body && <p className="text-xs text-gray-500 mt-0.5">{n.body}</p>}
-                        <p className="text-[10px] text-gray-600 mt-1">{new Date(n.created_at).toLocaleString()}</p>
-                      </Link>
-                    ) : (
-                      <>
-                        <p className={`text-sm ${!n.read_at ? 'text-white font-medium' : 'text-gray-300'}`}>{n.title}</p>
-                        {n.body && <p className="text-xs text-gray-500 mt-0.5">{n.body}</p>}
-                        <p className="text-[10px] text-gray-600 mt-1">{new Date(n.created_at).toLocaleString()}</p>
-                      </>
-                    )}
-                  </div>
+                  <button
+                    key={n.id}
+                    type="button"
+                    className={`w-full text-left px-4 py-3 border-b border-border hover:bg-surface-muted/50 ${!n.read_at ? 'bg-accent/5' : ''}`}
+                    onClick={() => {
+                      if (!n.read_at) void markRead(n.id)
+                      setOpen(false)
+                      if (n.link) navigate(n.link)
+                    }}
+                  >
+                    <p className={`text-sm ${!n.read_at ? 'text-white font-medium' : 'text-gray-300'}`}>{n.title}</p>
+                    {n.body && <p className="text-xs text-gray-500 mt-0.5">{n.body}</p>}
+                    <p className="text-[10px] text-gray-600 mt-1">{new Date(n.created_at).toLocaleString()}</p>
+                  </button>
                 ))
               )}
+            </div>
+            <div className="border-t border-border px-4 py-2.5 shrink-0">
+              <Link
+                to="/notifications"
+                className="text-xs text-accent hover:underline"
+                onClick={() => setOpen(false)}
+                data-testid="notification-bell-view-all"
+              >
+                View all
+              </Link>
             </div>
           </div>
         </>

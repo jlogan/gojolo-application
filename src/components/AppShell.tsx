@@ -19,9 +19,11 @@ import {
   Target,
   FileText,
   ReceiptText,
+  Bell,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
+import Notifications from '@/pages/Notifications'
 import Admin from '@/pages/Admin'
 import OrgSettings from '@/pages/OrgSettings'
 import OrganizationsList from '@/pages/OrganizationsList'
@@ -270,6 +272,19 @@ export default function AppShell() {
             </Link>
           )}
           <Link
+            to="/notifications"
+            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+              location.pathname === '/notifications'
+                ? 'bg-surface-muted text-white'
+                : 'text-gray-400 hover:bg-surface-muted hover:text-gray-200'
+            }`}
+            data-testid="nav-notifications"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <Bell className="w-4 h-4 shrink-0" />
+            Notifications
+          </Link>
+          <Link
             to="/profile"
             className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
               location.pathname === '/profile'
@@ -359,6 +374,7 @@ export default function AppShell() {
               <Route path="/inbox" element={<InboxPage />} />
               <Route path="/inbox/:threadId" element={<InboxPage />} />
               <Route path="/profile" element={<Profile />} />
+              <Route path="/notifications" element={<Notifications />} />
               <Route path="/settings" element={<OrgSettings />} />
               <Route path="/organizations" element={<OrganizationsList />} />
               <Route path="/admin/*" element={<Admin />} />

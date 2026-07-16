@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { useNotifications } from '@/contexts/NotificationsContext'
@@ -21,7 +21,14 @@ export default function Profile() {
   const { user } = useAuth()
   const { currentOrg } = useOrg()
   const { soundEnabled, setSoundEnabled } = useNotifications()
-  const [profileTab, setProfileTab] = useState<'profile' | 'notifications'>('profile')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const profileTab = searchParams.get('tab') === 'notifications' ? 'notifications' : 'profile'
+  const setProfileTab = (tab: 'profile' | 'notifications') => {
+    const next = new URLSearchParams(searchParams)
+    if (tab === 'notifications') next.set('tab', 'notifications')
+    else next.delete('tab')
+    setSearchParams(next, { replace: true })
+  }
   const [displayName, setDisplayName] = useState('')
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileSaving, setProfileSaving] = useState(false)
