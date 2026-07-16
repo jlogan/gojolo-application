@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FileText, Plus, Search, Settings } from 'lucide-react'
+import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
@@ -65,9 +66,11 @@ export default function BillsList() {
   const [bulkUpdating, setBulkUpdating] = useState(false)
   const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [paymentBill, setPaymentBill] = useState<BillRow | null>(null)
   const selectAllRef = useRef<HTMLInputElement>(null)
 
   const canBulkEdit = isOrgAdmin && !isVendor
+  const canRecordPayment = isOrgAdmin && !isVendor
 
   const loadBills = useCallback(async (signal?: { cancelled: boolean }) => {
     if (!currentOrg?.id || !user?.id) return
@@ -341,6 +344,7 @@ export default function BillsList() {
                   <th className="px-4 py-3 text-left">Period</th>
                   <th className="px-4 py-3 text-left">Status</th>
                   <th className="px-4 py-3 text-right">Total</th>
+                  {canRecordPayment && <th className="px-4 py-3 text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -370,6 +374,22 @@ export default function BillsList() {
                       <td className="px-4 py-3 text-gray-400">{formatDate(bill.billing_period_start)} - {formatDate(bill.billing_period_end)}</td>
                       <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${BILL_STATUS_CLASSES[bill.status] ?? BILL_STATUS_CLASSES.draft}`}>{billStatusLabel(bill.status)}</span></td>
                       <td className="px-4 py-3 text-right text-white font-medium">{formatCurrency(bill.total)}</td>
+                      {canRecordPayment && (
+                        <td className="px-4 py-3 text-right">
+                          {bill.status === 'approved' ? (
+                            <button
+                              type="button"
+                              onClick={() => setPaymentBill(bill)}
+                              className="text-xs text-green-400 hover:text-green-300"
+                              data-testid={`bill-record-payment-${bill.id}`}
+                            >
+                              Record payment
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-600">—</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   )
                 })}
@@ -378,6 +398,24 @@ export default function BillsList() {
           </div>
         )}
       </div>
+
+      {paymentBill && (
+        <RecordBillPaymentModal
+          open
+          billId={paymentBill.id}
+          billLabel={billNumber(paymentBill)}
+          defaultAmount={
+            paymentBill.amount_due != null && paymentBill.amount_due > 0
+              ? paymentBill.amount_due
+              : Number(paymentBill.total ?? 0)
+          }
+          onClose={() => setPaymentBill(null)}
+          onSuccess={() => {
+            setPaymentBill(null)
+            setRefreshKey((k) => k + 1)
+          }}
+        />
+      )}
     </div>
   )
 }

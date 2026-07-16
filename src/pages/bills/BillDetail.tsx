@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
-import { supabase } from '@/lib/supabase'
+import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
+import { billPaymentMethodLabel } from '@/lib/billPaymentMethods'
 import { billStatusLabel } from '@/lib/billStatus'
+import { supabase } from '@/lib/supabase'
 
 type Bill = {
   id: string
@@ -18,6 +20,7 @@ type Bill = {
   adjustment: number | null
   total: number | null
   amount_due: number | null
+  amount_paid: number | null
   notes: string | null
   vendor_user_id: string | null
   billing_period_start: string | null
@@ -28,6 +31,13 @@ type Bill = {
 
 type Item = { id: string; description: string; long_description: string | null; quantity: number; unit_price: number; unit: string | null; total: number; sort_order: number }
 type Profile = { id: string; display_name: string | null; email: string | null }
+type BillPayment = {
+  id: string
+  amount: number
+  payment_method: string | null
+  payment_date: string
+  transaction_id: string | null
+}
 
 function formatCurrency(amount: number | null | undefined) {
   return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(Number(amount ?? 0))
@@ -53,59 +63,68 @@ export default function BillDetail() {
   const [bill, setBill] = useState<Bill | null>(null)
   const [items, setItems] = useState<Item[]>([])
   const [vendor, setVendor] = useState<Profile | null>(null)
+  const [payments, setPayments] = useState<BillPayment[]>([])
   const [loading, setLoading] = useState(true)
   const [savingStatus, setSavingStatus] = useState<string | null>(null)
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false)
+
+  const loadBill = useCallback(async (signal?: { cancelled: boolean }) => {
+    if (!id || !currentOrg?.id || !user?.id) return
+    setLoading(true)
+    let query = supabase
+      .from('invoices')
+      .select('id, number, prefix, status, issue_date, paid_date, subtotal, tax_total, adjustment, total, amount_due, amount_paid, notes, vendor_user_id, billing_period_start, billing_period_end, billing_source, projects(name)')
+      .eq('id', id)
+      .eq('org_id', currentOrg.id)
+      .eq('direction', 'inbound')
+    if (isVendor) query = query.eq('vendor_user_id', user.id)
+    const { data, error } = await query.maybeSingle()
+    if (signal?.cancelled) return
+    if (error || !data) {
+      setBill(null)
+      setItems([])
+      setPayments([])
+      setLoading(false)
+      return
+    }
+    const loadedBill = data as unknown as Bill
+    setBill(loadedBill)
+    const [{ data: itemRows }, { data: vendorRows }, { data: paymentRows }] = await Promise.all([
+      supabase.from('invoice_items').select('id, description, long_description, quantity, unit_price, unit, total, sort_order').eq('invoice_id', loadedBill.id).order('sort_order'),
+      loadedBill.vendor_user_id ? supabase.from('profiles').select('id, display_name, email').eq('id', loadedBill.vendor_user_id).maybeSingle() : Promise.resolve({ data: null }),
+      supabase.from('invoice_payments').select('id, amount, payment_method, payment_date, transaction_id').eq('invoice_id', loadedBill.id).order('payment_date', { ascending: false }),
+    ])
+    if (!signal?.cancelled) {
+      setItems((itemRows ?? []) as Item[])
+      setVendor((vendorRows ?? null) as Profile | null)
+      setPayments((paymentRows ?? []) as BillPayment[])
+      setLoading(false)
+    }
+  }, [id, currentOrg?.id, user?.id, isVendor])
 
   useEffect(() => {
-    if (!id || !currentOrg?.id || !user?.id) return
-    let cancelled = false
-    const load = async () => {
-      setLoading(true)
-      let query = supabase
-        .from('invoices')
-        .select('id, number, prefix, status, issue_date, paid_date, subtotal, tax_total, adjustment, total, amount_due, notes, vendor_user_id, billing_period_start, billing_period_end, billing_source, projects(name)')
-        .eq('id', id)
-        .eq('org_id', currentOrg.id)
-        .eq('direction', 'inbound')
-      if (isVendor) query = query.eq('vendor_user_id', user.id)
-      const { data, error } = await query.maybeSingle()
-      if (cancelled) return
-      if (error || !data) {
-        setBill(null)
-        setItems([])
-        setLoading(false)
-        return
-      }
-      const loadedBill = data as unknown as Bill
-      setBill(loadedBill)
-      const [{ data: itemRows }, { data: vendorRows }] = await Promise.all([
-        supabase.from('invoice_items').select('id, description, long_description, quantity, unit_price, unit, total, sort_order').eq('invoice_id', loadedBill.id).order('sort_order'),
-        loadedBill.vendor_user_id ? supabase.from('profiles').select('id, display_name, email').eq('id', loadedBill.vendor_user_id).maybeSingle() : Promise.resolve({ data: null }),
-      ])
-      if (!cancelled) {
-        setItems((itemRows ?? []) as Item[])
-        setVendor((vendorRows ?? null) as Profile | null)
-        setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [id, currentOrg?.id, user?.id, isVendor])
+    const signal = { cancelled: false }
+    loadBill(signal)
+    return () => { signal.cancelled = true }
+  }, [loadBill])
 
   const updateStatus = async (status: string) => {
     if (!bill || !isOrgAdmin) return
     setSavingStatus(status)
     const patch: Record<string, string | null> = { status }
-    if (status === 'paid') patch.paid_date = new Date().toISOString().split('T')[0]
     const { error } = await supabase.from('invoices').update(patch).eq('id', bill.id).eq('direction', 'inbound')
-    if (!error) setBill({ ...bill, status, paid_date: patch.paid_date ?? bill.paid_date })
+    if (!error) setBill({ ...bill, status })
     setSavingStatus(null)
   }
+
+  const canRecordPayment = isOrgAdmin && bill?.status === 'approved'
 
   if (loading) return <div className="p-6 text-gray-400">Loading bill...</div>
   if (!bill) {
     return <div className="p-6"><p className="text-gray-300">Bill not found.</p><button onClick={() => navigate('/bills')} className="mt-3 text-accent">Back to bills</button></div>
   }
+
+  const defaultPaymentAmount = bill.amount_due != null && bill.amount_due > 0 ? bill.amount_due : Number(bill.total ?? 0)
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto">
@@ -116,22 +135,53 @@ export default function BillDetail() {
             <h1 className="text-2xl font-semibold text-white">{billNumber(bill)}</h1>
             <p className="text-sm text-gray-400 mt-1">{vendor?.display_name || vendor?.email || 'Vendor'} / {projectName(bill.projects)}</p>
             <p className="text-sm text-gray-500 mt-1">Period: {formatDate(bill.billing_period_start)} - {formatDate(bill.billing_period_end)}</p>
+            {bill.paid_date && bill.status === 'paid' && (
+              <p className="text-sm text-green-400 mt-1">Paid on {formatDate(bill.paid_date)}</p>
+            )}
           </div>
           <div className="text-left md:text-right">
             <div className="text-3xl font-semibold text-white">{formatCurrency(bill.total)}</div>
             <div className="text-sm text-gray-400 mt-1">{billStatusLabel(bill.status)}</div>
+            {(bill.amount_paid ?? 0) > 0 && bill.status !== 'paid' && (
+              <div className="text-sm text-gray-500 mt-1">Paid so far: {formatCurrency(bill.amount_paid)}</div>
+            )}
           </div>
         </div>
         {isOrgAdmin && (
           <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-border">
-            {bill.status === 'draft' && <button disabled={savingStatus === 'approved'} onClick={() => updateStatus('approved')} className="px-3 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-50">Move to Open</button>}
-            {bill.status !== 'paid' && bill.status !== 'cancelled' && <button disabled={savingStatus === 'paid'} onClick={() => updateStatus('paid')} className="px-3 py-2 rounded-lg border border-green-500/40 text-green-300 text-sm disabled:opacity-50">Mark paid</button>}
-            {bill.status !== 'cancelled' && <button disabled={savingStatus === 'cancelled'} onClick={() => updateStatus('cancelled')} className="px-3 py-2 rounded-lg border border-red-500/40 text-red-300 text-sm disabled:opacity-50">Cancel</button>}
+            {bill.status === 'draft' && (
+              <button
+                disabled={savingStatus === 'approved'}
+                onClick={() => updateStatus('approved')}
+                className="px-3 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-50"
+              >
+                Move to Open
+              </button>
+            )}
+            {canRecordPayment && (
+              <button
+                type="button"
+                onClick={() => setPaymentModalOpen(true)}
+                className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700"
+                data-testid="bill-record-payment"
+              >
+                Record payment
+              </button>
+            )}
+            {bill.status !== 'cancelled' && bill.status !== 'paid' && (
+              <button
+                disabled={savingStatus === 'cancelled'}
+                onClick={() => updateStatus('cancelled')}
+                className="px-3 py-2 rounded-lg border border-red-500/40 text-red-300 text-sm disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         )}
       </div>
 
-      <div className="rounded-lg border border-border bg-surface-elevated overflow-hidden">
+      <div className="rounded-lg border border-border bg-surface-elevated overflow-hidden mb-4">
         <table className="w-full text-sm">
           <thead className="bg-surface-muted/70 text-xs uppercase text-gray-500">
             <tr>
@@ -161,6 +211,41 @@ export default function BillDetail() {
           <div className="flex justify-between text-white font-semibold text-base pt-2"><span>Total</span><span>{formatCurrency(bill.total)}</span></div>
         </div>
       </div>
+
+      {payments.length > 0 && (
+        <div className="rounded-lg border border-border bg-surface-elevated overflow-hidden">
+          <h2 className="px-4 py-3 text-sm font-medium text-white border-b border-border">Payment history</h2>
+          <table className="w-full text-sm">
+            <thead className="bg-surface-muted/70 text-xs uppercase text-gray-500">
+              <tr>
+                <th className="px-4 py-3 text-left">Date</th>
+                <th className="px-4 py-3 text-right">Amount</th>
+                <th className="px-4 py-3 text-left">Method</th>
+                <th className="px-4 py-3 text-left">Reference</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {payments.map((p) => (
+                <tr key={p.id}>
+                  <td className="px-4 py-3 text-gray-300">{formatDate(p.payment_date)}</td>
+                  <td className="px-4 py-3 text-right text-green-400">{formatCurrency(p.amount)}</td>
+                  <td className="px-4 py-3 text-gray-300">{billPaymentMethodLabel(p.payment_method)}</td>
+                  <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.transaction_id || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <RecordBillPaymentModal
+        open={paymentModalOpen}
+        billId={bill.id}
+        billLabel={billNumber(bill)}
+        defaultAmount={defaultPaymentAmount}
+        onClose={() => setPaymentModalOpen(false)}
+        onSuccess={() => loadBill()}
+      />
     </div>
   )
 }
