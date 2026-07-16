@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FileText, Plus, Search, Settings } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -67,49 +67,69 @@ export default function BillsList() {
   const [loading, setLoading] = useState(true)
   const [status, setStatus] = useState<StatusFilter>('all')
   const [search, setSearch] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkUpdating, setBulkUpdating] = useState(false)
+  const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const selectAllRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
+  const canBulkEdit = isOrgAdmin && !isVendor
+
+  const loadBills = useCallback(async (signal?: { cancelled: boolean }) => {
     if (!currentOrg?.id || !user?.id) return
-    let cancelled = false
     setLoading(true)
 
-    const load = async () => {
-      let query = supabase
-        .from('invoices')
-        .select('id, number, prefix, status, issue_date, paid_date, total, amount_due, billing_period_start, billing_period_end, billing_source, created_at, vendor_user_id, projects(name)')
-        .eq('org_id', currentOrg.id)
-        .eq('direction', 'inbound')
-        .order('created_at', { ascending: false })
+    let query = supabase
+      .from('invoices')
+      .select('id, number, prefix, status, issue_date, paid_date, total, amount_due, billing_period_start, billing_period_end, billing_source, created_at, vendor_user_id, projects(name)')
+      .eq('org_id', currentOrg.id)
+      .eq('direction', 'inbound')
+      .order('created_at', { ascending: false })
 
-      if (isVendor) query = query.eq('vendor_user_id', user.id)
-      if (status !== 'all') query = query.eq('status', status)
+    if (isVendor) query = query.eq('vendor_user_id', user.id)
+    if (status !== 'all') query = query.eq('status', status)
 
-      const { data, error } = await query
-      if (cancelled) return
-      if (error) {
-        setBills([])
-        setProfiles({})
-        setLoading(false)
-        return
-      }
-
-      const rows = (data ?? []) as unknown as BillRow[]
-      setBills(rows)
-      const vendorIds = [...new Set(rows.map((b) => b.vendor_user_id).filter(Boolean))] as string[]
-      if (vendorIds.length) {
-        const { data: profileRows } = await supabase.from('profiles').select('id, display_name, email').in('id', vendorIds)
-        if (!cancelled) {
-          setProfiles(Object.fromEntries(((profileRows ?? []) as ProfileRow[]).map((p) => [p.id, p])))
-        }
-      } else {
-        setProfiles({})
-      }
+    const { data, error } = await query
+    if (signal?.cancelled) return
+    if (error) {
+      setBills([])
+      setProfiles({})
       setLoading(false)
+      return
     }
 
-    load()
-    return () => { cancelled = true }
+    const rows = (data ?? []) as unknown as BillRow[]
+    setBills(rows)
+    const vendorIds = [...new Set(rows.map((b) => b.vendor_user_id).filter(Boolean))] as string[]
+    if (vendorIds.length) {
+      const { data: profileRows } = await supabase.from('profiles').select('id, display_name, email').in('id', vendorIds)
+      if (!signal?.cancelled) {
+        setProfiles(Object.fromEntries(((profileRows ?? []) as ProfileRow[]).map((p) => [p.id, p])))
+      }
+    } else {
+      setProfiles({})
+    }
+    setLoading(false)
   }, [currentOrg?.id, user?.id, isVendor, status])
+
+  useEffect(() => {
+    const signal = { cancelled: false }
+    loadBills(signal)
+    return () => { signal.cancelled = true }
+  }, [loadBills, refreshKey])
+
+  useEffect(() => {
+    setSelectedIds(new Set())
+    setBulkMessage(null)
+  }, [status, search])
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const draftIds = new Set(bills.filter((b) => b.status === 'draft').map((b) => b.id))
+      const next = new Set([...prev].filter((id) => draftIds.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [bills])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -121,6 +141,92 @@ export default function BillsList() {
         .some((value) => String(value).toLowerCase().includes(q))
     })
   }, [bills, profiles, search])
+
+  const draftVisible = useMemo(
+    () => filtered.filter((bill) => bill.status === 'draft'),
+    [filtered],
+  )
+
+  const selectedDraftCount = useMemo(
+    () => draftVisible.filter((bill) => selectedIds.has(bill.id)).length,
+    [draftVisible, selectedIds],
+  )
+
+  const allDraftVisibleSelected = draftVisible.length > 0 && selectedDraftCount === draftVisible.length
+  const someDraftVisibleSelected = selectedDraftCount > 0 && !allDraftVisibleSelected
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someDraftVisibleSelected
+    }
+  }, [someDraftVisibleSelected])
+
+  const toggleSelect = (id: string) => {
+    setBulkMessage(null)
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAllVisible = () => {
+    setBulkMessage(null)
+    if (allDraftVisibleSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        for (const bill of draftVisible) next.delete(bill.id)
+        return next
+      })
+      return
+    }
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const bill of draftVisible) next.add(bill.id)
+      return next
+    })
+  }
+
+  const bulkApprove = async () => {
+    if (!canBulkEdit || !currentOrg?.id || selectedIds.size === 0 || bulkUpdating) return
+    const ids = [...selectedIds]
+    setBulkUpdating(true)
+    setBulkMessage(null)
+
+    const { data, error } = await supabase
+      .from('invoices')
+      .update({ status: 'approved' })
+      .in('id', ids)
+      .eq('org_id', currentOrg.id)
+      .eq('direction', 'inbound')
+      .eq('status', 'draft')
+      .select('id')
+
+    setBulkUpdating(false)
+
+    if (error) {
+      setBulkMessage({ type: 'error', text: error.message || 'Failed to update bills.' })
+      return
+    }
+
+    const updatedCount = data?.length ?? 0
+    if (updatedCount === 0) {
+      setBulkMessage({ type: 'error', text: 'No draft bills were updated. They may have already moved to another status.' })
+      setSelectedIds(new Set())
+      setRefreshKey((k) => k + 1)
+      return
+    }
+
+    setBulkMessage({
+      type: 'success',
+      text: updatedCount === 1
+        ? '1 bill moved to unpaid / pending payment.'
+        : `${updatedCount} bills moved to unpaid / pending payment.`,
+    })
+    setSelectedIds(new Set())
+    setRefreshKey((k) => k + 1)
+  }
 
   return (
     <div className="p-4 md:p-6" data-testid="bills-page">
@@ -169,6 +275,44 @@ export default function BillsList() {
         />
       </div>
 
+      {canBulkEdit && selectedIds.size > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-3 mb-4 px-4 py-3 rounded-lg border border-accent/30 bg-accent/5"
+          data-testid="bills-bulk-bar"
+        >
+          <span className="text-sm text-gray-200">
+            {selectedIds.size} draft {selectedIds.size === 1 ? 'bill' : 'bills'} selected
+          </span>
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            <button
+              type="button"
+              onClick={() => { setSelectedIds(new Set()); setBulkMessage(null) }}
+              className="px-3 py-1.5 rounded-lg border border-border text-xs text-gray-400 hover:text-white hover:bg-surface-muted"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={bulkApprove}
+              disabled={bulkUpdating}
+              className="px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50"
+              data-testid="bills-bulk-approve"
+            >
+              {bulkUpdating ? 'Updating…' : 'Move to unpaid / pending payment'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {bulkMessage && (
+        <p
+          className={`mb-4 text-sm ${bulkMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}
+          data-testid="bills-bulk-message"
+        >
+          {bulkMessage.text}
+        </p>
+      )}
+
       <div className="rounded-lg border border-border overflow-hidden bg-surface-elevated">
         {loading ? (
           <div className="p-8 text-center text-gray-400">Loading bills...</div>
@@ -183,6 +327,20 @@ export default function BillsList() {
             <table className="w-full text-sm">
               <thead className="bg-surface-muted/70 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
+                  {canBulkEdit && (
+                    <th className="px-3 py-3 w-10">
+                      <input
+                        ref={selectAllRef}
+                        type="checkbox"
+                        checked={allDraftVisibleSelected}
+                        onChange={toggleSelectAllVisible}
+                        disabled={draftVisible.length === 0}
+                        aria-label="Select all visible draft bills"
+                        className="rounded border-gray-600 bg-surface-muted text-accent focus:ring-accent disabled:opacity-40"
+                        data-testid="bills-select-all"
+                      />
+                    </th>
+                  )}
                   <th className="px-4 py-3 text-left">Bill</th>
                   <th className="px-4 py-3 text-left">Vendor</th>
                   <th className="px-4 py-3 text-left">Project</th>
@@ -194,8 +352,24 @@ export default function BillsList() {
               <tbody className="divide-y divide-border">
                 {filtered.map((bill) => {
                   const vendor = bill.vendor_user_id ? profiles[bill.vendor_user_id] : null
+                  const isDraft = bill.status === 'draft'
+                  const isSelected = selectedIds.has(bill.id)
                   return (
-                    <tr key={bill.id} className="hover:bg-surface-muted/40">
+                    <tr key={bill.id} className={`hover:bg-surface-muted/40 ${isSelected ? 'bg-accent/5' : ''}`}>
+                      {canBulkEdit && (
+                        <td className="px-3 py-3">
+                          {isDraft ? (
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelect(bill.id)}
+                              aria-label={`Select ${billNumber(bill)}`}
+                              className="rounded border-gray-600 bg-surface-muted text-accent focus:ring-accent"
+                              data-testid={`bill-select-${bill.id}`}
+                            />
+                          ) : null}
+                        </td>
+                      )}
                       <td className="px-4 py-3"><Link to={`/bills/${bill.id}`} className="text-accent hover:underline font-medium">{billNumber(bill)}</Link></td>
                       <td className="px-4 py-3 text-gray-200">{vendor?.display_name || vendor?.email || 'Vendor'}</td>
                       <td className="px-4 py-3 text-gray-300">{projectName(bill.projects)}</td>
