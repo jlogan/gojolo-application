@@ -1,49 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Bell, X } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
-import { useOrg } from '@/contexts/OrgContext'
-import { useAuth } from '@/contexts/AuthContext'
-
-type Notification = {
-  id: string; type: string; title: string; body: string | null
-  link: string | null; read_at: string | null; created_at: string
-}
+import { useNotifications } from '@/contexts/NotificationsContext'
 
 export default function NotificationBell() {
-  const { currentOrg } = useOrg()
-  const { user } = useAuth()
-  const [notifications, setNotifications] = useState<Notification[]>([])
+  const { notifications, unreadCount, markRead, markAllRead } = useNotifications()
   const [open, setOpen] = useState(false)
-  const unreadCount = notifications.filter(n => !n.read_at).length
-
-  useEffect(() => {
-    if (!user?.id || !currentOrg?.id) return
-    supabase.from('notifications').select('*').eq('user_id', user.id)
-      .order('created_at', { ascending: false }).limit(20)
-      .then(({ data }) => setNotifications((data as Notification[]) ?? []))
-
-    const ch = supabase.channel('notif-bell')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` }, (payload) => {
-        setNotifications(prev => [payload.new as Notification, ...prev].slice(0, 20))
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(ch) }
-  }, [user?.id, currentOrg?.id])
-
-  const markRead = async (id: string) => {
-    await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id)
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read_at: new Date().toISOString() } : n))
-  }
-
-  const markAllRead = async () => {
-    const unread = notifications.filter(n => !n.read_at)
-    if (unread.length === 0) return
-    for (const n of unread) {
-      await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', n.id)
-    }
-    setNotifications(prev => prev.map(n => ({ ...n, read_at: n.read_at ?? new Date().toISOString() })))
-  }
 
   return (
     <div className="relative">

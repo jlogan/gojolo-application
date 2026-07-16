@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
+import { useNotifications } from '@/contexts/NotificationsContext'
 import { supabase } from '@/lib/supabase'
 import { ArrowLeft, Key, Mail, Bell } from 'lucide-react'
 
@@ -19,6 +20,7 @@ type NotificationChannel = 'slack' | 'email' | 'both'
 export default function Profile() {
   const { user } = useAuth()
   const { currentOrg } = useOrg()
+  const { soundEnabled, setSoundEnabled } = useNotifications()
   const [profileTab, setProfileTab] = useState<'profile' | 'notifications'>('profile')
   const [displayName, setDisplayName] = useState('')
   const [profileLoading, setProfileLoading] = useState(true)
@@ -168,6 +170,23 @@ export default function Profile() {
 
       {profileTab === 'notifications' && (
         <section className="mb-8" data-testid="profile-notifications">
+          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">In-app alerts</h2>
+          <div className="rounded-lg border border-border bg-surface-elevated p-4 mb-6 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-gray-200">Notification sound</p>
+              <p className="text-xs text-gray-500 mt-0.5">Play a short sound when you receive a new in-app notification (desktop and mobile).</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                className="sr-only peer"
+                checked={soundEnabled}
+                onChange={(e) => setSoundEnabled(e.target.checked)}
+                data-testid="profile-notification-sound"
+              />
+              <span className="w-10 h-5 bg-surface-muted peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:bg-accent after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5" />
+            </label>
+          </div>
           <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Notification delivery</h2>
           <p className="text-sm text-gray-400 mb-4">
             Choose how you want to receive each type of notification for this workspace.

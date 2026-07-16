@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { supabaseMisconfigured } from '@/lib/supabase'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { OrgProvider } from '@/contexts/OrgContext'
+import { NotificationsProvider } from '@/contexts/NotificationsContext'
 import App from './App'
 import './index.css'
 
@@ -91,7 +92,9 @@ try {
           <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
             <AuthProvider>
               <OrgProvider>
-                <App />
+                <NotificationsProvider>
+                  <App />
+                </NotificationsProvider>
               </OrgProvider>
             </AuthProvider>
           </BrowserRouter>
