@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FileText, Search, Settings } from 'lucide-react'
+import { FileText, Plus, Search, Settings } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
@@ -130,9 +130,14 @@ export default function BillsList() {
           <p className="text-sm text-gray-400">Vendor bills generated every Monday at 6:00 AM Eastern for the previous Monday-Sunday week.</p>
         </div>
         {isOrgAdmin && (
-          <Link to="/admin/vendor-billing" className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-200 hover:bg-surface-muted">
-            <Settings className="w-4 h-4" /> Vendor billing setup
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link to="/bills/new" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground font-medium hover:opacity-90" data-testid="bill-create">
+              <Plus className="w-4 h-4" /> Create bill
+            </Link>
+            <Link to="/admin/vendor-billing" className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-200 hover:bg-surface-muted">
+              <Settings className="w-4 h-4" /> Vendor billing setup
+            </Link>
+          </div>
         )}
       </div>
 

@@ -48,6 +48,7 @@ import InvoiceDetail from '@/pages/invoices/InvoiceDetail'
 import InvoiceEmailDraft from '@/pages/invoices/InvoiceEmailDraft'
 import BillsList from '@/pages/bills/BillsList'
 import BillDetail from '@/pages/bills/BillDetail'
+import CreateBill from '@/pages/bills/CreateBill'
 import VendorBillingSettings from '@/pages/admin/VendorBillingSettings'
 // Expenses module hidden for now — tables remain in DB for future use
 
@@ -348,6 +349,7 @@ export default function AppShell() {
               <Route path="/invoices/:id/edit" element={<InvoiceForm />} />
               <Route path="/invoices/:id/send" element={<InvoiceEmailDraft />} />
               <Route path="/bills" element={<BillsList />} />
+              <Route path="/bills/new" element={<CreateBill />} />
               <Route path="/bills/:id" element={<BillDetail />} />
               <Route path="/admin/vendor-billing" element={<VendorBillingSettings />} />
               <Route path="/companies" element={<Navigate to="/contacts?tab=companies" replace />} />
