@@ -17,6 +17,7 @@ interface Invoice {
   number: number | null
   prefix: string | null
   status: string
+  direction: 'outbound' | 'inbound'
   issue_date: string
   due_date: string | null
   total: number
@@ -84,7 +85,7 @@ export default function LinkedInvoices({ contactId, companyId, projectId }: Prop
       let query = supabase
         .from('invoices')
         .select(`
-          id, number, prefix, status,
+          id, number, prefix, status, direction,
           issue_date, due_date,
           total, amount_due, amount_paid,
           invoice_payments (
@@ -105,7 +106,7 @@ export default function LinkedInvoices({ contactId, companyId, projectId }: Prop
         query = supabase
           .from('invoices')
           .select(`
-            id, number, prefix, status,
+            id, number, prefix, status, direction,
             issue_date, due_date,
             total, amount_due, amount_paid,
             invoice_payments (
@@ -118,7 +119,7 @@ export default function LinkedInvoices({ contactId, companyId, projectId }: Prop
       } else if (companyId) {
         query = query.eq('company_id', companyId)
       } else if (projectId) {
-        query = query.eq('project_id', projectId)
+        query = query.eq('project_id', projectId).eq('direction', 'outbound')
       }
 
       const { data, error } = await query
