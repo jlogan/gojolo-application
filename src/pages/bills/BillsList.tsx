@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FileText, Plus, Search, Settings } from 'lucide-react'
 import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
+import CancelBillConfirmModal from '@/components/bills/CancelBillConfirmModal'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { BILL_OPEN_STATUSES, BILL_STATUS_CLASSES, billStatusLabel, canRecordBillPayment } from '@/lib/billStatus'
+import { BILL_OPEN_STATUSES, BILL_STATUS_CLASSES, billStatusLabel, canCancelBill, canRecordBillPayment } from '@/lib/billStatus'
 
 type BillRow = {
   id: string
@@ -67,10 +68,12 @@ export default function BillsList() {
   const [bulkMessage, setBulkMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [paymentBill, setPaymentBill] = useState<BillRow | null>(null)
+  const [cancelBill, setCancelBill] = useState<BillRow | null>(null)
+  const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const selectAllRef = useRef<HTMLInputElement>(null)
 
   const canBulkEdit = isOrgAdmin && !isVendor
-  const canRecordPayment = isOrgAdmin && !isVendor
+  const canAdminBillActions = isOrgAdmin && !isVendor
 
   const loadBills = useCallback(async (signal?: { cancelled: boolean }) => {
     if (!currentOrg?.id || !user?.id) return
@@ -311,6 +314,15 @@ export default function BillsList() {
         </p>
       )}
 
+      {actionMessage && (
+        <p
+          className={`mb-4 text-sm ${actionMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}
+          data-testid="bills-action-message"
+        >
+          {actionMessage.text}
+        </p>
+      )}
+
       <div className="rounded-lg border border-border overflow-hidden bg-surface-elevated">
         {loading ? (
           <div className="p-8 text-center text-gray-400">Loading bills...</div>
@@ -345,7 +357,7 @@ export default function BillsList() {
                   <th className="px-4 py-3 text-left">Period</th>
                   <th className="px-4 py-3 text-left">Status</th>
                   <th className="px-4 py-3 text-right">Total</th>
-                  {canRecordPayment && <th className="px-4 py-3 text-right">Actions</th>}
+                  {canAdminBillActions && <th className="px-4 py-3 text-right">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -375,20 +387,39 @@ export default function BillsList() {
                       <td className="px-4 py-3 text-gray-400">{formatDate(bill.billing_period_start)} - {formatDate(bill.billing_period_end)}</td>
                       <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${BILL_STATUS_CLASSES[bill.status] ?? BILL_STATUS_CLASSES.draft}`}>{billStatusLabel(bill.status)}</span></td>
                       <td className="px-4 py-3 text-right text-white font-medium">{formatCurrency(bill.total)}</td>
-                      {canRecordPayment && (
+                      {canAdminBillActions && (
                         <td className="px-4 py-3 text-right">
-                          {canRecordBillPayment(bill.status) ? (
-                            <button
-                              type="button"
-                              onClick={() => setPaymentBill(bill)}
-                              className="text-xs text-green-400 hover:text-green-300"
-                              data-testid={`bill-record-payment-${bill.id}`}
-                            >
-                              Record payment
-                            </button>
-                          ) : (
-                            <span className="text-xs text-gray-600">—</span>
-                          )}
+                          <div className="inline-flex flex-wrap items-center justify-end gap-2">
+                            {canRecordBillPayment(bill.status) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActionMessage(null)
+                                  setPaymentBill(bill)
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700"
+                                data-testid={`bill-record-payment-${bill.id}`}
+                              >
+                                Record Payment
+                              </button>
+                            )}
+                            {canCancelBill(bill.status) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActionMessage(null)
+                                  setCancelBill(bill)
+                                }}
+                                className="px-3 py-1.5 rounded-lg border border-red-500/40 text-red-300 text-xs font-medium hover:bg-red-500/10"
+                                data-testid={`bill-cancel-${bill.id}`}
+                              >
+                                Cancel
+                              </button>
+                            )}
+                            {!canRecordBillPayment(bill.status) && !canCancelBill(bill.status) && (
+                              <span className="text-xs text-gray-600">—</span>
+                            )}
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -413,6 +444,22 @@ export default function BillsList() {
           onClose={() => setPaymentBill(null)}
           onSuccess={() => {
             setPaymentBill(null)
+            setRefreshKey((k) => k + 1)
+          }}
+        />
+      )}
+
+      {cancelBill && currentOrg?.id && (
+        <CancelBillConfirmModal
+          open
+          billId={cancelBill.id}
+          billLabel={billNumber(cancelBill)}
+          orgId={currentOrg.id}
+          onClose={() => setCancelBill(null)}
+          onSuccess={() => {
+            const label = billNumber(cancelBill)
+            setCancelBill(null)
+            setActionMessage({ type: 'success', text: `${label} was cancelled.` })
             setRefreshKey((k) => k + 1)
           }}
         />

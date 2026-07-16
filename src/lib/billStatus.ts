@@ -29,3 +29,7 @@ export function isBillOpenStatus(status: string): boolean {
 export function canRecordBillPayment(status: string): boolean {
   return isBillOpenStatus(status)
 }
+
+export function canCancelBill(status: string): boolean {
+  return status !== 'cancelled' && status !== 'paid'
+}

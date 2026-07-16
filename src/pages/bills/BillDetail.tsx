@@ -4,8 +4,9 @@ import { ArrowLeft } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
+import CancelBillConfirmModal from '@/components/bills/CancelBillConfirmModal'
 import { billPaymentMethodLabel } from '@/lib/billPaymentMethods'
-import { billStatusLabel, canRecordBillPayment } from '@/lib/billStatus'
+import { billStatusLabel, canCancelBill, canRecordBillPayment } from '@/lib/billStatus'
 import { supabase } from '@/lib/supabase'
 
 type Bill = {
@@ -67,6 +68,8 @@ export default function BillDetail() {
   const [loading, setLoading] = useState(true)
   const [savingStatus, setSavingStatus] = useState<string | null>(null)
   const [paymentModalOpen, setPaymentModalOpen] = useState(false)
+  const [cancelModalOpen, setCancelModalOpen] = useState(false)
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   const loadBill = useCallback(async (signal?: { cancelled: boolean }) => {
     if (!id || !currentOrg?.id || !user?.id) return
@@ -109,15 +112,26 @@ export default function BillDetail() {
   }, [loadBill])
 
   const updateStatus = async (status: string) => {
-    if (!bill || !isOrgAdmin) return
+    if (!bill || !isOrgAdmin || isVendor || !currentOrg?.id) return
     setSavingStatus(status)
+    setStatusMessage(null)
     const patch: Record<string, string | null> = { status }
-    const { error } = await supabase.from('invoices').update(patch).eq('id', bill.id).eq('direction', 'inbound')
-    if (!error) setBill({ ...bill, status })
+    const { error } = await supabase
+      .from('invoices')
+      .update(patch)
+      .eq('id', bill.id)
+      .eq('org_id', currentOrg.id)
+      .eq('direction', 'inbound')
+    if (error) {
+      setStatusMessage({ type: 'error', text: error.message || 'Failed to update bill status.' })
+    } else {
+      setBill({ ...bill, status })
+    }
     setSavingStatus(null)
   }
 
-  const canRecordPayment = isOrgAdmin && bill != null && canRecordBillPayment(bill.status)
+  const canAdminBillActions = isOrgAdmin && !isVendor
+  const canRecordPayment = canAdminBillActions && bill != null && canRecordBillPayment(bill.status)
 
   if (loading) return <div className="p-6 text-gray-400">Loading bill...</div>
   if (!bill) {
@@ -147,7 +161,7 @@ export default function BillDetail() {
             )}
           </div>
         </div>
-        {isOrgAdmin && (
+        {canAdminBillActions && (
           <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-border">
             {bill.status === 'draft' && (
               <button
@@ -162,22 +176,31 @@ export default function BillDetail() {
               <button
                 type="button"
                 onClick={() => setPaymentModalOpen(true)}
-                className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700"
+                className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700"
                 data-testid="bill-record-payment"
               >
-                Record payment
+                Record Payment
               </button>
             )}
-            {bill.status !== 'cancelled' && bill.status !== 'paid' && (
+            {canCancelBill(bill.status) && (
               <button
-                disabled={savingStatus === 'cancelled'}
-                onClick={() => updateStatus('cancelled')}
-                className="px-3 py-2 rounded-lg border border-red-500/40 text-red-300 text-sm disabled:opacity-50"
+                type="button"
+                onClick={() => {
+                  setStatusMessage(null)
+                  setCancelModalOpen(true)
+                }}
+                className="px-3 py-2 rounded-lg border border-red-500/40 text-red-300 text-sm font-medium hover:bg-red-500/10"
+                data-testid="bill-cancel"
               >
                 Cancel
               </button>
             )}
           </div>
+        )}
+        {statusMessage && (
+          <p className={`mt-3 text-sm ${statusMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+            {statusMessage.text}
+          </p>
         )}
       </div>
 
@@ -246,6 +269,21 @@ export default function BillDetail() {
         onClose={() => setPaymentModalOpen(false)}
         onSuccess={() => loadBill()}
       />
+
+      {currentOrg?.id && (
+        <CancelBillConfirmModal
+          open={cancelModalOpen}
+          billId={bill.id}
+          billLabel={billNumber(bill)}
+          orgId={currentOrg.id}
+          onClose={() => setCancelModalOpen(false)}
+          onSuccess={() => {
+            setCancelModalOpen(false)
+            setStatusMessage({ type: 'success', text: 'Bill cancelled.' })
+            loadBill()
+          }}
+        />
+      )}
     </div>
   )
 }
