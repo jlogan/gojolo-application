@@ -134,17 +134,44 @@ function parseInboxThreadId(url: string): string | null {
 
 const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|svg)(\?|$)/i
-const TASK_ARTIFACTS_PATH_RE = /\/storage\/v1\/object\/(?:public|sign)\/task-artifacts\/([^?#]+)/
+const STORAGE_URL_RE = /\/storage\/v1\/object\/(?:public|sign)\/(task-artifacts|task-attachments)\/([^?#]+)/
+const PSEUDO_STORAGE_RE = /^task-(artifacts|attachments):\/\/(.+)$/
 const PAPERCLIP_EMOJI = /\u{1F4CE}\s*/gu
+type StorageRef = { bucket: 'task-artifacts' | 'task-attachments'; path: string }
 function isImageUrl(url: string): boolean { return IMAGE_EXT_RE.test(url) }
-function getTaskArtifactsPath(url: string): string | null {
-  const m = url.match(TASK_ARTIFACTS_PATH_RE)
-  if (!m) return null
-  try {
-    return decodeURIComponent(m[1])
-  } catch {
-    return m[1]
+function parseStorageRef(url: string): StorageRef | null {
+  const trimmed = url.trim()
+  const pseudo = trimmed.match(PSEUDO_STORAGE_RE)
+  if (pseudo) {
+    const bucket = `task-${pseudo[1]}` as StorageRef['bucket']
+    try {
+      return { bucket, path: decodeURIComponent(pseudo[2]) }
+    } catch {
+      return { bucket, path: pseudo[2] }
+    }
   }
+  const storage = trimmed.match(STORAGE_URL_RE)
+  if (storage) {
+    const bucket = storage[1] as StorageRef['bucket']
+    try {
+      return { bucket, path: decodeURIComponent(storage[2]) }
+    } catch {
+      return { bucket, path: storage[2] }
+    }
+  }
+  return null
+}
+function isImageAttachment(href: string, label: string): boolean {
+  if (isImageUrl(href) || isImageUrl(label)) return true
+  const ref = parseStorageRef(href)
+  return ref ? isImageUrl(ref.path) : false
+}
+function attachmentDisplayLabel(label: string, href: string): string {
+  const trimmedLabel = label.trim()
+  if (trimmedLabel) return trimmedLabel
+  const ref = parseStorageRef(href)
+  if (ref) return ref.path.split('/').pop() || 'attachment'
+  return href.split('/').pop() || 'attachment'
 }
 
 type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[]; isHtml: boolean }
@@ -153,8 +180,8 @@ function parseCommentContent(content: string): ParsedComment {
   let text = content.replace(PAPERCLIP_EMOJI, '')
   text = text.replace(MARKDOWN_LINK_RE, (_, label: string, url: string) => {
     const href = url.trim()
-    const displayLabel = (label || href.split('/').pop() || 'attachment').trim()
-    attachments.push({ href, label: displayLabel, isImage: isImageUrl(href) })
+    const displayLabel = attachmentDisplayLabel(label, href)
+    attachments.push({ href, label: displayLabel, isImage: isImageAttachment(href, displayLabel) })
     return ''
   })
   text = text.trim()
@@ -166,43 +193,84 @@ function parseCommentContent(content: string): ParsedComment {
 const THUMB_SIZE = 72
 
 function CommentAttachmentCard({ href, label, isImage }: { href: string; label: string; isImage: boolean }) {
-  const path = getTaskArtifactsPath(href)
+  const storageRef = parseStorageRef(href)
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [signing, setSigning] = useState(false)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
-    if (!path) {
-      setSignedUrl(href)
+    if (!storageRef) {
+      setSignedUrl(null)
+      setSigning(false)
+      setFailed(false)
       return
     }
-    supabase.storage.from('task-artifacts').createSignedUrl(path, 3600).then(({ data, error }) => {
-      if (error) setFailed(true)
-      else if (data?.signedUrl) setSignedUrl(data.signedUrl)
+    let cancelled = false
+    setSigning(true)
+    setFailed(false)
+    setSignedUrl(null)
+    supabase.storage.from(storageRef.bucket).createSignedUrl(storageRef.path, 3600).then(({ data, error }) => {
+      if (cancelled) return
+      setSigning(false)
+      if (error || !data?.signedUrl) setFailed(true)
+      else setSignedUrl(data.signedUrl)
     })
-  }, [path, href])
-  const downloadUrl = signedUrl ?? href
-  const imgSrc = path ? signedUrl : (isImage ? href : null)
-  const canPreview = isImage && imgSrc && !failed
+    return () => { cancelled = true }
+  }, [href])
+  const isStorageAttachment = !!storageRef
+  const openUrl = isStorageAttachment ? signedUrl : href
+  const canOpen = !isStorageAttachment || (!signing && !failed && !!signedUrl)
+  const imgSrc = isStorageAttachment
+    ? (canOpen && isImage ? signedUrl : null)
+    : (isImage ? href : null)
+  const canPreview = isImage && !!imgSrc && !failed
+  const thumbClass = `flex items-center justify-center rounded-lg border bg-surface-elevated overflow-hidden shrink-0 ${
+    failed ? 'border-red-500/40 opacity-60' : signing ? 'border-border opacity-70' : canOpen ? 'border-border hover:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent' : 'border-border opacity-60 cursor-not-allowed'
+  }`
+  const linkClass = `text-xs truncate max-w-[72px] ${failed ? 'text-red-400' : signing ? 'text-gray-500' : canOpen ? 'text-gray-500 hover:text-accent' : 'text-gray-600 cursor-not-allowed'}`
   return (
     <div className="flex flex-col items-center gap-1 shrink-0">
-      <a
-        href={downloadUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        download={label}
-        className="flex items-center justify-center rounded-lg border border-border bg-surface-elevated overflow-hidden hover:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent shrink-0"
-        style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
-      >
-        {canPreview ? (
-          <img src={imgSrc} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setFailed(true)} />
-        ) : (
-          <div className="flex items-center justify-center w-full h-full text-gray-500">
-            <FileText className="w-8 h-8" />
-          </div>
-        )}
-      </a>
-      <a href={downloadUrl} target="_blank" rel="noopener noreferrer" download={label} className="text-xs text-gray-500 hover:text-accent truncate max-w-[72px]">
-        Download
-      </a>
+      {canOpen && openUrl ? (
+        <a
+          href={openUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          download={label}
+          className={thumbClass}
+          style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+        >
+          {canPreview ? (
+            <img src={imgSrc!} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setFailed(true)} />
+          ) : (
+            <div className="flex items-center justify-center w-full h-full text-gray-500">
+              <FileText className="w-8 h-8" />
+            </div>
+          )}
+        </a>
+      ) : (
+        <div
+          className={thumbClass}
+          style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+          aria-disabled
+          title={failed ? 'Could not load attachment' : signing ? 'Loading attachment…' : undefined}
+        >
+          {canPreview ? (
+            <img src={imgSrc!} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setFailed(true)} />
+          ) : (
+            <div className="flex items-center justify-center w-full h-full text-gray-500">
+              <FileText className="w-8 h-8" />
+            </div>
+          )}
+        </div>
+      )}
+      {canOpen && openUrl ? (
+        <a href={openUrl} target="_blank" rel="noopener noreferrer" download={label} className={linkClass}>
+          Download
+        </a>
+      ) : (
+        <span className={linkClass}>
+          {failed ? 'Failed' : signing ? 'Loading…' : 'Download'}
+        </span>
+      )}
     </div>
   )
 }
@@ -534,7 +602,7 @@ export default function TaskDetail() {
       const path = `${currentOrg.id}/${projectId}/${taskId}/comments/${Date.now()}-${commentFile.name}`
       const { error } = await supabase.storage.from('task-artifacts').upload(path, commentFile)
       if (!error) {
-        fileUrl = supabase.storage.from('task-artifacts').getPublicUrl(path).data.publicUrl
+        fileUrl = `task-artifacts://${encodeURIComponent(path)}`
         fileName = commentFile.name
       }
     }
