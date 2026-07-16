@@ -134,12 +134,17 @@ function parseInboxThreadId(url: string): string | null {
 
 const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|svg)(\?|$)/i
-const TASK_ARTIFACTS_PATH_RE = /\/storage\/v1\/object\/public\/task-artifacts\/(.+?)(?:\?|$)/
+const TASK_ARTIFACTS_PATH_RE = /\/storage\/v1\/object\/(?:public|sign)\/task-artifacts\/([^?#]+)/
 const PAPERCLIP_EMOJI = /\u{1F4CE}\s*/gu
 function isImageUrl(url: string): boolean { return IMAGE_EXT_RE.test(url) }
 function getTaskArtifactsPath(url: string): string | null {
   const m = url.match(TASK_ARTIFACTS_PATH_RE)
-  return m ? m[1] : null
+  if (!m) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    return m[1]
+  }
 }
 
 type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[]; isHtml: boolean }
@@ -529,8 +534,7 @@ export default function TaskDetail() {
       const path = `${currentOrg.id}/${projectId}/${taskId}/comments/${Date.now()}-${commentFile.name}`
       const { error } = await supabase.storage.from('task-artifacts').upload(path, commentFile)
       if (!error) {
-        const { data: signed } = await supabase.storage.from('task-artifacts').createSignedUrl(path, 3600)
-        fileUrl = signed?.signedUrl ?? supabase.storage.from('task-artifacts').getPublicUrl(path).data.publicUrl
+        fileUrl = supabase.storage.from('task-artifacts').getPublicUrl(path).data.publicUrl
         fileName = commentFile.name
       }
     }
@@ -639,6 +643,12 @@ export default function TaskDetail() {
     })
     setShowAttachmentForm(false)
     fetchAll()
+  }
+
+  const openAttachment = async (path: string) => {
+    const { data, error } = await supabase.storage.from('task-artifacts').createSignedUrl(path, 60 * 60)
+    if (error || !data?.signedUrl) { alert('Could not generate download link. Please try again.'); return }
+    window.open(data.signedUrl, '_blank', 'noreferrer')
   }
 
   const handleAddAssignee = async (uid?: string) => {
@@ -886,11 +896,10 @@ export default function TaskDetail() {
           <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Attachments</h3>
           <div className="flex flex-wrap gap-2 items-center">
             {artifacts.filter(a => a.type === 'file').map(a => (
-              <a key={a.id} href={supabase.storage.from('task-artifacts').getPublicUrl(a.file_path!).data.publicUrl}
-                target="_blank" rel="noreferrer"
+              <button key={a.id} type="button" onClick={() => a.file_path && openAttachment(a.file_path)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 hover:text-accent border border-border hover:border-accent/30">
                 <Paperclip className="w-3 h-3" /> {a.file_name ?? a.label}
-              </a>
+              </button>
             ))}
             {!showAttachmentForm && (
               <button type="button" onClick={() => setShowAttachmentForm(true)}
