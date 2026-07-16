@@ -4,6 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
+import DateInput from '@/components/DateInput'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
   Plus, ChevronUp, FileText, DollarSign, Calendar,
@@ -850,8 +851,7 @@ export default function InvoiceDetail() {
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Date</label>
-              <input
-                type="date"
+              <DateInput
                 value={payDate}
                 onChange={(e) => setPayDate(e.target.value)}
                 className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"

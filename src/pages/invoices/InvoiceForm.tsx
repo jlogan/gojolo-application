@@ -3,6 +3,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
+import DateInput from '@/components/DateInput'
 import { ArrowLeft, Plus, Trash2, Clock, X, Check, GripVertical, ChevronDown, ChevronUp } from 'lucide-react'
 
 /* ─── types ─── */
@@ -1004,13 +1005,13 @@ export default function InvoiceForm() {
           {/* Issue date */}
           <div>
             <label className={labelCls}>Issue Date</label>
-            <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} required className={inputCls} />
+            <DateInput value={issueDate} onChange={(e) => setIssueDate(e.target.value)} required className={inputCls} />
           </div>
 
           {/* Due date */}
           <div>
             <label className={labelCls}>Due Date</label>
-            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
+            <DateInput value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
           </div>
 
         </div>

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Pencil, Trash2 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
-import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
+import RecordBillPaymentModal, { type BillPaymentFormValues } from '@/components/bills/RecordBillPaymentModal'
+import DeleteBillPaymentConfirmModal from '@/components/bills/DeleteBillPaymentConfirmModal'
 import CancelBillConfirmModal from '@/components/bills/CancelBillConfirmModal'
 import { billPaymentMethodLabel } from '@/lib/billPaymentMethods'
 import { billStatusLabel, canCancelBill, canRecordBillPayment } from '@/lib/billStatus'
@@ -68,6 +69,8 @@ export default function BillDetail() {
   const [loading, setLoading] = useState(true)
   const [savingStatus, setSavingStatus] = useState<string | null>(null)
   const [paymentModalOpen, setPaymentModalOpen] = useState(false)
+  const [editPayment, setEditPayment] = useState<BillPaymentFormValues | null>(null)
+  const [deletePayment, setDeletePayment] = useState<BillPayment | null>(null)
   const [cancelModalOpen, setCancelModalOpen] = useState(false)
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -198,7 +201,10 @@ export default function BillDetail() {
             {canRecordPayment && (
               <button
                 type="button"
-                onClick={() => setPaymentModalOpen(true)}
+                onClick={() => {
+                  setEditPayment(null)
+                  setPaymentModalOpen(true)
+                }}
                 className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700"
                 data-testid="bill-record-payment"
               >
@@ -275,6 +281,7 @@ export default function BillDetail() {
                 <th className="px-4 py-3 text-right">Amount</th>
                 <th className="px-4 py-3 text-left">Method</th>
                 <th className="px-4 py-3 text-left">Reference</th>
+                {canAdminBillActions && <th className="px-4 py-3 text-right w-24">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -284,6 +291,39 @@ export default function BillDetail() {
                   <td className="px-4 py-3 text-right text-green-400">{formatCurrency(p.amount)}</td>
                   <td className="px-4 py-3 text-gray-300">{billPaymentMethodLabel(p.payment_method)}</td>
                   <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.transaction_id || '—'}</td>
+                  {canAdminBillActions && (
+                    <td className="px-4 py-3 text-right">
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditPayment({
+                              id: p.id,
+                              amount: p.amount,
+                              payment_method: p.payment_method,
+                              payment_date: p.payment_date,
+                              transaction_id: p.transaction_id,
+                            })
+                            setPaymentModalOpen(true)
+                          }}
+                          className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-surface-muted"
+                          aria-label="Edit payment"
+                          data-testid={`bill-payment-edit-${p.id}`}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeletePayment(p)}
+                          className="p-1.5 rounded text-gray-400 hover:text-red-300 hover:bg-red-500/10"
+                          aria-label="Delete payment"
+                          data-testid={`bill-payment-delete-${p.id}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -296,8 +336,36 @@ export default function BillDetail() {
         billId={bill.id}
         billLabel={billNumber(bill)}
         defaultAmount={defaultPaymentAmount}
-        onClose={() => setPaymentModalOpen(false)}
-        onSuccess={() => loadBill()}
+        editPayment={editPayment}
+        onClose={() => {
+          setPaymentModalOpen(false)
+          setEditPayment(null)
+        }}
+        onSuccess={() => {
+          setStatusMessage(
+            editPayment
+              ? { type: 'success', text: 'Payment updated.' }
+              : { type: 'success', text: 'Payment recorded.' },
+          )
+          loadBill()
+        }}
+      />
+
+      <DeleteBillPaymentConfirmModal
+        open={deletePayment != null}
+        billId={bill.id}
+        billLabel={billNumber(bill)}
+        paymentId={deletePayment?.id ?? null}
+        paymentLabel={
+          deletePayment
+            ? `${formatCurrency(deletePayment.amount)} on ${formatDate(deletePayment.payment_date)}`
+            : ''
+        }
+        onClose={() => setDeletePayment(null)}
+        onSuccess={() => {
+          setStatusMessage({ type: 'success', text: 'Payment deleted.' })
+          loadBill()
+        }}
       />
 
       {currentOrg?.id && (

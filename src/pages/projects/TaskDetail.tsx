@@ -10,6 +10,7 @@ import {
   ExternalLink, X,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
+import DateInput from '@/components/DateInput'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 
 type Task = {
@@ -846,7 +847,7 @@ export default function TaskDetail() {
                 className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
                 <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
               </select>
-              <input type="date" value={editDue} onChange={e => setEditDue(e.target.value)}
+              <DateInput value={editDue} onChange={e => setEditDue(e.target.value)}
                 className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
               <div className="flex gap-2">
                 <button type="button" onClick={handleSaveEdit} className="flex-1 px-3 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90">Save</button>
@@ -1160,7 +1161,7 @@ export default function TaskDetail() {
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Date</label>
-                  <input type="date" value={logDate} onChange={e => setLogDate(e.target.value)}
+                  <DateInput value={logDate} onChange={e => setLogDate(e.target.value)}
                     className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent" />
                 </div>
                 <div>
@@ -1204,7 +1205,7 @@ export default function TaskDetail() {
                     editingTimeLogId === t.id ? (
                       <tr key={t.id} className="bg-surface-muted/40">
                         <td className="px-4 py-2">
-                          <input type="date" value={editTimeLogDate} onChange={e => setEditTimeLogDate(e.target.value)}
+                          <DateInput value={editTimeLogDate} onChange={e => setEditTimeLogDate(e.target.value)}
                             className="bg-surface-elevated border border-border rounded px-2 py-1 text-xs text-white w-full" />
                         </td>
                         <td className="px-4 py-2">

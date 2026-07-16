@@ -17,6 +17,7 @@ import { buildCoverLetterPdfFromElement } from '@/lib/coverLetterPdf'
 import type { GeneratedExperience, GeneratedResume } from '@/types/resume'
 import type { GeneratedCoverLetter } from '@/types/coverLetter'
 import { ResumeRichEditor, type ResumeRichEditorHandle } from '@/components/resume/ResumeRichEditor'
+import DateInput from '@/components/DateInput'
 import { ArrowLeft, Download, FileText } from 'lucide-react'
 
 type CompanyOption = { id: string; name: string }
@@ -1547,7 +1548,7 @@ export default function LeadForm() {
               <option value="interview">Interview</option>
             </select>
           </div>
-          <input type="date" value={attemptNextFollowUpDate} onChange={(e) => setAttemptNextFollowUpDate(e.target.value)}
+          <DateInput value={attemptNextFollowUpDate} onChange={(e) => setAttemptNextFollowUpDate(e.target.value)}
             className="rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white" />
           <input value={attemptExternalUrl} onChange={(e) => setAttemptExternalUrl(e.target.value)} placeholder="External URL (application page, linkedin thread, etc.)"
             className="w-full rounded-lg border border-border bg-surface-muted px-4 py-2.5 text-white" />

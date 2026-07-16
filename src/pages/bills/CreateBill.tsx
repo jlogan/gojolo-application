@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
+import DateInput from '@/components/DateInput'
 import { supabase } from '@/lib/supabase'
 
 type OrgUser = { user_id: string; profiles: { display_name: string | null; email: string | null } | null }
@@ -254,8 +255,7 @@ export default function CreateBill() {
         <div className="grid gap-4 md:grid-cols-3">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Issue date</label>
-            <input
-              type="date"
+            <DateInput
               value={issueDate}
               onChange={(e) => setIssueDate(e.target.value)}
               required
@@ -265,8 +265,7 @@ export default function CreateBill() {
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Billing period start</label>
-            <input
-              type="date"
+            <DateInput
               value={periodStart}
               onChange={(e) => setPeriodStart(e.target.value)}
               required
@@ -276,8 +275,7 @@ export default function CreateBill() {
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Billing period end</label>
-            <input
-              type="date"
+            <DateInput
               value={periodEnd}
               onChange={(e) => setPeriodEnd(e.target.value)}
               required

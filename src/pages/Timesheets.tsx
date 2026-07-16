@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
+import DateInput from '@/components/DateInput'
 import { ChevronDown, ChevronUp, Plus, X, FileText } from 'lucide-react'
 
 type TimeLogRow = {
@@ -416,7 +417,7 @@ export default function Timesheets() {
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Date</label>
-                  <input type="date" value={formDate} onChange={e => setFormDate(e.target.value)}
+                  <DateInput value={formDate} onChange={e => setFormDate(e.target.value)}
                     className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
                 </div>
               </div>
@@ -469,7 +470,7 @@ export default function Timesheets() {
         {/* Date from */}
         <div>
           <label className="block text-xs text-gray-500 mb-1">From</label>
-          <input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)}
+          <DateInput value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)}
             className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
         </div>
 
@@ -477,7 +478,7 @@ export default function Timesheets() {
         <div>
           <label className="block text-xs text-gray-500 mb-1">To</label>
           <div className="flex gap-2">
-            <input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)}
+            <DateInput value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)}
               className="flex-1 rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
             {hasFilters && (
               <button type="button" onClick={() => { setFilterProjectId(''); setFilterUserId(''); setFilterDateFrom(''); setFilterDateTo('') }}

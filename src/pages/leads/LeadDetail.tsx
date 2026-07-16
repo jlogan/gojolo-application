@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
+import DateInput from '@/components/DateInput'
 import { ArrowLeft, Download, Mail, Plus, Trash2 } from 'lucide-react'
 import { buildResumePdfFromElement } from '@/lib/resumePdf'
 import { resumeToHtml } from '@/lib/resumeHtml'
@@ -637,8 +638,7 @@ export default function LeadDetail() {
               </select>
             </div>
 
-            <input
-              type="date"
+            <DateInput
               value={attemptNextFollowUpDate}
               onChange={(e) => setAttemptNextFollowUpDate(e.target.value)}
               className="rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm"

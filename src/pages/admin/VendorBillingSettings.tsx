@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
+import DateInput from '@/components/DateInput'
 
 type Vendor = { user_id: string; profiles: { display_name: string | null; email: string | null } | null }
 type Project = { id: string; name: string }
@@ -210,7 +211,7 @@ export default function VendorBillingSettings() {
             ) : (
               <div><label className="block text-xs text-gray-500 mb-1">Weekly fixed amount</label><input value={fixedAmount} onChange={(e) => setFixedAmount(e.target.value)} type="number" step="0.01" min="0" className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white" /></div>
             )}
-            <div><label className="block text-xs text-gray-500 mb-1">Effective from</label><input value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} type="date" className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white" /></div>
+            <div><label className="block text-xs text-gray-500 mb-1">Effective from</label><DateInput value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white" /></div>
             <div><label className="block text-xs text-gray-500 mb-1">Notes</label><textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white" rows={3} /></div>
             <button disabled={saving} className="rounded-lg bg-accent px-4 py-2 text-sm text-white disabled:opacity-50">Save default</button>
           </form>

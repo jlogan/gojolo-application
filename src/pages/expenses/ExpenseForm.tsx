@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
+import DateInput from '@/components/DateInput'
 import { ArrowLeft, Upload } from 'lucide-react'
 
 type ProjectOption = { id: string; name: string }
@@ -272,10 +273,9 @@ export default function ExpenseForm() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label htmlFor="expense_date" className={labelClasses}>Date</label>
-            <input
+            <DateInput
               id="expense_date"
               name="expense_date"
-              type="date"
               value={form.expense_date}
               onChange={handleChange}
               className={inputClasses}

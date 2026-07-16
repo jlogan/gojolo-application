@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { type Project, StatusBadge } from './ProjectsList'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
+import DateInput from '@/components/DateInput'
 import LinkedInvoices from '@/components/LinkedInvoices'
 import CredentialsPanel from '@/components/CredentialsPanel'
 
@@ -400,7 +401,7 @@ export default function ProjectDetail() {
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Due Date</label>
-                  <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)}
+                  <DateInput value={taskDue} onChange={e => setTaskDue(e.target.value)}
                     className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" />
                 </div>
                 <div className="sm:col-span-2">

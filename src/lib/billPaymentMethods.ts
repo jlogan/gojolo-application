@@ -11,6 +11,10 @@ export type BillPaymentMethod = (typeof BILL_PAYMENT_METHODS)[number]['value']
 
 export const DEFAULT_BILL_PAYMENT_METHOD: BillPaymentMethod = 'wise'
 
+export function isBillPaymentMethod(method: string): method is BillPaymentMethod {
+  return BILL_PAYMENT_METHODS.some((m) => m.value === method)
+}
+
 export function billPaymentMethodLabel(method: string | null | undefined): string {
   if (!method) return '—'
   const found = BILL_PAYMENT_METHODS.find((m) => m.value === method)

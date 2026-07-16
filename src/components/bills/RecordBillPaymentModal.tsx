@@ -1,18 +1,29 @@
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
+import DateInput from '@/components/DateInput'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   BILL_PAYMENT_METHODS,
   DEFAULT_BILL_PAYMENT_METHOD,
+  isBillPaymentMethod,
   type BillPaymentMethod,
 } from '@/lib/billPaymentMethods'
+
+export type BillPaymentFormValues = {
+  id: string
+  amount: number
+  payment_method: string | null
+  payment_date: string
+  transaction_id: string | null
+}
 
 type Props = {
   open: boolean
   billId: string
   billLabel: string
   defaultAmount: number
+  editPayment?: BillPaymentFormValues | null
   onClose: () => void
   onSuccess: () => void
 }
@@ -22,9 +33,11 @@ export default function RecordBillPaymentModal({
   billId,
   billLabel,
   defaultAmount,
+  editPayment = null,
   onClose,
   onSuccess,
 }: Props) {
+  const isEdit = editPayment != null
   const { user } = useAuth()
   const [amount, setAmount] = useState('')
   const [method, setMethod] = useState<BillPaymentMethod>(DEFAULT_BILL_PAYMENT_METHOD)
@@ -35,13 +48,24 @@ export default function RecordBillPaymentModal({
 
   useEffect(() => {
     if (!open) return
-    setAmount(defaultAmount > 0 ? String(defaultAmount) : '')
-    setMethod(DEFAULT_BILL_PAYMENT_METHOD)
-    setPaymentDate(new Date().toISOString().slice(0, 10))
-    setTransactionId('')
+    if (editPayment) {
+      setAmount(String(editPayment.amount))
+      setMethod(
+        editPayment.payment_method && isBillPaymentMethod(editPayment.payment_method)
+          ? editPayment.payment_method
+          : DEFAULT_BILL_PAYMENT_METHOD,
+      )
+      setPaymentDate(editPayment.payment_date.slice(0, 10))
+      setTransactionId(editPayment.transaction_id ?? '')
+    } else {
+      setAmount(defaultAmount > 0 ? String(defaultAmount) : '')
+      setMethod(DEFAULT_BILL_PAYMENT_METHOD)
+      setPaymentDate(new Date().toISOString().slice(0, 10))
+      setTransactionId('')
+    }
     setError(null)
     setSaving(false)
-  }, [open, billId, defaultAmount])
+  }, [open, billId, defaultAmount, editPayment])
 
   if (!open) return null
 
@@ -57,17 +81,27 @@ export default function RecordBillPaymentModal({
 
     setSaving(true)
     setError(null)
-    const { error: insertError } = await supabase.from('invoice_payments').insert({
-      invoice_id: billId,
+    const payload = {
       amount: parsed,
       payment_method: method,
       payment_date: paymentDate,
       transaction_id: transactionId.trim() || null,
-      recorded_by: user.id,
-    })
+    }
 
-    if (insertError) {
-      setError(insertError.message || 'Failed to record payment.')
+    const { error: saveError } = isEdit
+      ? await supabase
+          .from('invoice_payments')
+          .update(payload)
+          .eq('id', editPayment.id)
+          .eq('invoice_id', billId)
+      : await supabase.from('invoice_payments').insert({
+          invoice_id: billId,
+          ...payload,
+          recorded_by: user.id,
+        })
+
+    if (saveError) {
+      setError(saveError.message || (isEdit ? 'Failed to update payment.' : 'Failed to record payment.'))
       setSaving(false)
       return
     }
@@ -87,7 +121,7 @@ export default function RecordBillPaymentModal({
       <div className="bg-surface-elevated border border-border rounded-xl max-w-md w-full p-5 shadow-xl">
         <div className="flex items-start justify-between gap-3 mb-1">
           <h2 id="record-bill-payment-title" className="text-lg font-semibold text-white">
-            Record payment
+            {isEdit ? 'Edit payment' : 'Record payment'}
           </h2>
           <button
             type="button"
@@ -106,9 +140,8 @@ export default function RecordBillPaymentModal({
             <label htmlFor="bill-pay-date" className="block text-xs font-medium text-gray-400 mb-1">
               Payment date *
             </label>
-            <input
+            <DateInput
               id="bill-pay-date"
-              type="date"
               required
               value={paymentDate}
               onChange={(e) => setPaymentDate(e.target.value)}
@@ -187,7 +220,7 @@ export default function RecordBillPaymentModal({
               className="px-3 py-2 rounded-lg bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-50"
               data-testid="bill-payment-submit"
             >
-              {saving ? 'Saving…' : 'Record payment'}
+              {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Record payment'}
             </button>
           </div>
         </form>
