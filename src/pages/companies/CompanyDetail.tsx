@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { Users, Pencil, ArrowLeft, X, Trash2, FolderKanban } from 'lucide-react'
+import { Users, Pencil, ArrowLeft, X, Trash2, FolderKanban, Plus } from 'lucide-react'
 import type { Company } from './CompaniesList'
 import LinkedInvoices from '@/components/LinkedInvoices'
 import CredentialsPanel from '@/components/CredentialsPanel'
@@ -26,6 +26,7 @@ export default function CompanyDetail() {
   const [searchResults, setSearchResults] = useState<SearchContact[]>([])
   const [showSearch, setShowSearch] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [addContactOpen, setAddContactOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -116,13 +117,23 @@ export default function CompanyDetail() {
     setSearchResults([])
   }
 
-  const clearQuickForm = () => {
+  const resetQuickFormFields = () => {
     setQuickName('')
     setQuickEmail('')
     setQuickPhone('')
     setEditingContactId(null)
     setSearchResults([])
     setShowSearch(false)
+  }
+
+  const openAddContactModal = () => {
+    resetQuickFormFields()
+    setAddContactOpen(true)
+  }
+
+  const closeAddContactModal = () => {
+    resetQuickFormFields()
+    setAddContactOpen(false)
   }
 
   const handleQuickSubmit = async (e: React.FormEvent) => {
@@ -144,7 +155,7 @@ export default function CompanyDetail() {
     } else {
       await supabase.from('contacts').insert(payload)
     }
-    clearQuickForm()
+    closeAddContactModal()
     fetchContacts()
     setSaving(false)
   }
@@ -228,15 +239,30 @@ export default function CompanyDetail() {
       </div>
 
       <section className="rounded-lg border border-border p-4 bg-surface-elevated mb-6">
-        <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">
-          <Users className="w-4 h-4" />
-          Contacts ({contacts.length})
-        </h2>
-        <p className="text-gray-500 text-xs mb-3">Add contacts or link existing ones by searching by name. They’ll be auto-added to projects linked to this company.</p>
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
+          <div>
+            <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+              <Users className="w-4 h-4" />
+              Contacts ({contacts.length})
+            </h2>
+            <p className="text-gray-500 text-xs mt-1">
+              Linked contacts are auto-added to projects linked to this company.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openAddContactModal}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 shrink-0"
+            data-testid="company-add-contact-open"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add contact
+          </button>
+        </div>
         {contacts.length === 0 ? (
           <p className="text-gray-400 text-sm">No contacts linked yet.</p>
         ) : (
-          <ul className="space-y-1 mb-4" data-testid="company-contacts-list">
+          <ul className="space-y-1" data-testid="company-contacts-list">
             {contacts.map((c) => (
               <li key={c.id} className="flex items-center justify-between gap-2 py-2 border-b border-border last:border-b-0">
                 <Link
@@ -264,84 +290,6 @@ export default function CompanyDetail() {
             ))}
           </ul>
         )}
-        <form onSubmit={handleQuickSubmit} className="space-y-3 pt-2 border-t border-border">
-          <div className="relative" ref={searchContainerRef}>
-            <label htmlFor="quick-name" className="block text-xs font-medium text-gray-400 mb-1">Name</label>
-            <input
-              id="quick-name"
-              type="text"
-              value={quickName}
-              onChange={(e) => setQuickName(e.target.value)}
-              onFocus={() => searchResults.length > 0 && setShowSearch(true)}
-              placeholder="Type to search existing or enter new name"
-              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
-              data-testid="company-quick-name"
-            />
-            {showSearch && searchResults.length > 0 && (
-              <ul className="absolute z-10 mt-1 w-full rounded-lg border border-border bg-surface-elevated py-1 shadow-lg max-h-48 overflow-auto">
-                {searchResults.map((c) => (
-                  <li key={c.id}>
-                    <button
-                      type="button"
-                      onClick={() => selectExistingContact(c)}
-                      className="w-full text-left px-3 py-2 text-sm text-white hover:bg-surface-muted flex flex-col"
-                    >
-                      <span className="font-medium">{c.name}</span>
-                      {(c.email || c.phone) && (
-                        <span className="text-gray-400 text-xs">
-                          {[c.email, c.phone].filter(Boolean).join(' · ')}
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div>
-            <label htmlFor="quick-email" className="block text-xs font-medium text-gray-400 mb-1">Email</label>
-            <input
-              id="quick-email"
-              type="email"
-              value={quickEmail}
-              onChange={(e) => setQuickEmail(e.target.value)}
-              placeholder="email@example.com"
-              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
-              data-testid="company-quick-email"
-            />
-          </div>
-          <div>
-            <label htmlFor="quick-phone" className="block text-xs font-medium text-gray-400 mb-1">Phone</label>
-            <input
-              id="quick-phone"
-              type="tel"
-              value={quickPhone}
-              onChange={(e) => setQuickPhone(e.target.value)}
-              placeholder="+1 234 567 8900"
-              className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
-              data-testid="company-quick-phone"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="submit"
-              disabled={saving || !quickName.trim()}
-              className="px-3 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
-              data-testid="company-quick-submit"
-            >
-              {saving ? 'Saving…' : editingContactId ? 'Update' : 'Add'}
-            </button>
-            {editingContactId && (
-              <button
-                type="button"
-                onClick={clearQuickForm}
-                className="px-3 py-2 rounded-lg border border-border text-gray-300 text-sm hover:bg-surface-muted"
-              >
-                Cancel
-              </button>
-            )}
-          </div>
-        </form>
       </section>
 
       <section className="rounded-lg border border-border p-4 bg-surface-elevated mb-6">
@@ -371,6 +319,113 @@ export default function CompanyDetail() {
         description="Store client logins for this company. Passwords stay masked until you confirm your identity."
       />
       <LinkedInvoices companyId={company.id} />
+
+      {addContactOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="add-contact-title"
+          data-testid="company-add-contact-modal"
+        >
+          <div className="bg-surface-elevated border border-border rounded-xl max-w-md w-full p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-3 mb-1">
+              <h2 id="add-contact-title" className="text-lg font-semibold text-white">
+                {editingContactId ? 'Update contact' : 'Add contact'}
+              </h2>
+              <button
+                type="button"
+                onClick={closeAddContactModal}
+                className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted shrink-0"
+                aria-label="Close add contact dialog"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm text-gray-400 mb-4">
+              Search by name to link an existing contact, or enter details to create a new one.
+            </p>
+            <form onSubmit={handleQuickSubmit} className="space-y-3">
+              <div className="relative" ref={searchContainerRef}>
+                <label htmlFor="quick-name" className="block text-xs font-medium text-gray-400 mb-1">Name</label>
+                <input
+                  id="quick-name"
+                  type="text"
+                  value={quickName}
+                  onChange={(e) => setQuickName(e.target.value)}
+                  onFocus={() => searchResults.length > 0 && setShowSearch(true)}
+                  placeholder="Type to search existing or enter new name"
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+                  data-testid="company-quick-name"
+                  autoFocus
+                />
+                {showSearch && searchResults.length > 0 && (
+                  <ul className="absolute z-10 mt-1 w-full rounded-lg border border-border bg-surface-elevated py-1 shadow-lg max-h-48 overflow-auto">
+                    {searchResults.map((c) => (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => selectExistingContact(c)}
+                          className="w-full text-left px-3 py-2 text-sm text-white hover:bg-surface-muted flex flex-col"
+                        >
+                          <span className="font-medium">{c.name}</span>
+                          {(c.email || c.phone) && (
+                            <span className="text-gray-400 text-xs">
+                              {[c.email, c.phone].filter(Boolean).join(' · ')}
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <label htmlFor="quick-email" className="block text-xs font-medium text-gray-400 mb-1">Email</label>
+                <input
+                  id="quick-email"
+                  type="email"
+                  value={quickEmail}
+                  onChange={(e) => setQuickEmail(e.target.value)}
+                  placeholder="email@example.com"
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+                  data-testid="company-quick-email"
+                />
+              </div>
+              <div>
+                <label htmlFor="quick-phone" className="block text-xs font-medium text-gray-400 mb-1">Phone</label>
+                <input
+                  id="quick-phone"
+                  type="tel"
+                  value={quickPhone}
+                  onChange={(e) => setQuickPhone(e.target.value)}
+                  placeholder="+1 234 567 8900"
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent"
+                  data-testid="company-quick-phone"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={closeAddContactModal}
+                  disabled={saving}
+                  className="px-4 py-2 rounded-lg border border-border text-gray-200 hover:bg-surface-muted text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving || !quickName.trim()}
+                  className="px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                  data-testid="company-quick-submit"
+                >
+                  {saving ? 'Saving…' : editingContactId ? 'Update contact' : 'Add contact'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {deleteOpen && (
         <div
