@@ -2,13 +2,14 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
-import { Users, Pencil, ArrowLeft, X, Trash2 } from 'lucide-react'
+import { Users, Pencil, ArrowLeft, X, Trash2, FolderKanban } from 'lucide-react'
 import type { Company } from './CompaniesList'
 import LinkedInvoices from '@/components/LinkedInvoices'
 import CredentialsPanel from '@/components/CredentialsPanel'
 
 type ContactRow = { id: string; name: string; email: string | null; phone: string | null }
 type SearchContact = { id: string; name: string; email: string | null; phone: string | null }
+type LinkedProject = { id: string; name: string; status: string }
 
 export default function CompanyDetail() {
   const { id } = useParams<{ id: string }>()
@@ -16,6 +17,7 @@ export default function CompanyDetail() {
   const { currentOrg } = useOrg()
   const [company, setCompany] = useState<Company | null>(null)
   const [contacts, setContacts] = useState<ContactRow[]>([])
+  const [projects, setProjects] = useState<LinkedProject[]>([])
   const [loading, setLoading] = useState(true)
   const [quickName, setQuickName] = useState('')
   const [quickEmail, setQuickEmail] = useState('')
@@ -52,6 +54,18 @@ export default function CompanyDetail() {
     setContacts((data as ContactRow[]) ?? [])
   }, [id, currentOrg?.id])
 
+  const fetchProjects = useCallback(async () => {
+    if (!id) return
+    const { data: pc } = await supabase
+      .from('project_companies')
+      .select('project_id, projects(id, name, status)')
+      .eq('company_id', id)
+    setProjects((pc ?? []).map((r: { projects: { id: string; name: string; status: string } | { id: string; name: string; status: string }[] | null }) => {
+      const p = Array.isArray(r.projects) ? r.projects[0] : r.projects
+      return p ? { id: p.id, name: p.name, status: p.status } : null
+    }).filter(Boolean) as LinkedProject[])
+  }, [id])
+
   useEffect(() => {
     if (!id || !currentOrg?.id) return
     let cancelled = false
@@ -61,6 +75,7 @@ export default function CompanyDetail() {
   }, [id, currentOrg?.id, fetchCompany])
 
   useEffect(() => { fetchContacts() }, [fetchContacts])
+  useEffect(() => { fetchProjects() }, [fetchProjects])
 
   useEffect(() => {
     if (!currentOrg?.id || !quickName.trim()) {
@@ -328,6 +343,27 @@ export default function CompanyDetail() {
           </div>
         </form>
       </section>
+
+      <section className="rounded-lg border border-border p-4 bg-surface-elevated mb-6">
+        <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">
+          <FolderKanban className="w-4 h-4" />
+          Projects ({projects.length})
+        </h2>
+        {projects.length === 0 ? (
+          <p className="text-gray-500 text-sm">No linked projects.</p>
+        ) : (
+          <ul className="space-y-1" data-testid="company-projects-list">
+            {projects.map((p) => (
+              <li key={p.id}>
+                <Link to={`/projects/${p.id}`} className="text-sm text-accent hover:underline">
+                  {p.name}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       <CredentialsPanel
         orgId={currentOrg!.id}
         companyId={company.id}

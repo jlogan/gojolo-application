@@ -104,6 +104,7 @@ serve(async (req) => {
     if (!(await hasPermission(userClient, orgId, 'vault.view'))) return json({ error: 'Forbidden' }, 403)
 
     const companyIds = new Set<string>()
+    const linkedProjectIds = new Set<string>()
     if (body.companyId) companyIds.add(body.companyId)
     if (body.projectId) {
       const { data: linkedCompanies, error: linkError } = await userClient
@@ -112,6 +113,14 @@ serve(async (req) => {
         .eq('project_id', body.projectId)
       if (linkError) return json({ error: linkError.message }, 400)
       ;(linkedCompanies ?? []).forEach((row: { company_id: string }) => companyIds.add(row.company_id))
+    }
+    if (body.companyId && !body.projectId) {
+      const { data: linkedProjects, error: linkError } = await userClient
+        .from('project_companies')
+        .select('project_id')
+        .eq('company_id', body.companyId)
+      if (linkError) return json({ error: linkError.message }, 400)
+      ;(linkedProjects ?? []).forEach((row: { project_id: string }) => linkedProjectIds.add(row.project_id))
     }
 
     let query = service
@@ -124,6 +133,8 @@ serve(async (req) => {
       query = query.or(`project_id.eq.${body.projectId},company_id.in.(${Array.from(companyIds).join(',')})`)
     } else if (body.projectId) {
       query = query.eq('project_id', body.projectId)
+    } else if (body.companyId && linkedProjectIds.size > 0) {
+      query = query.or(`company_id.eq.${body.companyId},project_id.in.(${Array.from(linkedProjectIds).join(',')})`)
     } else if (companyIds.size > 0) {
       query = query.in('company_id', Array.from(companyIds))
     } else {
