@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FileText, Plus, Search, Settings } from 'lucide-react'
+import { CreditCard, FileText, Plus, Search, Settings, XCircle } from 'lucide-react'
 import RecordBillPaymentModal from '@/components/bills/RecordBillPaymentModal'
 import CancelBillConfirmModal from '@/components/bills/CancelBillConfirmModal'
 import { useAuth } from '@/contexts/AuthContext'
@@ -90,7 +90,7 @@ function SortHeader({
 }) {
   const active = sortField === field
   return (
-    <th className={`px-4 py-3 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+    <th className={`px-3 py-2 ${align === 'right' ? 'text-right' : 'text-left'}`}>
       <button
         type="button"
         onClick={() => onSort(field)}
@@ -432,7 +432,7 @@ export default function BillsList() {
               <thead className="bg-surface-muted/70 text-xs uppercase tracking-wide text-gray-500">
                 <tr>
                   {canBulkEdit && (
-                    <th className="px-3 py-3 w-10">
+                    <th className="px-3 py-2 w-10">
                       <input
                         ref={selectAllRef}
                         type="checkbox"
@@ -452,7 +452,7 @@ export default function BillsList() {
                   <SortHeader field="status" label="Status" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                   <SortHeader field="total" label="Total" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
                   <SortHeader field="amount_due" label="Amount Due" sortField={sortField} sortDir={sortDir} onSort={handleSort} align="right" />
-                  {canAdminBillActions && <th className="px-4 py-3 text-right">Actions</th>}
+                  {canAdminBillActions && <th className="px-3 py-2 text-right w-[1%] whitespace-nowrap">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -465,7 +465,7 @@ export default function BillsList() {
                   return (
                     <tr key={bill.id} className={`hover:bg-surface-muted/40 ${isSelected ? 'bg-accent/5' : ''}`}>
                       {canBulkEdit && (
-                        <td className="px-3 py-3">
+                        <td className="px-3 py-2">
                           {isDraft ? (
                             <input
                               type="checkbox"
@@ -478,20 +478,26 @@ export default function BillsList() {
                           ) : null}
                         </td>
                       )}
-                      <td className="px-4 py-3"><Link to={`/bills/${bill.id}`} className="text-accent hover:underline font-medium">{billNumber(bill)}</Link></td>
-                      <td className="px-4 py-3 text-gray-200">{vendorName(vendor)}</td>
-                      <td className="px-4 py-3 text-gray-300">{projectName(bill.projects)}</td>
-                      <td className="px-4 py-3 text-gray-400">{formatDate(bill.billing_period_start)} - {formatDate(bill.billing_period_end)}</td>
-                      <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${BILL_STATUS_CLASSES[bill.status] ?? BILL_STATUS_CLASSES.draft}`}>{billStatusLabel(bill.status)}</span></td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="text-white font-medium tabular-nums">{formatCurrency(bill.total)}</div>
-                        {partialPayment && (
-                          <div className="text-xs text-gray-500 mt-0.5 tabular-nums">Paid {formatCurrency(bill.amount_paid)}</div>
-                        )}
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <Link to={`/bills/${bill.id}`} className="text-accent hover:underline font-medium tabular-nums">{billNumber(bill)}</Link>
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-3 py-2 text-gray-200">{vendorName(vendor)}</td>
+                      <td className="px-3 py-2 text-gray-300">{projectName(bill.projects)}</td>
+                      <td className="px-3 py-2 text-gray-400 text-xs whitespace-nowrap">{formatDate(bill.billing_period_start)} – {formatDate(bill.billing_period_end)}</td>
+                      <td className="px-3 py-2"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${BILL_STATUS_CLASSES[bill.status] ?? BILL_STATUS_CLASSES.draft}`}>{billStatusLabel(bill.status)}</span></td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="text-white font-medium tabular-nums whitespace-nowrap">
+                          {formatCurrency(bill.total)}
+                          {partialPayment && (
+                            <span className="ml-1.5 text-[11px] font-normal text-gray-500">
+                              · paid {formatCurrency(bill.amount_paid)}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right">
                         <div
-                          className={`font-medium tabular-nums ${
+                          className={`font-medium tabular-nums whitespace-nowrap ${
                             bill.status === 'cancelled'
                               ? 'text-gray-500'
                               : amountDue > 0
@@ -503,8 +509,8 @@ export default function BillsList() {
                         </div>
                       </td>
                       {canAdminBillActions && (
-                        <td className="px-4 py-3 text-right">
-                          <div className="inline-flex flex-wrap items-center justify-end gap-2">
+                        <td className="px-3 py-2 text-right">
+                          <div className="inline-flex items-center justify-end gap-1">
                             {canRecordBillPayment(bill.status) && (
                               <button
                                 type="button"
@@ -512,10 +518,12 @@ export default function BillsList() {
                                   setActionMessage(null)
                                   setPaymentBill(bill)
                                 }}
-                                className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700"
+                                className="p-1.5 rounded-md text-green-400 hover:text-green-300 hover:bg-green-500/15"
+                                aria-label={`Record payment for ${billNumber(bill)}`}
+                                title="Record payment"
                                 data-testid={`bill-record-payment-${bill.id}`}
                               >
-                                Record Payment
+                                <CreditCard className="w-4 h-4" aria-hidden />
                               </button>
                             )}
                             {canCancelBill(bill.status) && (
@@ -525,10 +533,12 @@ export default function BillsList() {
                                   setActionMessage(null)
                                   setCancelBill(bill)
                                 }}
-                                className="px-3 py-1.5 rounded-lg border border-red-500/40 text-red-300 text-xs font-medium hover:bg-red-500/10"
+                                className="p-1.5 rounded-md text-red-400 hover:text-red-300 hover:bg-red-500/15"
+                                aria-label={`Cancel ${billNumber(bill)}`}
+                                title="Cancel bill"
                                 data-testid={`bill-cancel-${bill.id}`}
                               >
-                                Cancel
+                                <XCircle className="w-4 h-4" aria-hidden />
                               </button>
                             )}
                             {!canRecordBillPayment(bill.status) && !canCancelBill(bill.status) && (
