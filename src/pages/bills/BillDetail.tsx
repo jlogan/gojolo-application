@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
+import { billStatusLabel } from '@/lib/billStatus'
 
 type Bill = {
   id: string
@@ -118,12 +119,12 @@ export default function BillDetail() {
           </div>
           <div className="text-left md:text-right">
             <div className="text-3xl font-semibold text-white">{formatCurrency(bill.total)}</div>
-            <div className="text-sm text-gray-400 capitalize mt-1">{bill.status}</div>
+            <div className="text-sm text-gray-400 mt-1">{billStatusLabel(bill.status)}</div>
           </div>
         </div>
         {isOrgAdmin && (
           <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-border">
-            {bill.status === 'draft' && <button disabled={savingStatus === 'approved'} onClick={() => updateStatus('approved')} className="px-3 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-50">Approve</button>}
+            {bill.status === 'draft' && <button disabled={savingStatus === 'approved'} onClick={() => updateStatus('approved')} className="px-3 py-2 rounded-lg bg-accent text-white text-sm disabled:opacity-50">Move to Open</button>}
             {bill.status !== 'paid' && bill.status !== 'cancelled' && <button disabled={savingStatus === 'paid'} onClick={() => updateStatus('paid')} className="px-3 py-2 rounded-lg border border-green-500/40 text-green-300 text-sm disabled:opacity-50">Mark paid</button>}
             {bill.status !== 'cancelled' && <button disabled={savingStatus === 'cancelled'} onClick={() => updateStatus('cancelled')} className="px-3 py-2 rounded-lg border border-red-500/40 text-red-300 text-sm disabled:opacity-50">Cancel</button>}
           </div>

@@ -4,6 +4,7 @@ import { FileText, Plus, Search, Settings } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
+import { BILL_STATUS_CLASSES, billStatusLabel } from '@/lib/billStatus'
 
 type BillRow = {
   id: string
@@ -28,17 +29,10 @@ type StatusFilter = 'all' | 'draft' | 'approved' | 'paid' | 'cancelled'
 const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'draft', label: 'Draft' },
-  { id: 'approved', label: 'Unpaid' },
+  { id: 'approved', label: 'Open' },
   { id: 'paid', label: 'Paid' },
   { id: 'cancelled', label: 'Cancelled' },
 ]
-
-const STATUS_CLASSES: Record<string, string> = {
-  draft: 'bg-gray-500/20 text-gray-300 border-gray-500/30',
-  approved: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
-  paid: 'bg-green-500/20 text-green-300 border-green-500/30',
-  cancelled: 'bg-slate-500/20 text-slate-300 border-slate-500/30',
-}
 
 function formatCurrency(amount: number | null | undefined) {
   return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(Number(amount ?? 0))
@@ -136,7 +130,7 @@ export default function BillsList() {
     if (!q) return bills
     return bills.filter((bill) => {
       const vendor = bill.vendor_user_id ? profiles[bill.vendor_user_id] : null
-      return [billNumber(bill), projectName(bill.projects), vendor?.display_name, vendor?.email, bill.status]
+      return [billNumber(bill), projectName(bill.projects), vendor?.display_name, vendor?.email, bill.status, billStatusLabel(bill.status)]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(q))
     })
@@ -221,8 +215,8 @@ export default function BillsList() {
     setBulkMessage({
       type: 'success',
       text: updatedCount === 1
-        ? '1 bill moved to unpaid / pending payment.'
-        : `${updatedCount} bills moved to unpaid / pending payment.`,
+        ? '1 bill moved to Open.'
+        : `${updatedCount} bills moved to Open.`,
     })
     setSelectedIds(new Set())
     setRefreshKey((k) => k + 1)
@@ -298,7 +292,7 @@ export default function BillsList() {
               className="px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50"
               data-testid="bills-bulk-approve"
             >
-              {bulkUpdating ? 'Updating…' : 'Move to unpaid / pending payment'}
+              {bulkUpdating ? 'Updating…' : 'Move to Open'}
             </button>
           </div>
         </div>
@@ -374,7 +368,7 @@ export default function BillsList() {
                       <td className="px-4 py-3 text-gray-200">{vendor?.display_name || vendor?.email || 'Vendor'}</td>
                       <td className="px-4 py-3 text-gray-300">{projectName(bill.projects)}</td>
                       <td className="px-4 py-3 text-gray-400">{formatDate(bill.billing_period_start)} - {formatDate(bill.billing_period_end)}</td>
-                      <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${STATUS_CLASSES[bill.status] ?? STATUS_CLASSES.draft}`}>{bill.status}</span></td>
+                      <td className="px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-xs ${BILL_STATUS_CLASSES[bill.status] ?? BILL_STATUS_CLASSES.draft}`}>{billStatusLabel(bill.status)}</span></td>
                       <td className="px-4 py-3 text-right text-white font-medium">{formatCurrency(bill.total)}</td>
                     </tr>
                   )
