@@ -418,7 +418,8 @@ export default function TaskDetail() {
     if (timeLogIds.length > 0) {
       const { data: billedItems } = await supabase
         .from('invoice_items')
-        .select('time_log_ids')
+        .select('time_log_ids, invoices!inner(direction)')
+        .eq('invoices.direction', 'outbound')
         .overlaps('time_log_ids', timeLogIds)
       const actuallyBilledIds = new Set<string>()
       ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach(item => {
