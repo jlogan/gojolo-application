@@ -4,6 +4,12 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import DateInput from '@/components/DateInput'
+import {
+  DATE_RANGE_PRESETS,
+  detectDateRangePreset,
+  getDateRangeForPreset,
+  type DateRangePreset,
+} from '@/lib/dateRanges'
 import { ChevronDown, ChevronUp, Plus, X, FileText } from 'lucide-react'
 
 type TimeLogRow = {
@@ -369,6 +375,28 @@ export default function Timesheets() {
   }
 
   const hasFilters = filterProjectId || filterUserId || filterDateFrom || filterDateTo
+  const activeDatePreset = useMemo(
+    () => detectDateRangePreset(filterDateFrom, filterDateTo),
+    [filterDateFrom, filterDateTo],
+  )
+
+  const applyDatePreset = (preset: DateRangePreset | 'all') => {
+    if (preset === 'all') {
+      setFilterDateFrom('')
+      setFilterDateTo('')
+      return
+    }
+    const { from, to } = getDateRangeForPreset(preset)
+    setFilterDateFrom(from)
+    setFilterDateTo(to)
+  }
+
+  const clearFilters = () => {
+    setFilterProjectId('')
+    setFilterUserId('')
+    setFilterDateFrom('')
+    setFilterDateTo('')
+  }
 
   return (
     <div className="p-4 md:p-6" data-testid="timesheets-page">
@@ -447,7 +475,23 @@ export default function Timesheets() {
       )}
 
       {/* ── Filter bar ── */}
-      <div className="rounded-lg border border-border bg-surface-muted/30 p-3 mb-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="rounded-lg border border-border bg-surface-muted/30 p-3 mb-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-500 shrink-0">Period</span>
+          <div className="flex flex-wrap rounded-lg border border-border overflow-hidden text-xs">
+            <button type="button" onClick={() => applyDatePreset('all')}
+              className={`px-3 py-1.5 transition-colors ${!filterDateFrom && !filterDateTo ? 'bg-accent text-white' : 'text-gray-400 hover:text-white hover:bg-surface-muted'}`}>
+              All dates
+            </button>
+            {DATE_RANGE_PRESETS.map(({ id, label }) => (
+              <button key={id} type="button" onClick={() => applyDatePreset(id)}
+                className={`px-3 py-1.5 transition-colors border-l border-border ${activeDatePreset === id ? 'bg-accent text-white' : 'text-gray-400 hover:text-white hover:bg-surface-muted'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {/* Project */}
         <div>
           <label className="block text-xs text-gray-500 mb-1">Project</label>
@@ -482,12 +526,13 @@ export default function Timesheets() {
             <DateInput value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)}
               className="flex-1 rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
             {hasFilters && (
-              <button type="button" onClick={() => { setFilterProjectId(''); setFilterUserId(''); setFilterDateFrom(''); setFilterDateTo('') }}
+              <button type="button" onClick={clearFilters}
                 className="px-2 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs">
                 Clear
               </button>
             )}
           </div>
+        </div>
         </div>
       </div>
 
