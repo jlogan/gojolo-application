@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
+import { parseMentionUserIds } from '@/lib/mentionUtils'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
@@ -1342,9 +1343,7 @@ export default function Inbox() {
 
   const handleAddComment = async () => {
     if (!selectedThreadId || !commentText.trim() || !userId || !currentOrg?.id) return
-    const mentionRegex = /@(\w+)/g
-    const mentionNames = [...commentText.trim().matchAll(mentionRegex)].map(m => m[1].toLowerCase())
-    const mentionIds = inboxUsers.filter(u => mentionNames.some(n => u.display_name?.toLowerCase().includes(n) || u.email?.toLowerCase().includes(n))).map(u => u.user_id)
+    const mentionIds = parseMentionUserIds(commentText.trim(), inboxUsers).filter(id => id !== userId)
     const { error: insertErr } = await supabase.from('inbox_comments').insert({
       thread_id: selectedThreadId, user_id: userId, content: commentText.trim(),
       mentions: mentionIds.length > 0 ? mentionIds : null,

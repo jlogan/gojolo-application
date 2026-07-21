@@ -12,6 +12,7 @@ import {
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 import DateInput from '@/components/DateInput'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
+import { htmlToPlainText, parseMentionUserIds } from '@/lib/mentionUtils'
 
 type Task = {
   id: string; project_id: string; title: string; description: string | null
@@ -80,45 +81,6 @@ function isHtmlEffectivelyEmpty(html: string): boolean {
     .replace(/&nbsp;/gi, ' ')
     .trim()
   return stripped.length === 0
-}
-function htmlToPlainText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .trim()
-}
-function parseMentionUserIds(html: string, users: OrgUser[]): string[] {
-  const plain = htmlToPlainText(html)
-  const labels = users
-    .map(u => ({ user_id: u.user_id, label: u.display_name ?? u.email ?? '' }))
-    .filter(u => u.label)
-    .sort((a, b) => b.label.length - a.label.length)
-
-  const found = new Set<string>()
-  let i = 0
-  while (i < plain.length) {
-    if (plain[i] !== '@') {
-      i++
-      continue
-    }
-    const rest = plain.slice(i + 1)
-    let matched = false
-    for (const { user_id, label } of labels) {
-      if (rest.toLowerCase().startsWith(label.toLowerCase())) {
-        const after = rest[label.length]
-        if (!after || after === ' ' || after === '\n') {
-          found.add(user_id)
-          i += 1 + label.length
-          matched = true
-          break
-        }
-      }
-    }
-    if (!matched) i++
-  }
-  return [...found]
 }
 function looksLikeHtml(s: string): boolean {
   return /<[a-z][\s\S]*>/i.test(s)
