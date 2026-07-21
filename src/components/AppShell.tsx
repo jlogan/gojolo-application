@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
+import { useNotifications } from '@/contexts/NotificationsContext'
 import {
   LayoutGrid,
   MessageSquare,
@@ -76,6 +77,7 @@ const VENDOR_NAV = [
 export default function AppShell() {
   const { signOut } = useAuth()
   const { currentOrg, isPlatformAdmin, isOrgAdmin, isVendor } = useOrg()
+  const { unreadCount } = useNotifications()
   const location = useLocation()
   const navigate = useNavigate()
   const [mode, setMode] = useState<AppMode>(() => {
@@ -279,10 +281,28 @@ export default function AppShell() {
                 : 'text-gray-400 hover:bg-surface-muted hover:text-gray-200'
             }`}
             data-testid="nav-notifications"
+            aria-label={
+              unreadCount > 0
+                ? `Notifications, ${unreadCount} unread`
+                : 'Notifications'
+            }
+            title={
+              unreadCount > 0
+                ? `${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}`
+                : undefined
+            }
             onClick={() => setSidebarOpen(false)}
           >
             <Bell className="w-4 h-4 shrink-0" />
-            Notifications
+            <span className="flex-1 truncate">Notifications</span>
+            {unreadCount > 0 && (
+              <span
+                className="min-w-4 h-4 px-1 rounded-full bg-accent text-white text-[9px] font-bold flex items-center justify-center shrink-0"
+                aria-hidden="true"
+              >
+                {unreadCount}
+              </span>
+            )}
           </Link>
           <Link
             to="/profile"
