@@ -7,7 +7,7 @@ import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive, ArchiveRestore,
   List, ChevronRight, Plus, Reply, ReplyAll, Forward,
   RotateCcw, RefreshCw, Paperclip, Download,
-  Search, User, Link2, Pencil, Trash2, FileText, ChevronDown,
+  Search, User, Link2, Pencil, Trash2, FileText, ChevronDown, Mailbox,
 } from 'lucide-react'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
@@ -266,6 +266,7 @@ export default function Inbox() {
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [mailboxFilterId, setMailboxFilterId] = useState<string | null>(null)
+  const [mailboxFilterOpen, setMailboxFilterOpen] = useState(false)
   const [hasMoreThreads, setHasMoreThreads] = useState(false)
   const [loadingMoreThreads, setLoadingMoreThreads] = useState(false)
 
@@ -700,6 +701,7 @@ export default function Inbox() {
 
   useEffect(() => {
     setMailboxFilterId(null)
+    setMailboxFilterOpen(false)
   }, [currentOrg?.id])
 
   useEffect(() => {
@@ -858,6 +860,11 @@ export default function Inbox() {
     if (!readStatus) return true
     return new Date(t.last_message_at) > new Date(readStatus.last_read_at)
   }
+
+  const selectedMailboxAccount = useMemo(
+    () => (mailboxFilterId ? imapAccounts.find(a => a.id === mailboxFilterId) ?? null : null),
+    [imapAccounts, mailboxFilterId],
+  )
 
   // Filter by current tab so we never show trash in All or non-trash in Trash (handles stale threads during filter switch)
   const threadMatchesFilter = (t: InboxThread) => {
@@ -1791,32 +1798,59 @@ export default function Inbox() {
       <div className="flex flex-1 min-h-0">
         {/* Thread list */}
         <div className={`${selectedThreadId || replyMode === 'compose' ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-col border-r border-border bg-surface-muted/20 shrink-0`}>
-          {/* Search */}
-          <div className="p-2 border-b border-border flex gap-2">
-            <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
-              <input type="text" value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="Search email, subject, or body…"
-                className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+          {/* Search + optional mailbox filter */}
+          <div className="border-b border-border">
+            <div className="p-2 flex gap-2 items-center">
+              <div className="relative flex-1 min-w-0">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+                <input type="text" value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="Search email, subject, or body…"
+                  className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+              </div>
+              {imapAccounts.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setMailboxFilterOpen(open => !open)}
+                  title={selectedMailboxAccount
+                    ? `Mailbox: ${selectedMailboxAccount.label ?? selectedMailboxAccount.email}`
+                    : 'Filter by mailbox'}
+                  className={`inline-flex items-center gap-1 shrink-0 rounded border px-2 py-1.5 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-accent ${
+                    mailboxFilterId
+                      ? 'border-accent/60 bg-accent/15 text-accent'
+                      : mailboxFilterOpen
+                        ? 'border-border bg-surface-muted text-gray-200 ring-1 ring-accent/40'
+                        : 'border-border bg-surface-muted text-gray-400 hover:text-gray-200 hover:bg-surface-muted/80'
+                  }`}
+                >
+                  <Mailbox className="w-3.5 h-3.5 shrink-0" />
+                  {mailboxFilterId && (
+                    <span className="max-w-[4.5rem] truncate">
+                      {selectedMailboxAccount?.label ?? selectedMailboxAccount?.email ?? 'Mailbox'}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
-            {imapAccounts.length > 1 && (
-              <select
-                value={mailboxFilterId ?? ''}
-                onChange={e => {
-                  setMailboxFilterId(e.target.value || null)
-                  setThreads([])
-                  setHasMoreThreads(false)
-                  initialLoadDone.current = false
-                }}
-                title="Filter by mailbox"
-                className="shrink-0 max-w-[48%] rounded border border-border bg-surface-muted px-2 py-1.5 text-xs font-medium text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
-              >
-                <option value="">All mailboxes</option>
-                {imapAccounts.map(acc => (
-                  <option key={acc.id} value={acc.id}>
-                    {acc.label ? `${acc.label} (${acc.email})` : acc.email}
-                  </option>
-                ))}
-              </select>
+            {imapAccounts.length > 1 && mailboxFilterOpen && (
+              <div className="px-2 pb-2">
+                <select
+                  value={mailboxFilterId ?? ''}
+                  onChange={e => {
+                    setMailboxFilterId(e.target.value || null)
+                    setThreads([])
+                    setHasMoreThreads(false)
+                    initialLoadDone.current = false
+                  }}
+                  title="Filter by mailbox"
+                  className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-xs font-medium text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                >
+                  <option value="">All mailboxes</option>
+                  {imapAccounts.map(acc => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.label ? `${acc.label} (${acc.email})` : acc.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
           </div>
 
