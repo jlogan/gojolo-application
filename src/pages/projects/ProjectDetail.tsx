@@ -979,7 +979,7 @@ function ProjectTimeLogsPanel({
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
-          <Link to="/timesheets" className="text-xs text-accent hover:underline whitespace-nowrap">View all timesheets</Link>
+          <Link to={`/timesheets?project=${projectId}`} className="text-xs text-accent hover:underline whitespace-nowrap">View all timesheets</Link>
           <button type="button" onClick={onRefresh} disabled={loading}
             className="px-2 py-1.5 rounded-lg border border-border text-xs text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50 shrink-0">
             Refresh

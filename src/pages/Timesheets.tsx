@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -37,6 +37,7 @@ export default function Timesheets() {
   const { currentOrg } = useOrg()
   const { user } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   const [entries, setEntries] = useState<TimeLogRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -145,6 +146,11 @@ export default function Timesheets() {
   }, [currentOrg?.id])
 
   useEffect(() => { loadEntries() }, [loadEntries])
+
+  useEffect(() => {
+    const project = searchParams.get('project')
+    if (project) setFilterProjectId(project)
+  }, [searchParams])
 
   // Load projects for form
   useEffect(() => {
