@@ -125,13 +125,34 @@ function getTaskAssigneeUserIds(
 }
 
 type TaskPresentationView = 'list' | 'kanban'
-type KanbanColumnId = 'open' | 'in_progress' | 'completed' | 'overdue'
 
-function getKanbanColumn(task: Pick<Task, 'due_date' | 'status'>): KanbanColumnId {
-  if (isTaskCompleted(task.status)) return 'completed'
-  if (isTaskOverdueActive(task)) return 'overdue'
-  if (isTaskOpen(task.status)) return 'open'
-  return 'in_progress'
+/** Canonical task status column order (matches TaskDetail STATUS_FLOW + legacy values). */
+const TASK_KANBAN_STATUS_ORDER = [
+  'open',
+  'todo',
+  'in_progress',
+  'ready_for_testing',
+  'testing',
+  'needs_work',
+  'client_review',
+  'complete',
+  'done',
+  'closed',
+] as const
+
+/** Workflow stages always shown as Kanban columns (even when empty). */
+const TASK_WORKFLOW_STATUSES = new Set([
+  'open',
+  'in_progress',
+  'ready_for_testing',
+  'needs_work',
+  'client_review',
+  'complete',
+])
+
+function taskKanbanHeaderClasses(status: string): string {
+  const classes = TASK_STATUS_CONFIG[status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'
+  return classes.replace(/\sborder-[^\s]+/g, '')
 }
 
 function formatTaskTimeLogged(totalMinutes: number): string | null {
@@ -142,13 +163,6 @@ function formatTaskTimeLogged(totalMinutes: number): string | null {
   if (m === 0) return `${h}h`
   return `${h}h ${m}m`
 }
-
-const KANBAN_COLUMNS: { id: KanbanColumnId; label: string; headerClasses: string }[] = [
-  { id: 'open', label: 'Open', headerClasses: 'bg-gray-500/20 text-gray-300' },
-  { id: 'in_progress', label: 'In Progress', headerClasses: 'bg-blue-500/20 text-blue-400' },
-  { id: 'completed', label: 'Completed', headerClasses: 'bg-green-500/20 text-green-400' },
-  { id: 'overdue', label: 'Overdue', headerClasses: 'bg-red-500/20 text-red-400' },
-]
 
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
@@ -415,18 +429,42 @@ export default function ProjectDetail() {
     return map
   }, [timeLogs])
 
-  const kanbanTasksByColumn = useMemo(() => {
-    const grouped: Record<KanbanColumnId, Task[]> = {
-      open: [],
-      in_progress: [],
-      completed: [],
-      overdue: [],
+  const kanbanColumns = useMemo(() => {
+    const statusesInTasks = new Set(filteredTasks.map(t => t.status))
+    const seen = new Set<string>()
+    const ordered: string[] = []
+    for (const status of TASK_KANBAN_STATUS_ORDER) {
+      if (TASK_WORKFLOW_STATUSES.has(status) || statusesInTasks.has(status)) {
+        if (!seen.has(status)) {
+          ordered.push(status)
+          seen.add(status)
+        }
+      }
     }
     for (const task of filteredTasks) {
-      grouped[getKanbanColumn(task)].push(task)
+      if (!seen.has(task.status)) {
+        ordered.push(task.status)
+        seen.add(task.status)
+      }
+    }
+    return ordered.map(status => ({
+      id: status,
+      label: taskStatusLabel(status),
+      headerClasses: taskKanbanHeaderClasses(status),
+    }))
+  }, [filteredTasks])
+
+  const kanbanTasksByColumn = useMemo(() => {
+    const grouped: Record<string, Task[]> = {}
+    for (const col of kanbanColumns) {
+      grouped[col.id] = []
+    }
+    for (const task of filteredTasks) {
+      if (!grouped[task.status]) grouped[task.status] = []
+      grouped[task.status].push(task)
     }
     return grouped
-  }, [filteredTasks])
+  }, [filteredTasks, kanbanColumns])
 
   const timeLogTotalMinutes = useMemo(
     () => timeLogs.reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0),
@@ -912,7 +950,7 @@ export default function ProjectDetail() {
           ) : taskPresentationView === 'kanban' ? (
             <ProjectTaskKanban
               projectId={id!}
-              columns={KANBAN_COLUMNS}
+              columns={kanbanColumns}
               tasksByColumn={kanbanTasksByColumn}
               taskTimeMinutesByTaskId={taskTimeMinutesByTaskId}
               getAssigneeDisplay={getTaskAssigneeDisplay}
@@ -1142,8 +1180,8 @@ function ProjectTaskKanban({
   onDeleteTask,
 }: {
   projectId: string
-  columns: { id: KanbanColumnId; label: string; headerClasses: string }[]
-  tasksByColumn: Record<KanbanColumnId, Task[]>
+  columns: { id: string; label: string; headerClasses: string }[]
+  tasksByColumn: Record<string, Task[]>
   taskTimeMinutesByTaskId: Map<string, number>
   getAssigneeDisplay: (task: Task) => string | null
   onEditTask: (task: Task) => void
@@ -1151,11 +1189,14 @@ function ProjectTaskKanban({
 }) {
   return (
     <div className="overflow-x-auto -mx-1 px-1 pb-1 min-w-0">
-      <div className="flex gap-3 min-w-max lg:min-w-0 lg:grid lg:grid-cols-4 lg:gap-3">
+      <div
+        className="flex gap-3 min-w-max lg:min-w-0 lg:grid lg:gap-3"
+        style={columns.length > 0 ? { gridTemplateColumns: `repeat(${columns.length}, minmax(200px, 1fr))` } : undefined}
+      >
         {columns.map(col => {
-          const columnTasks = tasksByColumn[col.id]
+          const columnTasks = tasksByColumn[col.id] ?? []
           return (
-            <div key={col.id} className="w-[260px] shrink-0 lg:w-auto lg:shrink flex flex-col min-h-[120px] rounded-lg border border-border bg-surface-muted/20">
+            <div key={col.id} className="w-[260px] shrink-0 lg:w-auto lg:min-w-[200px] flex flex-col min-h-[120px] rounded-lg border border-border bg-surface-muted/20">
               <div className={`px-3 py-2 border-b border-border rounded-t-lg flex items-center justify-between gap-2 ${col.headerClasses}`}>
                 <span className="text-xs font-medium">{col.label}</span>
                 <span className="text-[10px] opacity-80">{columnTasks.length}</span>
@@ -1221,11 +1262,6 @@ function ProjectTaskKanban({
                               </span>
                             )}
                           </div>
-                          {!isTaskOpen(task.status) && !isTaskCompleted(task.status) && col.id !== 'overdue' && (
-                            <span className={`inline-flex px-1.5 py-0.5 rounded border text-[10px] ${TASK_STATUS_CONFIG[task.status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
-                              {taskStatusLabel(task.status)}
-                            </span>
-                          )}
                         </div>
                       </article>
                     )
