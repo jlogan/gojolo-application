@@ -265,6 +265,7 @@ export default function Inbox() {
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [mailboxFilterId, setMailboxFilterId] = useState<string | null>(null)
   const [hasMoreThreads, setHasMoreThreads] = useState(false)
   const [loadingMoreThreads, setLoadingMoreThreads] = useState(false)
 
@@ -380,10 +381,12 @@ export default function Inbox() {
 
   const initialLoadDone = useRef(false)
   const fetchFilterRef = useRef<InboxFilter>(filter)
+  const fetchMailboxFilterRef = useRef<string | null>(mailboxFilterId)
 
   // Data fetching — paginated and server-side searchable so older/unloaded threads can be found.
   const fetchThreadsPage = useCallback(async (offset = 0, append = false) => {
     fetchFilterRef.current = filter
+    fetchMailboxFilterRef.current = mailboxFilterId
     if (!currentOrg?.id || !userId) {
       debugLog('fetchThreads', { event: 'SKIP', orgId: currentOrg?.id, userId })
       return
@@ -392,7 +395,7 @@ export default function Inbox() {
     else if (!initialLoadDone.current) setLoading(true)
     try {
       const query = searchQuery.trim()
-      debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, pageSize, offset, append, query })
+      debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, mailboxFilterId, pageSize, offset, append, query })
 
       const { data, error } = await supabase.rpc('search_inbox_threads', {
         p_org_id: currentOrg.id,
@@ -401,6 +404,7 @@ export default function Inbox() {
         p_query: query || null,
         p_limit: pageSize,
         p_offset: offset,
+        p_imap_account_id: mailboxFilterId,
       })
 
       if (error) {
@@ -421,8 +425,14 @@ export default function Inbox() {
         query: query || null,
         threadIds: result.map(t => t.id),
       })
-      if (fetchFilterRef.current !== filter) {
-        debugLog('fetchThreads', { event: 'SKIP_stale', fetchedFilter: fetchFilterRef.current, currentFilter: filter })
+      if (fetchFilterRef.current !== filter || fetchMailboxFilterRef.current !== mailboxFilterId) {
+        debugLog('fetchThreads', {
+          event: 'SKIP_stale',
+          fetchedFilter: fetchFilterRef.current,
+          currentFilter: filter,
+          fetchedMailboxFilterId: fetchMailboxFilterRef.current,
+          currentMailboxFilterId: mailboxFilterId,
+        })
         return
       }
 
@@ -435,13 +445,13 @@ export default function Inbox() {
       initialLoadDone.current = true
     } catch (e) {
       debugLog('fetchThreads', { event: 'ERROR', error: String(e) })
-      if (!append && fetchFilterRef.current === filter && !initialLoadDone.current) setThreads([])
+      if (!append && fetchFilterRef.current === filter && fetchMailboxFilterRef.current === mailboxFilterId && !initialLoadDone.current) setThreads([])
       setHasMoreThreads(false)
     } finally {
       if (append) setLoadingMoreThreads(false)
       else setLoading(false)
     }
-  }, [currentOrg?.id, filter, userId, debugLog, pageSize, searchQuery])
+  }, [currentOrg?.id, filter, mailboxFilterId, userId, debugLog, pageSize, searchQuery])
 
   const fetchThreads = useCallback(() => fetchThreadsPage(0, false), [fetchThreadsPage])
 
@@ -689,6 +699,10 @@ export default function Inbox() {
   }, [currentOrg?.id, selectedAccountId, selectedFromAddress])
 
   useEffect(() => {
+    setMailboxFilterId(null)
+  }, [currentOrg?.id])
+
+  useEffect(() => {
     if (!userId) return
     supabase.from('inbox_thread_reads').select('thread_id, last_read_at').eq('user_id', userId)
       .then(({ data }) => setReadStatuses((data as ReadStatus[]) ?? []))
@@ -847,6 +861,7 @@ export default function Inbox() {
 
   // Filter by current tab so we never show trash in All or non-trash in Trash (handles stale threads during filter switch)
   const threadMatchesFilter = (t: InboxThread) => {
+    if (mailboxFilterId && t.imap_account_id !== mailboxFilterId) return false
     if (filter === 'trash') return t.status === 'archived'
     if (filter === 'all') return t.status !== 'archived'
     if (filter === 'closed') return t.status === 'closed'
@@ -1777,12 +1792,32 @@ export default function Inbox() {
         {/* Thread list */}
         <div className={`${selectedThreadId || replyMode === 'compose' ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-col border-r border-border bg-surface-muted/20 shrink-0`}>
           {/* Search */}
-          <div className="p-2 border-b border-border">
-            <div className="relative">
+          <div className="p-2 border-b border-border flex gap-2">
+            <div className="relative flex-1 min-w-0">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
               <input type="text" value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="Search email, subject, or body…"
                 className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
             </div>
+            {imapAccounts.length > 1 && (
+              <select
+                value={mailboxFilterId ?? ''}
+                onChange={e => {
+                  setMailboxFilterId(e.target.value || null)
+                  setThreads([])
+                  setHasMoreThreads(false)
+                  initialLoadDone.current = false
+                }}
+                title="Filter by mailbox"
+                className="shrink-0 max-w-[48%] rounded border border-border bg-surface-muted px-2 py-1.5 text-xs font-medium text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+              >
+                <option value="">All mailboxes</option>
+                {imapAccounts.map(acc => (
+                  <option key={acc.id} value={acc.id}>
+                    {acc.label ? `${acc.label} (${acc.email})` : acc.email}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           {/* Bulk actions */}
