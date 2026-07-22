@@ -102,6 +102,50 @@ function buildDefaultInvoiceMessage(args: {
   ].join('')
 }
 
+function buildEmailMetaRow(label: string, value: string): string {
+  return [
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border-top:1px solid #e5e7eb;">',
+    '<tr>',
+    `<td style="padding:12px 0;color:#6b7280;font-size:13px;font-weight:700;">${label}</td>`,
+    `<td align="right" style="padding:12px 0;color:#111827;font-size:14px;font-weight:700;">${value}</td>`,
+    '</tr>',
+    '</table>',
+  ].join('')
+}
+
+function finalizeInvoiceEmailHtml(html: string): string {
+  let out = html
+
+  out = out.replace(/<h2>(.*?)<\/h2>/gis, (_match, title: string) => (
+    `<h2 style="margin:0 0 20px;color:#111827;font-size:22px;line-height:1.3;font-weight:800;">${title}</h2>`
+  ))
+
+  out = out.replace(/<h3>\s*INVOICE AMOUNT\s*<\/h3>\s*<p>\s*<strong>(.*?)<\/strong>\s*<\/p>/is, (_match, amount: string) => ([
+    '<div style="margin:24px 0 18px;padding:18px 20px;border-radius:14px;background:#f3f6fb;border:1px solid #dbe4f0;">',
+    '<div style="margin:0 0 8px;color:#475569;font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">Invoice Amount</div>',
+    `<div style="color:#111827;font-size:24px;line-height:1.2;font-weight:800;">${amount}</div>`,
+    '</div>',
+  ].join('')))
+
+  out = out.replace(/<p>\s*(?:<span>)?\s*(Invoice No|Invoice Date|Due Date)\s*(?:<\/span>)?\s*<strong>(.*?)<\/strong>\s*<\/p>/gis, (_match, label: string, value: string) => (
+    buildEmailMetaRow(label, value)
+  ))
+
+  out = out.replace(/<p>\s*<a\s+href="([^"]+)"[^>]*>\s*(?:<strong>)?\s*PAY NOW\s*(?:<\/strong>)?\s*<\/a>\s*<\/p>/is, (_match, href: string) => (
+    `<p style="margin:24px 0;"><a href="${href}" style="display:inline-block;padding:13px 28px;border-radius:999px;background:#2563eb;color:#ffffff;text-decoration:none;font-size:13px;font-weight:800;letter-spacing:0.04em;">PAY NOW</a></p>`
+  ))
+
+  out = out.replace(/<p>/gi, '<p style="margin:0 0 14px;color:#111827;font-size:14px;line-height:1.65;">')
+
+  return [
+    '<div style="margin:0;padding:0;background:#ffffff;">',
+    '<div style="max-width:680px;margin:0;padding:32px 28px;font-family:Arial,Helvetica,sans-serif;color:#111827;">',
+    out,
+    '</div>',
+    '</div>',
+  ].join('')
+}
+
 export default function InvoiceEmailDraft() {
   const { id } = useParams<{ id: string }>()
   const { currentOrg, isVendor } = useOrg()
@@ -273,6 +317,7 @@ export default function InvoiceEmailDraft() {
       return
     }
 
+    const sendHtml = finalizeInvoiceEmailHtml(bodyHtml)
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: {
@@ -284,7 +329,7 @@ export default function InvoiceEmailDraft() {
         compose: true,
         to: recipients.join(', '),
         subject: subject.trim() || `Invoice - ${invNum} from Brogrammers Agency`,
-        body: bodyHtml,
+        body: sendHtml,
         isHtml: true,
         accountId: selectedSendable.accountId,
         fromAddress: selectedSendable.email,
