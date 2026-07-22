@@ -7,7 +7,7 @@ import {
   Inbox as InboxIcon, Mail, MessageSquare, Check, Archive, ArchiveRestore,
   List, ChevronRight, Plus, Reply, ReplyAll, Forward,
   RotateCcw, RefreshCw, Paperclip, Download,
-  Search, User, Link2, Pencil, Trash2, FileText,
+  Search, User, Link2, Pencil, Trash2, FileText, ChevronDown,
 } from 'lucide-react'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
@@ -52,6 +52,10 @@ type SearchInboxThreadRow = Omit<InboxThread, 'inbox_thread_assignments' | 'inbo
 /** PostgREST list select without embedded inbox_messages(count) — counts come from inbox_message_counts_by_thread RPC. */
 const INBOX_THREAD_LIST_SELECT =
   'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, mailbox_address, inbox_thread_assignments(user_id)' as const
+
+/** Compact bordered control matching Assign / Link invoice in the thread action row. */
+const INBOX_LINK_INVOICE_CONTROL_CLASS =
+  'inline-flex items-center shrink-0 rounded border border-border bg-surface-muted px-2 text-[11px] font-medium leading-none text-gray-200 hover:bg-surface-muted/80 focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50 disabled:cursor-not-allowed'
 
 /** Single grouped count query (RLS on inbox_messages); avoids slow embedded aggregates that can 504. */
 async function mergeInboxMessageCounts(threads: InboxThread[]): Promise<InboxThread[]> {
@@ -2022,24 +2026,27 @@ export default function Inbox() {
                         type="button"
                         onClick={() => setShowLinkInvoicePicker(v => !v)}
                         disabled={actionLoading}
-                        className={`rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 ${showLinkInvoicePicker ? 'ring-1 ring-accent' : ''}`}
+                        className={`${INBOX_LINK_INVOICE_CONTROL_CLASS} py-1 ${showLinkInvoicePicker ? 'ring-1 ring-accent/50' : ''}`}
                       >
                         Link invoice…
                       </button>
                       {showLinkInvoicePicker && (
-                        <select
-                          value=""
-                          onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
-                          className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent max-w-[220px]"
-                          autoFocus
-                        >
-                          <option value="">Select invoice…</option>
-                          {invoiceOptions.map((inv) => (
-                            <option key={inv.id} value={inv.id}>
-                              {formatInvoiceNumber(inv)}{inv.companyName ? ` · ${inv.companyName}` : ''} · {inv.status}
-                            </option>
-                          ))}
-                        </select>
+                        <span className="relative inline-flex items-center">
+                          <select
+                            value=""
+                            onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
+                            className={`${INBOX_LINK_INVOICE_CONTROL_CLASS} h-[22px] appearance-none cursor-pointer max-w-[168px] truncate py-0 pr-6`}
+                            autoFocus
+                          >
+                            <option value="">Select invoice…</option>
+                            {invoiceOptions.map((inv) => (
+                              <option key={inv.id} value={inv.id}>
+                                {formatInvoiceNumber(inv)}{inv.companyName ? ` · ${inv.companyName}` : ''} · {inv.status}
+                              </option>
+                            ))}
+                          </select>
+                          <ChevronDown className="pointer-events-none absolute right-1.5 h-3 w-3 shrink-0 text-gray-400" aria-hidden />
+                        </span>
                       )}
                     </>
                   )}
