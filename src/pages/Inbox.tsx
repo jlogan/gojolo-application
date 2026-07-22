@@ -53,9 +53,11 @@ type SearchInboxThreadRow = Omit<InboxThread, 'inbox_thread_assignments' | 'inbo
 const INBOX_THREAD_LIST_SELECT =
   'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, mailbox_address, inbox_thread_assignments(user_id)' as const
 
-/** Compact bordered control matching Assign / Link invoice in the thread action row. */
-const INBOX_LINK_INVOICE_CONTROL_CLASS =
-  'inline-flex items-center shrink-0 rounded border border-border bg-surface-muted px-2 text-[11px] font-medium leading-none text-gray-200 hover:bg-surface-muted/80 focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50 disabled:cursor-not-allowed'
+const INBOX_THREAD_ACTION_BTN_CLASS =
+  'inline-flex items-center shrink-0 gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50 disabled:cursor-not-allowed'
+
+const INBOX_THREAD_ACTION_SELECT_CLASS =
+  'h-auto min-h-0 appearance-none cursor-pointer bg-none [background-image:none] pr-6 max-w-[168px] truncate'
 
 /** Single grouped count query (RLS on inbox_messages); avoids slow embedded aggregates that can 504. */
 async function mergeInboxMessageCounts(threads: InboxThread[]): Promise<InboxThread[]> {
@@ -2049,7 +2051,7 @@ export default function Inbox() {
                         type="button"
                         onClick={() => setShowLinkInvoicePicker(v => !v)}
                         disabled={actionLoading}
-                        className={`${INBOX_LINK_INVOICE_CONTROL_CLASS} py-1 ${showLinkInvoicePicker ? 'ring-1 ring-accent/50' : ''}`}
+                        className={`${INBOX_THREAD_ACTION_BTN_CLASS} ${showLinkInvoicePicker ? 'ring-1 ring-accent/50' : ''}`}
                       >
                         Link invoice…
                       </button>
@@ -2058,7 +2060,7 @@ export default function Inbox() {
                           <select
                             value=""
                             onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
-                            className={`${INBOX_LINK_INVOICE_CONTROL_CLASS} h-[22px] appearance-none cursor-pointer max-w-[168px] truncate py-0 pr-6`}
+                            className={`${INBOX_THREAD_ACTION_BTN_CLASS} ${INBOX_THREAD_ACTION_SELECT_CLASS}`}
                             autoFocus
                           >
                             <option value="">Select invoice…</option>
@@ -2076,7 +2078,7 @@ export default function Inbox() {
                   )}
                   <div className="relative">
                     <button type="button" onClick={() => { setShowAssignPopover(v => !v); setSelectedAssignUserIds(new Set()) }} disabled={actionLoading}
-                      className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
+                      className={INBOX_THREAD_ACTION_BTN_CLASS}>
                       {currentAssignees.length > 0 ? '+ Assign' : 'Assign…'}
                     </button>
                     {showAssignPopover && (
