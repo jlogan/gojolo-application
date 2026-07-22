@@ -124,6 +124,32 @@ function getTaskAssigneeUserIds(
   return []
 }
 
+type TaskPresentationView = 'list' | 'kanban'
+type KanbanColumnId = 'open' | 'in_progress' | 'completed' | 'overdue'
+
+function getKanbanColumn(task: Pick<Task, 'due_date' | 'status'>): KanbanColumnId {
+  if (isTaskCompleted(task.status)) return 'completed'
+  if (isTaskOverdueActive(task)) return 'overdue'
+  if (isTaskOpen(task.status)) return 'open'
+  return 'in_progress'
+}
+
+function formatTaskTimeLogged(totalMinutes: number): string | null {
+  if (totalMinutes <= 0) return null
+  const h = Math.floor(totalMinutes / 60)
+  const m = totalMinutes % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}h ${m}m`
+}
+
+const KANBAN_COLUMNS: { id: KanbanColumnId; label: string; headerClasses: string }[] = [
+  { id: 'open', label: 'Open', headerClasses: 'bg-gray-500/20 text-gray-300' },
+  { id: 'in_progress', label: 'In Progress', headerClasses: 'bg-blue-500/20 text-blue-400' },
+  { id: 'completed', label: 'Completed', headerClasses: 'bg-green-500/20 text-green-400' },
+  { id: 'overdue', label: 'Overdue', headerClasses: 'bg-red-500/20 text-red-400' },
+]
+
 export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -177,7 +203,7 @@ export default function ProjectDetail() {
   const [filterPriority, setFilterPriority] = useState<TaskPriorityFilter>('')
   const [filterAssignee, setFilterAssignee] = useState('')
   const [filterDuePreset, setFilterDuePreset] = useState<TaskDuePreset>('all')
-  const [showTaskOverview, setShowTaskOverview] = useState(false)
+  const [taskPresentationView, setTaskPresentationView] = useState<TaskPresentationView>('list')
   const [showTaskFilters, setShowTaskFilters] = useState(false)
 
   // Project time logs
@@ -381,6 +407,27 @@ export default function ProjectDetail() {
     })
   }, [tasks, filterStatus, filterPriority, filterAssignee, filterDuePreset, taskAssignees])
 
+  const taskTimeMinutesByTaskId = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const log of timeLogs) {
+      map.set(log.task_id, (map.get(log.task_id) ?? 0) + log.hours * 60 + log.minutes)
+    }
+    return map
+  }, [timeLogs])
+
+  const kanbanTasksByColumn = useMemo(() => {
+    const grouped: Record<KanbanColumnId, Task[]> = {
+      open: [],
+      in_progress: [],
+      completed: [],
+      overdue: [],
+    }
+    for (const task of filteredTasks) {
+      grouped[getKanbanColumn(task)].push(task)
+    }
+    return grouped
+  }, [filteredTasks])
+
   const timeLogTotalMinutes = useMemo(
     () => timeLogs.reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0),
     [timeLogs],
@@ -391,14 +438,12 @@ export default function ProjectDetail() {
   )
 
   const hasTaskFilters = filterStatus !== '' || filterPriority !== '' || filterAssignee !== '' || filterDuePreset !== 'all'
-  const hasStatusOverviewFilter = filterStatus !== ''
   const activeTaskFilterCount = [
     filterStatus !== '',
     filterPriority !== '',
     filterAssignee !== '',
     filterDuePreset !== 'all',
   ].filter(Boolean).length
-  const activeNonStatusFilterCount = activeTaskFilterCount - (filterStatus !== '' ? 1 : 0)
 
   const clearTaskFilters = () => {
     setFilterStatus('')
@@ -406,13 +451,6 @@ export default function ProjectDetail() {
     setFilterAssignee('')
     setFilterDuePreset('all')
   }
-
-  const STATUS_FILTER_CHIPS: { value: TaskStatusFilter; label: string; count: number; classes: string }[] = [
-    { value: 'open', label: 'Open', count: taskFilterCounts.open, classes: 'bg-gray-500/20 text-gray-300 border-gray-500/30' },
-    { value: 'in_progress', label: 'In Progress', count: taskFilterCounts.in_progress, classes: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
-    { value: 'completed', label: 'Completed', count: taskFilterCounts.completed, classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
-    { value: 'overdue', label: 'Overdue', count: taskFilterCounts.overdue, classes: 'bg-red-500/20 text-red-400 border-red-500/30' },
-  ]
 
   const resetTaskForm = () => {
     setTaskTitle(''); setTaskDesc(''); setTaskStatus('todo'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigneeIds([])
@@ -575,6 +613,14 @@ export default function ProjectDetail() {
     return orgUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
   }
 
+  const getTaskAssigneeDisplay = (task: Task): string | null => {
+    const assigneeIds = getTaskAssigneeUserIds(task, taskAssignees)
+    const names = assigneeIds.map(uid => orgUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8))
+    if (names.length > 0) return names.join(', ')
+    if (task.assigned_to) return getUserName(task.assigned_to)
+    return null
+  }
+
   if (loading) return <div className="p-4 md:p-6 text-surface-muted">Loading…</div>
   if (!project) return (
     <div className="p-4 md:p-6">
@@ -636,45 +682,58 @@ export default function ProjectDetail() {
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               {tasks.length > 0 && (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => setShowTaskOverview(v => !v)}
-                    aria-expanded={showTaskOverview}
-                    aria-controls="project-task-overview"
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                      showTaskOverview || hasStatusOverviewFilter
-                        ? 'border-accent bg-accent/10 text-white'
-                        : 'border-border text-gray-300 hover:text-white hover:bg-surface-muted'
-                    }`}
+                  <div
+                    role="group"
+                    aria-label="Task view"
+                    className="inline-flex rounded-lg border border-border overflow-hidden shrink-0"
                   >
-                    <LayoutList className="w-3.5 h-3.5 shrink-0" />
-                    <span>View</span>
-                    {hasStatusOverviewFilter && (
-                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-accent text-accent-foreground text-[10px] font-semibold">
-                        1
-                      </span>
-                    )}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => setTaskPresentationView('list')}
+                      aria-pressed={taskPresentationView === 'list'}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors ${
+                        taskPresentationView === 'list'
+                          ? 'bg-accent/10 text-white'
+                          : 'text-gray-300 hover:text-white hover:bg-surface-muted'
+                      }`}
+                    >
+                      <LayoutList className="w-3.5 h-3.5 shrink-0" />
+                      <span>List</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTaskPresentationView('kanban')}
+                      aria-pressed={taskPresentationView === 'kanban'}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border-l border-border transition-colors ${
+                        taskPresentationView === 'kanban'
+                          ? 'bg-accent/10 text-white'
+                          : 'text-gray-300 hover:text-white hover:bg-surface-muted'
+                      }`}
+                    >
+                      <FolderKanban className="w-3.5 h-3.5 shrink-0" />
+                      <span>Kanban</span>
+                    </button>
+                  </div>
                   <button
                     type="button"
                     onClick={() => setShowTaskFilters(v => !v)}
                     aria-expanded={showTaskFilters}
                     aria-controls="project-task-filters"
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                      showTaskFilters || activeNonStatusFilterCount > 0
+                      showTaskFilters || activeTaskFilterCount > 0
                         ? 'border-accent bg-accent/10 text-white'
                         : 'border-border text-gray-300 hover:text-white hover:bg-surface-muted'
                     }`}
                   >
                     <Filter className="w-3.5 h-3.5 shrink-0" />
                     <span>Filters</span>
-                    {activeNonStatusFilterCount > 0 && (
+                    {activeTaskFilterCount > 0 && (
                       <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-accent text-accent-foreground text-[10px] font-semibold">
-                        {activeNonStatusFilterCount}
+                        {activeTaskFilterCount}
                       </span>
                     )}
                   </button>
-                  {hasTaskFilters && !showTaskOverview && !showTaskFilters && (
+                  {hasTaskFilters && !showTaskFilters && (
                     <button
                       type="button"
                       onClick={clearTaskFilters}
@@ -692,40 +751,11 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {hasTaskFilters && !(showTaskOverview && showTaskFilters) && (
+          {hasTaskFilters && !showTaskFilters && (
             <p className="text-xs text-gray-500">
               {activeTaskFilterCount} filter{activeTaskFilterCount === 1 ? '' : 's'} active
-              {!showTaskOverview && !showTaskFilters && ' — open View or Filters to adjust, or use Clear filters.'}
-              {!showTaskOverview && showTaskFilters && hasStatusOverviewFilter && ' — open View to adjust status.'}
-              {showTaskOverview && !showTaskFilters && activeNonStatusFilterCount > 0 && ' — open Filters to adjust.'}
+              {' — open Filters to adjust, or use Clear filters.'}
             </p>
-          )}
-
-          {tasks.length > 0 && showTaskOverview && (
-            <div id="project-task-overview" className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0 space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-gray-500">Task status overview</p>
-                {hasStatusOverviewFilter && (
-                  <button type="button" onClick={() => setFilterStatus('')}
-                    className="px-2 py-1 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
-                    Clear status
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={() => setFilterStatus('')}
-                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === '' ? 'border-accent bg-accent/10 text-white' : 'border-border text-gray-400 hover:text-white hover:bg-surface-muted'}`}>
-                  All ({tasks.length})
-                </button>
-                {STATUS_FILTER_CHIPS.map(item => (
-                  <button key={item.value} type="button"
-                    onClick={() => setFilterStatus(filterStatus === item.value ? '' : item.value)}
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === item.value ? 'border-accent ring-1 ring-accent/40' : 'border-transparent'} ${item.classes}`}>
-                    {item.label} ({item.count})
-                  </button>
-                ))}
-              </div>
-            </div>
           )}
 
           {tasks.length > 0 && showTaskFilters && (
@@ -879,11 +909,23 @@ export default function ProjectDetail() {
             <p className="text-gray-400 text-sm py-4">No tasks yet. Add one above.</p>
           ) : filteredTasks.length === 0 && !showTaskForm ? (
             <p className="text-gray-400 text-sm py-4">No tasks match your filters.</p>
+          ) : taskPresentationView === 'kanban' ? (
+            <ProjectTaskKanban
+              projectId={id!}
+              columns={KANBAN_COLUMNS}
+              tasksByColumn={kanbanTasksByColumn}
+              taskTimeMinutesByTaskId={taskTimeMinutesByTaskId}
+              getAssigneeDisplay={getTaskAssigneeDisplay}
+              onEditTask={startEditTask}
+              onDeleteTask={handleDeleteTask}
+            />
           ) : (
             <ul className="rounded-lg border border-border divide-y divide-border overflow-hidden min-w-0">
               {filteredTasks.map(t => {
                 const Icon = STATUS_ICON[t.status] ?? Circle
                 const taskAtts = attachments.filter(a => a.task_id === t.id)
+                const timeLogged = formatTaskTimeLogged(taskTimeMinutesByTaskId.get(t.id) ?? 0)
+                const assigneeDisplay = getTaskAssigneeDisplay(t)
                 return (
                   <li key={t.id} className="p-3 hover:bg-surface-muted/50 transition-colors min-w-0">
                     <div className="flex items-start gap-2 sm:gap-3 min-w-0">
@@ -911,13 +953,12 @@ export default function ProjectDetail() {
                               {t.due_date}
                             </span>
                           )}
-                          {(() => {
-                            const assigneeIds = taskAssignees.filter(a => a.task_id === t.id).map(a => a.user_id)
-                            const names = assigneeIds.map(uid => orgUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8))
-                            const legacy = !assigneeIds.length && t.assigned_to ? getUserName(t.assigned_to) : null
-                            const display = names.length ? names.join(', ') : legacy
-                            return display ? <span className="text-gray-400">{display}</span> : null
-                          })()}
+                          {assigneeDisplay && <span className="text-gray-400">{assigneeDisplay}</span>}
+                          {timeLogged && (
+                            <span className="text-gray-500 inline-flex items-center gap-0.5">
+                              <Timer className="w-3 h-3" />{timeLogged}
+                            </span>
+                          )}
                           {taskAtts.length > 0 && <span className="text-gray-500 flex items-center gap-0.5"><Paperclip className="w-3 h-3" />{taskAtts.length}</span>}
                         </div>
                         {/* Attachments for this task */}
@@ -1086,6 +1127,114 @@ export default function ProjectDetail() {
           {/* Slack channel */}
           <SlackChannelPicker projectId={id!} orgId={currentOrg?.id ?? ''} />
         </div>
+      </div>
+    </div>
+  )
+}
+
+function ProjectTaskKanban({
+  projectId,
+  columns,
+  tasksByColumn,
+  taskTimeMinutesByTaskId,
+  getAssigneeDisplay,
+  onEditTask,
+  onDeleteTask,
+}: {
+  projectId: string
+  columns: { id: KanbanColumnId; label: string; headerClasses: string }[]
+  tasksByColumn: Record<KanbanColumnId, Task[]>
+  taskTimeMinutesByTaskId: Map<string, number>
+  getAssigneeDisplay: (task: Task) => string | null
+  onEditTask: (task: Task) => void
+  onDeleteTask: (taskId: string) => void
+}) {
+  return (
+    <div className="overflow-x-auto -mx-1 px-1 pb-1 min-w-0">
+      <div className="flex gap-3 min-w-max lg:min-w-0 lg:grid lg:grid-cols-4 lg:gap-3">
+        {columns.map(col => {
+          const columnTasks = tasksByColumn[col.id]
+          return (
+            <div key={col.id} className="w-[260px] shrink-0 lg:w-auto lg:shrink flex flex-col min-h-[120px] rounded-lg border border-border bg-surface-muted/20">
+              <div className={`px-3 py-2 border-b border-border rounded-t-lg flex items-center justify-between gap-2 ${col.headerClasses}`}>
+                <span className="text-xs font-medium">{col.label}</span>
+                <span className="text-[10px] opacity-80">{columnTasks.length}</span>
+              </div>
+              <div className="p-2 space-y-2 flex-1 min-h-0">
+                {columnTasks.length === 0 ? (
+                  <p className="text-[11px] text-gray-600 px-1 py-2">No tasks</p>
+                ) : (
+                  columnTasks.map(task => {
+                    const assigneeDisplay = getAssigneeDisplay(task)
+                    const timeLogged = formatTaskTimeLogged(taskTimeMinutesByTaskId.get(task.id) ?? 0)
+                    const isCompleted = isTaskCompleted(task.status)
+                    return (
+                      <article
+                        key={task.id}
+                        className="rounded-lg border border-border bg-surface-elevated p-2.5 hover:border-accent/40 transition-colors group"
+                      >
+                        <div className="flex items-start gap-1.5 min-w-0">
+                          <Link
+                            to={`/projects/${projectId}/tasks/${task.id}`}
+                            className={`flex-1 min-w-0 text-sm font-medium hover:text-accent leading-snug ${isCompleted ? 'line-through text-gray-500' : 'text-white'}`}
+                          >
+                            {task.title}
+                          </Link>
+                          <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                            <button
+                              type="button"
+                              title="Edit task"
+                              onClick={() => onEditTask(task)}
+                              className="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              title="Delete task"
+                              onClick={() => onDeleteTask(task.id)}
+                              className="p-1 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2 space-y-1 text-[11px]">
+                          {assigneeDisplay && (
+                            <p className="text-gray-400 truncate" title={assigneeDisplay}>
+                              {assigneeDisplay}
+                            </p>
+                          )}
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className={`capitalize ${PRIORITY_COLORS[task.priority] ?? 'text-gray-400'}`}>
+                              {task.priority}
+                            </span>
+                            {task.due_date && (
+                              <span className={isTaskOverdueActive(task) ? 'text-red-400' : 'text-gray-500'}>
+                                {task.due_date}
+                              </span>
+                            )}
+                            {timeLogged && (
+                              <span className="text-gray-500 inline-flex items-center gap-0.5">
+                                <Timer className="w-3 h-3 shrink-0" />
+                                {timeLogged}
+                              </span>
+                            )}
+                          </div>
+                          {!isTaskOpen(task.status) && !isTaskCompleted(task.status) && col.id !== 'overdue' && (
+                            <span className={`inline-flex px-1.5 py-0.5 rounded border text-[10px] ${TASK_STATUS_CONFIG[task.status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
+                              {taskStatusLabel(task.status)}
+                            </span>
+                          )}
+                        </div>
+                      </article>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
