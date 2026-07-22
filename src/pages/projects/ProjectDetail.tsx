@@ -1011,14 +1011,6 @@ export default function ProjectDetail() {
 
         {/* Sidebar (1/3) */}
         <div className="space-y-6 min-w-0">
-          <CredentialsPanel
-            orgId={currentOrg!.id}
-            projectId={project.id}
-            companyId={linkedCompanyId}
-            title="Credentials"
-            description="Project-specific credentials plus credentials inherited from the linked company. Reveal/copy requires identity confirmation."
-          />
-
           {/* Billing Summary */}
           <section className="rounded-lg border border-border bg-surface-elevated p-4">
             <h2 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3"><DollarSign className="w-4 h-4" /> Billing</h2>
@@ -1081,6 +1073,14 @@ export default function ProjectDetail() {
               </div>
             )}
           </section>
+
+          <CredentialsPanel
+            orgId={currentOrg!.id}
+            projectId={project.id}
+            companyId={linkedCompanyId}
+            title="Credentials"
+            description="Project-specific credentials plus credentials inherited from the linked company. Reveal/copy requires identity confirmation."
+          />
 
           {/* Company (single) */}
           <section className="rounded-lg border border-border bg-surface-elevated p-4">
