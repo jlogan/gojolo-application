@@ -2015,29 +2015,33 @@ export default function Inbox() {
                       <button type="button" onClick={() => handleUnassign(a.user_id)} className="text-gray-500 hover:text-red-400 ml-0.5">&times;</button>
                     </span>
                   ))}
-                  <div className="w-px h-4 bg-border mx-0.5" />
-                  <button
-                    type="button"
-                    onClick={() => setShowLinkInvoicePicker(v => !v)}
-                    disabled={actionLoading}
-                    className={`rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 ${showLinkInvoicePicker ? 'ring-1 ring-accent' : ''}`}
-                  >
-                    Link invoice…
-                  </button>
-                  {showLinkInvoicePicker && (
-                    <select
-                      value=""
-                      onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
-                      className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent max-w-[220px]"
-                      autoFocus
-                    >
-                      <option value="">Select invoice…</option>
-                      {invoiceOptions.filter((inv) => !threadInvoiceLinks.some((link) => link.invoice_id === inv.id)).map((inv) => (
-                        <option key={inv.id} value={inv.id}>
-                          {formatInvoiceNumber(inv)}{inv.companyName ? ` · ${inv.companyName}` : ''} · {inv.status}
-                        </option>
-                      ))}
-                    </select>
+                  {threadInvoiceLinks.length === 0 && (
+                    <>
+                      <div className="w-px h-4 bg-border mx-0.5" />
+                      <button
+                        type="button"
+                        onClick={() => setShowLinkInvoicePicker(v => !v)}
+                        disabled={actionLoading}
+                        className={`rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 ${showLinkInvoicePicker ? 'ring-1 ring-accent' : ''}`}
+                      >
+                        Link invoice…
+                      </button>
+                      {showLinkInvoicePicker && (
+                        <select
+                          value=""
+                          onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
+                          className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent max-w-[220px]"
+                          autoFocus
+                        >
+                          <option value="">Select invoice…</option>
+                          {invoiceOptions.map((inv) => (
+                            <option key={inv.id} value={inv.id}>
+                              {formatInvoiceNumber(inv)}{inv.companyName ? ` · ${inv.companyName}` : ''} · {inv.status}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </>
                   )}
                 </div>
                 {threadInvoiceLinks.length > 0 && (
