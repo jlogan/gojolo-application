@@ -195,11 +195,11 @@ const TOOLS = [
     type: 'function' as const,
     function: {
       name: 'search_inbox',
-      description: 'Search inbox threads by subject or sender email. Returns recent threads.',
+      description: 'Search inbox threads by subject, sender/recipient, message body, linked contact name/email, or company name. Returns recent threads.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search term for subject or from address' },
+          query: { type: 'string', description: 'Search term (matches subject, addresses, message content, contact/company names)' },
           status: { type: 'string', enum: ['open', 'closed', 'archived'], description: 'Filter by thread status' },
           limit: { type: 'number', description: 'Max results (default 10)' },
         },
@@ -454,12 +454,44 @@ async function executeTool(name: string, args: Record<string, unknown>, orgId: s
       })
     }
     case 'search_inbox': {
-      const limit = parseInt(args.limit) || 10
-      let q = admin.from('inbox_threads').select('id, subject, status, from_address, mailbox_address, last_message_at, channel').eq('org_id', orgId).order('last_message_at', { ascending: false }).limit(limit)
-      if (args.status) q = q.eq('status', args.status)
-      if (args.query) q = q.or(`subject.ilike.%${args.query}%,from_address.ilike.%${args.query}%,mailbox_address.ilike.%${args.query}%`)
-      const { data, error } = await q
-      return error ? { error: error.message } : data
+      const limit = Math.min(parseInt(String(args.limit)) || 10, 100)
+      const statusFilter = typeof args.status === 'string' ? args.status : undefined
+      const pFilter =
+        statusFilter === 'closed'
+          ? 'closed'
+          : statusFilter === 'archived'
+            ? 'trash'
+            : 'all'
+      const query = typeof args.query === 'string' ? args.query.trim() : ''
+      const { data, error } = await admin.rpc('search_inbox_threads', {
+        p_org_id: orgId,
+        p_user_id: userId,
+        p_filter: pFilter,
+        p_query: query || null,
+        p_limit: limit,
+        p_offset: 0,
+      })
+      if (error) return { error: error.message }
+      type SearchRow = {
+        id: string
+        subject: string | null
+        status: string
+        from_address: string | null
+        mailbox_address: string | null
+        last_message_at: string | null
+        channel: string | null
+      }
+      let rows = ((data ?? []) as SearchRow[])
+      if (statusFilter === 'open') rows = rows.filter(row => row.status === 'open')
+      return rows.map(row => ({
+        id: row.id,
+        subject: row.subject,
+        status: row.status,
+        from_address: row.from_address,
+        mailbox_address: row.mailbox_address,
+        last_message_at: row.last_message_at,
+        channel: row.channel,
+      }))
     }
     case 'get_thread_messages': {
       const { data, error } = await admin.from('inbox_messages')
