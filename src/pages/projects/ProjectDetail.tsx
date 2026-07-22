@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   FolderKanban, Pencil, ArrowLeft, Plus, Trash2, Users, Building2, User,
-  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign, Timer, Filter,
+  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign, Timer, Filter, LayoutList,
 } from 'lucide-react'
 import { type Project, StatusBadge } from './ProjectsList'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
@@ -177,6 +177,7 @@ export default function ProjectDetail() {
   const [filterPriority, setFilterPriority] = useState<TaskPriorityFilter>('')
   const [filterAssignee, setFilterAssignee] = useState('')
   const [filterDuePreset, setFilterDuePreset] = useState<TaskDuePreset>('all')
+  const [showTaskOverview, setShowTaskOverview] = useState(false)
   const [showTaskFilters, setShowTaskFilters] = useState(false)
 
   // Project time logs
@@ -390,12 +391,14 @@ export default function ProjectDetail() {
   )
 
   const hasTaskFilters = filterStatus !== '' || filterPriority !== '' || filterAssignee !== '' || filterDuePreset !== 'all'
+  const hasStatusOverviewFilter = filterStatus !== ''
   const activeTaskFilterCount = [
     filterStatus !== '',
     filterPriority !== '',
     filterAssignee !== '',
     filterDuePreset !== 'all',
   ].filter(Boolean).length
+  const activeNonStatusFilterCount = activeTaskFilterCount - (filterStatus !== '' ? 1 : 0)
 
   const clearTaskFilters = () => {
     setFilterStatus('')
@@ -635,24 +638,43 @@ export default function ProjectDetail() {
                 <>
                   <button
                     type="button"
+                    onClick={() => setShowTaskOverview(v => !v)}
+                    aria-expanded={showTaskOverview}
+                    aria-controls="project-task-overview"
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
+                      showTaskOverview || hasStatusOverviewFilter
+                        ? 'border-accent bg-accent/10 text-white'
+                        : 'border-border text-gray-300 hover:text-white hover:bg-surface-muted'
+                    }`}
+                  >
+                    <LayoutList className="w-3.5 h-3.5 shrink-0" />
+                    <span>View</span>
+                    {hasStatusOverviewFilter && (
+                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-accent text-accent-foreground text-[10px] font-semibold">
+                        1
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setShowTaskFilters(v => !v)}
                     aria-expanded={showTaskFilters}
                     aria-controls="project-task-filters"
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                      showTaskFilters || hasTaskFilters
+                      showTaskFilters || activeNonStatusFilterCount > 0
                         ? 'border-accent bg-accent/10 text-white'
                         : 'border-border text-gray-300 hover:text-white hover:bg-surface-muted'
                     }`}
                   >
                     <Filter className="w-3.5 h-3.5 shrink-0" />
                     <span>Filters</span>
-                    {hasTaskFilters && (
+                    {activeNonStatusFilterCount > 0 && (
                       <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-accent text-accent-foreground text-[10px] font-semibold">
-                        {activeTaskFilterCount}
+                        {activeNonStatusFilterCount}
                       </span>
                     )}
                   </button>
-                  {hasTaskFilters && !showTaskFilters && (
+                  {hasTaskFilters && !showTaskOverview && !showTaskFilters && (
                     <button
                       type="button"
                       onClick={clearTaskFilters}
@@ -670,24 +692,26 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {hasTaskFilters && !showTaskFilters && (
+          {hasTaskFilters && !(showTaskOverview && showTaskFilters) && (
             <p className="text-xs text-gray-500">
-              {activeTaskFilterCount} filter{activeTaskFilterCount === 1 ? '' : 's'} active — open Filters to adjust or use Clear filters.
+              {activeTaskFilterCount} filter{activeTaskFilterCount === 1 ? '' : 's'} active
+              {!showTaskOverview && !showTaskFilters && ' — open View or Filters to adjust, or use Clear filters.'}
+              {!showTaskOverview && showTaskFilters && hasStatusOverviewFilter && ' — open View to adjust status.'}
+              {showTaskOverview && !showTaskFilters && activeNonStatusFilterCount > 0 && ' — open Filters to adjust.'}
             </p>
           )}
 
-          {tasks.length > 0 && showTaskFilters && (
-            <div id="project-task-filters" className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0 space-y-3">
+          {tasks.length > 0 && showTaskOverview && (
+            <div id="project-task-overview" className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0 space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-gray-500">Filter tasks</p>
-                {hasTaskFilters && (
-                  <button type="button" onClick={clearTaskFilters}
+                <p className="text-xs text-gray-500">Task status overview</p>
+                {hasStatusOverviewFilter && (
+                  <button type="button" onClick={() => setFilterStatus('')}
                     className="px-2 py-1 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
-                    Clear filters
+                    Clear status
                   </button>
                 )}
               </div>
-
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => setFilterStatus('')}
                   className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === '' ? 'border-accent bg-accent/10 text-white' : 'border-border text-gray-400 hover:text-white hover:bg-surface-muted'}`}>
@@ -700,6 +724,20 @@ export default function ProjectDetail() {
                     {item.label} ({item.count})
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {tasks.length > 0 && showTaskFilters && (
+            <div id="project-task-filters" className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-gray-500">Filter tasks</p>
+                {hasTaskFilters && (
+                  <button type="button" onClick={clearTaskFilters}
+                    className="px-2 py-1 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
+                    Clear filters
+                  </button>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
