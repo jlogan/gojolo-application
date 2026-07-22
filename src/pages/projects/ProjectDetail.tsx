@@ -530,7 +530,7 @@ export default function ProjectDetail() {
   const assignableMembers = members
 
   return (
-    <div className="p-4 md:p-6" data-testid="project-detail">
+    <div className="p-4 md:p-6 min-w-0 max-w-full overflow-x-hidden" data-testid="project-detail">
       {/* Header */}
       <div className="mb-6">
         <Link to="/projects" className="inline-flex items-center gap-2 text-sm text-surface-muted hover:text-gray-300 mb-4">
@@ -554,29 +554,29 @@ export default function ProjectDetail() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 min-w-0">
         {/* Tasks column (2/3) */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="flex gap-1 border-b border-border">
+        <div className="xl:col-span-2 space-y-4 min-w-0">
+          <div className="flex flex-wrap gap-1 border-b border-border -mx-1 px-1">
             <button type="button" onClick={() => setActiveView('tasks')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === 'tasks' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+              className={`shrink-0 px-3 sm:px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === 'tasks' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
               Tasks ({tasks.length})
             </button>
             <button type="button" onClick={() => setActiveView('time')}
-              className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === 'time' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
-              <Timer className="w-3.5 h-3.5" />
-              Time Logged ({Math.floor(timeLogTotalMinutes / 60)}h {timeLogTotalMinutes % 60}m)
+              className={`inline-flex items-center gap-1.5 shrink-0 px-3 sm:px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === 'time' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+              <Timer className="w-3.5 h-3.5 shrink-0" />
+              <span className="whitespace-nowrap">Time ({Math.floor(timeLogTotalMinutes / 60)}h {timeLogTotalMinutes % 60}m)</span>
             </button>
           </div>
 
           {activeView === 'tasks' && (
             <>
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-gray-300">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-gray-300 min-w-0">
               {hasTaskFilters ? `${filteredTasks.length} of ${tasks.length} tasks` : `${tasks.length} tasks`}
             </h2>
             <button type="button" onClick={() => { resetTaskForm(); setShowTaskForm(true) }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90">
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 shrink-0">
               <Plus className="w-3.5 h-3.5" /> Add task
             </button>
           </div>
@@ -599,8 +599,8 @@ export default function ProjectDetail() {
             </div>
           )}
 
-          <div className="rounded-lg border border-border bg-surface-muted/30 p-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Status</label>
                 <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
@@ -626,14 +626,14 @@ export default function ProjectDetail() {
                 <DateInput value={filterDueFrom} onChange={e => setFilterDueFrom(e.target.value)}
                   className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
               </div>
-              <div>
+              <div className="sm:col-span-2 xl:col-span-1">
                 <label className="block text-xs text-gray-500 mb-1">Due to</label>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <DateInput value={filterDueTo} onChange={e => setFilterDueTo(e.target.value)}
-                    className="flex-1 rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
+                    className="min-w-0 flex-1 rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
                   {hasTaskFilters && (
                     <button type="button" onClick={clearTaskFilters}
-                      className="px-2 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
+                      className="px-2 py-1.5 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
                       Clear
                     </button>
                   )}
@@ -735,13 +735,13 @@ export default function ProjectDetail() {
           ) : filteredTasks.length === 0 && !showTaskForm ? (
             <p className="text-gray-400 text-sm py-4">No tasks match your filters.</p>
           ) : (
-            <ul className="rounded-lg border border-border divide-y divide-border overflow-hidden">
+            <ul className="rounded-lg border border-border divide-y divide-border overflow-hidden min-w-0">
               {filteredTasks.map(t => {
                 const Icon = STATUS_ICON[t.status] ?? Circle
                 const taskAtts = attachments.filter(a => a.task_id === t.id)
                 return (
-                  <li key={t.id} className="p-3 hover:bg-surface-muted/50 transition-colors">
-                    <div className="flex items-start gap-3">
+                  <li key={t.id} className="p-3 hover:bg-surface-muted/50 transition-colors min-w-0">
+                    <div className="flex items-start gap-2 sm:gap-3 min-w-0">
                       <button type="button" title="Toggle status" onClick={async () => {
                         const next = t.status === 'todo' ? 'in_progress' : t.status === 'in_progress' ? 'done' : 'todo'
                         await supabase.from('tasks').update({ status: next }).eq('id', t.id)
@@ -824,7 +824,7 @@ export default function ProjectDetail() {
         </div>
 
         {/* Sidebar (1/3) */}
-        <div className="space-y-6">
+        <div className="space-y-6 min-w-0">
           <CredentialsPanel
             orgId={currentOrg!.id}
             projectId={project.id}
@@ -965,23 +965,23 @@ function ProjectTimeLogsPanel({
   const hasRates = logs.some(t => t.hourly_rate != null)
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-4 text-sm">
-          <span className="text-gray-300">
+    <div className="space-y-4 min-w-0">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm min-w-0">
+          <span className="text-gray-300 whitespace-nowrap">
             Total: <strong className="text-white">{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</strong>
           </span>
-          <span className="text-gray-400">
+          <span className="text-gray-400 whitespace-nowrap">
             Billed: <strong className="text-green-400">{Math.floor(billedMinutes / 60)}h {billedMinutes % 60}m</strong>
           </span>
-          <span className="text-gray-400">
+          <span className="text-gray-400 whitespace-nowrap">
             Unbilled: <strong className="text-yellow-400">{Math.floor(unbilledMinutes / 60)}h {unbilledMinutes % 60}m</strong>
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <Link to="/timesheets" className="text-xs text-accent hover:underline">View all timesheets</Link>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <Link to="/timesheets" className="text-xs text-accent hover:underline whitespace-nowrap">View all timesheets</Link>
           <button type="button" onClick={onRefresh} disabled={loading}
-            className="px-2 py-1.5 rounded-lg border border-border text-xs text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50">
+            className="px-2 py-1.5 rounded-lg border border-border text-xs text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50 shrink-0">
             Refresh
           </button>
         </div>
@@ -992,50 +992,82 @@ function ProjectTimeLogsPanel({
       ) : logs.length === 0 ? (
         <p className="text-gray-500 text-sm">No time logged on this project yet. Log time from a task or the timesheets page.</p>
       ) : (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-xs text-gray-500 bg-surface-muted/50">
-                <th className="text-left px-4 py-2">Date</th>
-                <th className="text-left px-4 py-2">Task</th>
-                <th className="text-left px-4 py-2">Who</th>
-                <th className="text-left px-4 py-2">Time</th>
-                <th className="text-left px-4 py-2">Notes</th>
-                {hasRates && <th className="text-right px-4 py-2">Rate</th>}
-                <th className="text-center px-4 py-2">Billed</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {logs.map(t => (
-                <tr key={t.id} className="hover:bg-surface-muted/30">
-                  <td className="px-4 py-2 text-gray-300">{t.work_date}</td>
-                  <td className="px-4 py-2">
-                    <Link to={`/projects/${projectId}/tasks/${t.task_id}`} className="text-accent hover:underline">
+        <>
+          <div className="md:hidden space-y-3">
+            {logs.map(t => (
+              <div key={t.id} className="rounded-lg border border-border bg-surface-elevated p-3 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <Link to={`/projects/${projectId}/tasks/${t.task_id}`} className="text-sm font-medium text-accent hover:underline break-words">
                       {t.task_title ?? 'Task'}
                     </Link>
-                  </td>
-                  <td className="px-4 py-2 text-gray-400">{t.display_name ?? 'User'}</td>
-                  <td className="px-4 py-2 text-white font-medium">
+                    <p className="text-xs text-gray-500 mt-0.5">{t.work_date}</p>
+                  </div>
+                  <span className="text-sm text-white font-medium shrink-0">
                     {String(t.hours).padStart(2, '0')}:{String(t.minutes).padStart(2, '0')}
-                  </td>
-                  <td className="px-4 py-2 text-gray-400 max-w-[240px] truncate" title={t.description ?? undefined}>
-                    {t.description ?? '—'}
-                  </td>
-                  {hasRates && (
-                    <td className="px-4 py-2 text-right text-gray-400">
-                      {t.hourly_rate != null ? `$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'}
-                    </td>
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-gray-400">{t.display_name ?? 'User'}</span>
+                  {hasRates && t.hourly_rate != null && (
+                    <span className="text-gray-500">${Number(t.hourly_rate).toFixed(2)}/hr</span>
                   )}
-                  <td className="px-4 py-2 text-center">
-                    {t.billed
-                      ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-green-500/20 text-green-400">✓ Billed</span>
-                      : <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-gray-500/20 text-gray-500">○ Unbilled</span>}
-                  </td>
+                  {t.billed
+                    ? <span className="inline-flex px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">✓ Billed</span>
+                    : <span className="inline-flex px-2 py-0.5 rounded-full bg-gray-500/20 text-gray-500">○ Unbilled</span>}
+                </div>
+                {t.description && (
+                  <p className="text-xs text-gray-400 break-words">{t.description}</p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden md:block rounded-lg border border-border overflow-x-auto">
+            <table className="w-full text-sm min-w-[720px]">
+              <thead>
+                <tr className="border-b border-border text-xs text-gray-500 bg-surface-muted/50">
+                  <th className="text-left px-4 py-2 whitespace-nowrap">Date</th>
+                  <th className="text-left px-4 py-2">Task</th>
+                  <th className="text-left px-4 py-2 whitespace-nowrap">Who</th>
+                  <th className="text-left px-4 py-2 whitespace-nowrap">Time</th>
+                  <th className="text-left px-4 py-2">Notes</th>
+                  {hasRates && <th className="text-right px-4 py-2 whitespace-nowrap">Rate</th>}
+                  <th className="text-center px-4 py-2 whitespace-nowrap">Billed</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {logs.map(t => (
+                  <tr key={t.id} className="hover:bg-surface-muted/30">
+                    <td className="px-4 py-2 text-gray-300 whitespace-nowrap">{t.work_date}</td>
+                    <td className="px-4 py-2 max-w-[180px]">
+                      <Link to={`/projects/${projectId}/tasks/${t.task_id}`} className="text-accent hover:underline truncate block">
+                        {t.task_title ?? 'Task'}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-2 text-gray-400 whitespace-nowrap">{t.display_name ?? 'User'}</td>
+                    <td className="px-4 py-2 text-white font-medium whitespace-nowrap">
+                      {String(t.hours).padStart(2, '0')}:{String(t.minutes).padStart(2, '0')}
+                    </td>
+                    <td className="px-4 py-2 text-gray-400 max-w-[200px] truncate" title={t.description ?? undefined}>
+                      {t.description ?? '—'}
+                    </td>
+                    {hasRates && (
+                      <td className="px-4 py-2 text-right text-gray-400 whitespace-nowrap">
+                        {t.hourly_rate != null ? `$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'}
+                      </td>
+                    )}
+                    <td className="px-4 py-2 text-center whitespace-nowrap">
+                      {t.billed
+                        ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-green-500/20 text-green-400">✓ Billed</span>
+                        : <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-gray-500/20 text-gray-500">○ Unbilled</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   )
