@@ -1804,7 +1804,7 @@ export default function Inbox() {
               <div className="relative flex-1 min-w-0">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
                 <input type="text" value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="Search email, subject, or body…"
-                  className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
+                  className="w-full h-9 rounded border border-border bg-surface-muted pl-8 pr-3 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
               </div>
               {imapAccounts.length > 1 && (
                 <button
@@ -1813,12 +1813,12 @@ export default function Inbox() {
                   title={selectedMailboxAccount
                     ? `Mailbox: ${selectedMailboxAccount.label ?? selectedMailboxAccount.email}`
                     : 'Filter by mailbox'}
-                  className={`inline-flex items-center gap-1 shrink-0 rounded border px-2 py-1.5 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-accent ${
+                  className={`inline-flex items-center justify-center shrink-0 h-9 rounded border text-xs font-medium focus:outline-none focus:ring-1 focus:ring-accent ${
                     mailboxFilterId
-                      ? 'border-accent/60 bg-accent/15 text-accent'
+                      ? 'gap-1 px-2 border-accent/60 bg-accent/15 text-accent'
                       : mailboxFilterOpen
-                        ? 'border-border bg-surface-muted text-gray-200 ring-1 ring-accent/40'
-                        : 'border-border bg-surface-muted text-gray-400 hover:text-gray-200 hover:bg-surface-muted/80'
+                        ? 'w-9 border-border bg-surface-muted text-gray-200 ring-1 ring-accent/40'
+                        : 'w-9 border-border bg-surface-muted text-gray-400 hover:text-gray-200 hover:bg-surface-muted/80'
                   }`}
                 >
                   <Mailbox className="w-3.5 h-3.5 shrink-0" />
@@ -1841,7 +1841,7 @@ export default function Inbox() {
                     initialLoadDone.current = false
                   }}
                   title="Filter by mailbox"
-                  className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-xs font-medium text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                  className="w-full h-9 rounded border border-border bg-surface-muted px-2 py-0 text-xs font-medium leading-none text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
                 >
                   <option value="">All mailboxes</option>
                   {imapAccounts.map(acc => (
