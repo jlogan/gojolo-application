@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Link, useParams, useNavigate } from 'react-router-dom'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   FolderKanban, Pencil, ArrowLeft, Plus, Trash2, Users, Building2, User,
-  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign,
+  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign, Timer,
 } from 'lucide-react'
 import { type Project, StatusBadge } from './ProjectsList'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
@@ -23,10 +23,70 @@ type ContactRow = { contact_id: string; name: string; email: string | null }
 type OrgUser = { user_id: string; display_name: string | null; avatar_url: string | null }
 type Attachment = { id: string; task_id: string; file_name: string | null; file_path: string | null; label: string | null; created_at: string }
 type TaskAssigneeRow = { task_id: string; user_id: string }
+type ProjectTimeLog = {
+  id: string; task_id: string; user_id: string; hours: number; minutes: number
+  work_date: string; description: string | null; billed: boolean; hourly_rate: number | null
+  task_title?: string | null; display_name?: string | null
+}
 
 const STATUS_ICON: Record<string, typeof Circle> = { todo: Circle, in_progress: Clock, done: CheckCircle2 }
 const PRIORITY_COLORS: Record<string, string> = {
   low: 'text-gray-400', medium: 'text-yellow-400', high: 'text-orange-400', urgent: 'text-red-400',
+}
+
+const TASK_STATUS_CONFIG: Record<string, { label: string; classes: string }> = {
+  open: { label: 'Open', classes: 'bg-gray-500/20 text-gray-300 border-gray-500/30' },
+  todo: { label: 'Open', classes: 'bg-gray-500/20 text-gray-300 border-gray-500/30' },
+  in_progress: { label: 'In Progress', classes: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+  ready_for_testing: { label: 'Ready For Testing', classes: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
+  testing: { label: 'To Be Tested', classes: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
+  needs_work: { label: 'Needs Work', classes: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+  client_review: { label: 'Client Review', classes: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
+  complete: { label: 'Complete', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
+  done: { label: 'Complete', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
+  closed: { label: 'Closed', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
+}
+
+const TASK_STATUS_ORDER = [
+  'open', 'todo', 'in_progress', 'ready_for_testing', 'testing', 'needs_work', 'client_review', 'complete', 'done', 'closed',
+]
+
+function taskStatusLabel(status: string): string {
+  return TASK_STATUS_CONFIG[status]?.label ?? status.replace(/_/g, ' ')
+}
+
+function toLocalISODate(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function startOfWeek(date: Date): Date {
+  const d = new Date(date)
+  const day = d.getDay()
+  const diff = day === 0 ? -6 : 1 - day
+  d.setDate(d.getDate() + diff)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function endOfWeek(date: Date): Date {
+  const start = startOfWeek(date)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 6)
+  return end
+}
+
+function isTaskOverdue(dueDate: string): boolean {
+  const today = toLocalISODate(new Date())
+  return dueDate < today
+}
+
+function isTaskDueThisWeek(dueDate: string, today = new Date()): boolean {
+  const from = toLocalISODate(startOfWeek(today))
+  const to = toLocalISODate(endOfWeek(today))
+  return dueDate >= from && dueDate <= to
 }
 
 export default function ProjectDetail() {
@@ -68,6 +128,24 @@ export default function ProjectDetail() {
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [selectedTaskForUpload, setSelectedTaskForUpload] = useState<string | null>(null)
+
+  // Task filters + project view tab
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeView = searchParams.get('tab') === 'time' ? 'time' : 'tasks'
+  const setActiveView = (view: 'tasks' | 'time') => {
+    const next = new URLSearchParams(searchParams)
+    if (view === 'time') next.set('tab', 'time')
+    else next.delete('tab')
+    setSearchParams(next, { replace: true })
+  }
+  const [filterStatus, setFilterStatus] = useState('')
+  const [filterDuePreset, setFilterDuePreset] = useState<'all' | 'overdue' | 'this_week' | 'no_due_date'>('all')
+  const [filterDueFrom, setFilterDueFrom] = useState('')
+  const [filterDueTo, setFilterDueTo] = useState('')
+
+  // Project time logs
+  const [timeLogs, setTimeLogs] = useState<ProjectTimeLog[]>([])
+  const [timeLogsLoading, setTimeLogsLoading] = useState(false)
 
   const fetchProject = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -153,6 +231,58 @@ export default function ProjectDetail() {
     setTaskAssignees((taRes.data as TaskAssigneeRow[]) ?? [])
   }, [id, tasks])
 
+  const fetchTimeLogs = useCallback(async () => {
+    if (!id) return
+    setTimeLogsLoading(true)
+    const { data: rows, error } = await supabase
+      .from('time_logs')
+      .select('id, task_id, user_id, hours, minutes, work_date, description, billed, hourly_rate, tasks(title)')
+      .eq('project_id', id)
+      .order('work_date', { ascending: false })
+
+    if (error || !rows) {
+      setTimeLogs([])
+      setTimeLogsLoading(false)
+      return
+    }
+
+    const rawRows = rows as unknown[]
+    const userIds = [...new Set((rawRows as { user_id: string }[]).map(r => r.user_id))]
+    const { data: profiles } = userIds.length > 0
+      ? await supabase.from('profiles').select('id, display_name').in('id', userIds)
+      : { data: [] }
+    const profileMap = new Map((profiles ?? []).map((p: { id: string; display_name: string | null }) => [p.id, p.display_name]))
+
+    const mapped: ProjectTimeLog[] = rawRows.map(r => {
+      const row = r as ProjectTimeLog & { tasks?: { title?: string } | { title?: string }[] | null }
+      const tsk = row.tasks
+      const taskTitle = tsk && typeof tsk === 'object'
+        ? (Array.isArray(tsk) ? tsk[0]?.title : tsk.title) ?? null
+        : null
+      return {
+        ...row,
+        task_title: taskTitle,
+        display_name: profileMap.get(row.user_id) ?? null,
+      }
+    })
+
+    const allLogIds = mapped.map(t => t.id)
+    const actuallyBilledIds = new Set<string>()
+    if (allLogIds.length > 0) {
+      const { data: billedItems } = await supabase
+        .from('invoice_items')
+        .select('time_log_ids, invoices!inner(direction)')
+        .eq('invoices.direction', 'outbound')
+        .overlaps('time_log_ids', allLogIds)
+      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach(item => {
+        ;(item.time_log_ids ?? []).forEach(logId => actuallyBilledIds.add(logId))
+      })
+    }
+
+    setTimeLogs(mapped.map(t => ({ ...t, billed: actuallyBilledIds.has(t.id) })))
+    setTimeLogsLoading(false)
+  }, [id])
+
   useEffect(() => { fetchProject() }, [fetchProject])
   useEffect(() => { fetchTasks() }, [fetchTasks])
   useEffect(() => { fetchMembers() }, [fetchMembers])
@@ -160,6 +290,71 @@ export default function ProjectDetail() {
   useEffect(() => { fetchOrgUsers() }, [fetchOrgUsers])
   useEffect(() => { fetchAllCompaniesContacts() }, [fetchAllCompaniesContacts])
   useEffect(() => { fetchAttachments() }, [fetchAttachments])
+  useEffect(() => { fetchTimeLogs() }, [fetchTimeLogs])
+
+  const statusCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const t of tasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1)
+    return counts
+  }, [tasks])
+
+  const statusOverview = useMemo(() => {
+    const items: { status: string; label: string; count: number; classes: string }[] = []
+    for (const status of TASK_STATUS_ORDER) {
+      const count = statusCounts.get(status) ?? 0
+      if (count === 0) continue
+      items.push({
+        status,
+        label: taskStatusLabel(status),
+        count,
+        classes: TASK_STATUS_CONFIG[status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30',
+      })
+    }
+    for (const [status, count] of statusCounts) {
+      if (TASK_STATUS_ORDER.includes(status)) continue
+      items.push({
+        status,
+        label: taskStatusLabel(status),
+        count,
+        classes: TASK_STATUS_CONFIG[status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30',
+      })
+    }
+    return items
+  }, [statusCounts])
+
+  const filteredTasks = useMemo(() => {
+    return tasks.filter(t => {
+      if (filterStatus && t.status !== filterStatus) return false
+      if (filterDuePreset === 'no_due_date' && t.due_date) return false
+      if (filterDuePreset === 'overdue') {
+        if (!t.due_date || !isTaskOverdue(t.due_date)) return false
+      }
+      if (filterDuePreset === 'this_week') {
+        if (!t.due_date || !isTaskDueThisWeek(t.due_date)) return false
+      }
+      if (filterDueFrom && (!t.due_date || t.due_date < filterDueFrom)) return false
+      if (filterDueTo && (!t.due_date || t.due_date > filterDueTo)) return false
+      return true
+    })
+  }, [tasks, filterStatus, filterDuePreset, filterDueFrom, filterDueTo])
+
+  const timeLogTotalMinutes = useMemo(
+    () => timeLogs.reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0),
+    [timeLogs],
+  )
+  const timeLogBilledMinutes = useMemo(
+    () => timeLogs.filter(t => t.billed).reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0),
+    [timeLogs],
+  )
+
+  const hasTaskFilters = filterStatus !== '' || filterDuePreset !== 'all' || filterDueFrom !== '' || filterDueTo !== ''
+
+  const clearTaskFilters = () => {
+    setFilterStatus('')
+    setFilterDuePreset('all')
+    setFilterDueFrom('')
+    setFilterDueTo('')
+  }
 
   const resetTaskForm = () => {
     setTaskTitle(''); setTaskDesc(''); setTaskStatus('todo'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigneeIds([])
@@ -362,12 +557,89 @@ export default function ProjectDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Tasks column (2/3) */}
         <div className="lg:col-span-2 space-y-4">
+          <div className="flex gap-1 border-b border-border">
+            <button type="button" onClick={() => setActiveView('tasks')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === 'tasks' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+              Tasks ({tasks.length})
+            </button>
+            <button type="button" onClick={() => setActiveView('time')}
+              className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === 'time' ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
+              <Timer className="w-3.5 h-3.5" />
+              Time Logged ({Math.floor(timeLogTotalMinutes / 60)}h {timeLogTotalMinutes % 60}m)
+            </button>
+          </div>
+
+          {activeView === 'tasks' && (
+            <>
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-gray-300">Tasks ({tasks.length})</h2>
+            <h2 className="text-sm font-medium text-gray-300">
+              {hasTaskFilters ? `${filteredTasks.length} of ${tasks.length} tasks` : `${tasks.length} tasks`}
+            </h2>
             <button type="button" onClick={() => { resetTaskForm(); setShowTaskForm(true) }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90">
               <Plus className="w-3.5 h-3.5" /> Add task
             </button>
+          </div>
+
+          {tasks.length > 0 && (
+            <div className="rounded-lg border border-border bg-surface-elevated p-3 space-y-3">
+              <p className="text-xs text-gray-500">Status overview</p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => setFilterStatus('')}
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === '' ? 'border-accent bg-accent/10 text-white' : 'border-border text-gray-400 hover:text-white hover:bg-surface-muted'}`}>
+                  All ({tasks.length})
+                </button>
+                {statusOverview.map(item => (
+                  <button key={item.status} type="button" onClick={() => setFilterStatus(filterStatus === item.status ? '' : item.status)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === item.status ? 'border-accent ring-1 ring-accent/40' : 'border-transparent'} ${item.classes}`}>
+                    {item.label} ({item.count})
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-lg border border-border bg-surface-muted/30 p-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Status</label>
+                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                  <option value="">All statuses</option>
+                  {statusOverview.map(item => (
+                    <option key={item.status} value={item.status}>{item.label} ({item.count})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Due date</label>
+                <select value={filterDuePreset} onChange={e => setFilterDuePreset(e.target.value as typeof filterDuePreset)}
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                  <option value="all">All due dates</option>
+                  <option value="overdue">Overdue</option>
+                  <option value="this_week">Due this week</option>
+                  <option value="no_due_date">No due date</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Due from</label>
+                <DateInput value={filterDueFrom} onChange={e => setFilterDueFrom(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Due to</label>
+                <div className="flex gap-2">
+                  <DateInput value={filterDueTo} onChange={e => setFilterDueTo(e.target.value)}
+                    className="flex-1 rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
+                  {hasTaskFilters && (
+                    <button type="button" onClick={clearTaskFilters}
+                      className="px-2 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
 
           {showTaskForm && (
@@ -460,9 +732,11 @@ export default function ProjectDetail() {
 
           {tasks.length === 0 && !showTaskForm ? (
             <p className="text-gray-400 text-sm py-4">No tasks yet. Add one above.</p>
+          ) : filteredTasks.length === 0 && !showTaskForm ? (
+            <p className="text-gray-400 text-sm py-4">No tasks match your filters.</p>
           ) : (
             <ul className="rounded-lg border border-border divide-y divide-border overflow-hidden">
-              {tasks.map(t => {
+              {filteredTasks.map(t => {
                 const Icon = STATUS_ICON[t.status] ?? Circle
                 const taskAtts = attachments.filter(a => a.task_id === t.id)
                 return (
@@ -483,8 +757,15 @@ export default function ProjectDetail() {
                           </p>
                         )}
                         <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs">
+                          <span className={`px-1.5 py-0.5 rounded border text-[10px] ${TASK_STATUS_CONFIG[t.status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
+                            {taskStatusLabel(t.status)}
+                          </span>
                           <span className={PRIORITY_COLORS[t.priority] ?? 'text-gray-400'}>{t.priority}</span>
-                          {t.due_date && <span className="text-gray-500">{t.due_date}</span>}
+                          {t.due_date && (
+                            <span className={isTaskOverdue(t.due_date) && !['complete', 'done', 'closed'].includes(t.status) ? 'text-red-400' : 'text-gray-500'}>
+                              {t.due_date}
+                            </span>
+                          )}
                           {(() => {
                             const assigneeIds = taskAssignees.filter(a => a.task_id === t.id).map(a => a.user_id)
                             const names = assigneeIds.map(uid => orgUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8))
@@ -526,6 +807,19 @@ export default function ProjectDetail() {
                 )
               })}
             </ul>
+          )}
+            </>
+          )}
+
+          {activeView === 'time' && (
+            <ProjectTimeLogsPanel
+              projectId={id!}
+              logs={timeLogs}
+              loading={timeLogsLoading}
+              totalMinutes={timeLogTotalMinutes}
+              billedMinutes={timeLogBilledMinutes}
+              onRefresh={fetchTimeLogs}
+            />
           )}
         </div>
 
@@ -648,6 +942,101 @@ export default function ProjectDetail() {
           <SlackChannelPicker projectId={id!} orgId={currentOrg?.id ?? ''} />
         </div>
       </div>
+    </div>
+  )
+}
+
+function ProjectTimeLogsPanel({
+  projectId,
+  logs,
+  loading,
+  totalMinutes,
+  billedMinutes,
+  onRefresh,
+}: {
+  projectId: string
+  logs: ProjectTimeLog[]
+  loading: boolean
+  totalMinutes: number
+  billedMinutes: number
+  onRefresh: () => void
+}) {
+  const unbilledMinutes = totalMinutes - billedMinutes
+  const hasRates = logs.some(t => t.hourly_rate != null)
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-4 text-sm">
+          <span className="text-gray-300">
+            Total: <strong className="text-white">{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</strong>
+          </span>
+          <span className="text-gray-400">
+            Billed: <strong className="text-green-400">{Math.floor(billedMinutes / 60)}h {billedMinutes % 60}m</strong>
+          </span>
+          <span className="text-gray-400">
+            Unbilled: <strong className="text-yellow-400">{Math.floor(unbilledMinutes / 60)}h {unbilledMinutes % 60}m</strong>
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link to="/timesheets" className="text-xs text-accent hover:underline">View all timesheets</Link>
+          <button type="button" onClick={onRefresh} disabled={loading}
+            className="px-2 py-1.5 rounded-lg border border-border text-xs text-gray-400 hover:text-white hover:bg-surface-muted disabled:opacity-50">
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-gray-500 text-sm">Loading time logs…</p>
+      ) : logs.length === 0 ? (
+        <p className="text-gray-500 text-sm">No time logged on this project yet. Log time from a task or the timesheets page.</p>
+      ) : (
+        <div className="rounded-lg border border-border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs text-gray-500 bg-surface-muted/50">
+                <th className="text-left px-4 py-2">Date</th>
+                <th className="text-left px-4 py-2">Task</th>
+                <th className="text-left px-4 py-2">Who</th>
+                <th className="text-left px-4 py-2">Time</th>
+                <th className="text-left px-4 py-2">Notes</th>
+                {hasRates && <th className="text-right px-4 py-2">Rate</th>}
+                <th className="text-center px-4 py-2">Billed</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {logs.map(t => (
+                <tr key={t.id} className="hover:bg-surface-muted/30">
+                  <td className="px-4 py-2 text-gray-300">{t.work_date}</td>
+                  <td className="px-4 py-2">
+                    <Link to={`/projects/${projectId}/tasks/${t.task_id}`} className="text-accent hover:underline">
+                      {t.task_title ?? 'Task'}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-2 text-gray-400">{t.display_name ?? 'User'}</td>
+                  <td className="px-4 py-2 text-white font-medium">
+                    {String(t.hours).padStart(2, '0')}:{String(t.minutes).padStart(2, '0')}
+                  </td>
+                  <td className="px-4 py-2 text-gray-400 max-w-[240px] truncate" title={t.description ?? undefined}>
+                    {t.description ?? '—'}
+                  </td>
+                  {hasRates && (
+                    <td className="px-4 py-2 text-right text-gray-400">
+                      {t.hourly_rate != null ? `$${Number(t.hourly_rate).toFixed(2)}/hr` : '—'}
+                    </td>
+                  )}
+                  <td className="px-4 py-2 text-center">
+                    {t.billed
+                      ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-green-500/20 text-green-400">✓ Billed</span>
+                      : <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-gray-500/20 text-gray-500">○ Unbilled</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
