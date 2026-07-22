@@ -2015,13 +2015,12 @@ export default function Inbox() {
                       <button type="button" onClick={() => handleUnassign(a.user_id)} className="text-gray-500 hover:text-red-400 ml-0.5">&times;</button>
                     </span>
                   ))}
-                </div>
-                <div className="mt-2">
+                  <div className="w-px h-4 bg-border mx-0.5" />
                   <button
                     type="button"
                     onClick={() => setShowLinkInvoicePicker(v => !v)}
                     disabled={actionLoading}
-                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+                    className={`rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 ${showLinkInvoicePicker ? 'ring-1 ring-accent' : ''}`}
                   >
                     Link invoice…
                   </button>
@@ -2029,7 +2028,7 @@ export default function Inbox() {
                     <select
                       value=""
                       onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
-                      className="mt-1 block max-w-full rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                      className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent max-w-[220px]"
                       autoFocus
                     >
                       <option value="">Select invoice…</option>
@@ -2040,7 +2039,9 @@ export default function Inbox() {
                       ))}
                     </select>
                   )}
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+                </div>
+                <div className="mt-2">
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
                     <span className="text-gray-500">Linked invoices:</span>
                     {threadInvoiceLinks.length === 0 && <span className="text-gray-600">None</span>}
                     {threadInvoiceLinks.map((link) => link.invoice ? (
