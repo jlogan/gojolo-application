@@ -418,7 +418,7 @@ export default function Inbox() {
         count: result.length,
         hasMore,
         offset,
-        query,
+        query: query || null,
         threadIds: result.map(t => t.id),
       })
       if (fetchFilterRef.current !== filter) {
