@@ -126,29 +126,30 @@ function getTaskAssigneeUserIds(
 
 type TaskPresentationView = 'list' | 'kanban'
 
-/** Canonical task status column order (matches TaskDetail STATUS_FLOW + legacy values). */
+/** Canonical Kanban column ids (matches TaskDetail STATUS_FLOW). */
 const TASK_KANBAN_STATUS_ORDER = [
   'open',
-  'todo',
   'in_progress',
   'ready_for_testing',
-  'testing',
   'needs_work',
   'client_review',
   'complete',
-  'done',
-  'closed',
 ] as const
 
 /** Workflow stages always shown as Kanban columns (even when empty). */
-const TASK_WORKFLOW_STATUSES = new Set([
-  'open',
-  'in_progress',
-  'ready_for_testing',
-  'needs_work',
-  'client_review',
-  'complete',
-])
+const TASK_WORKFLOW_STATUSES = new Set(TASK_KANBAN_STATUS_ORDER)
+
+/** Legacy/raw statuses grouped under a canonical Kanban column (display only). */
+const TASK_KANBAN_STATUS_ALIASES: Record<string, string> = {
+  todo: 'open',
+  testing: 'ready_for_testing',
+  done: 'complete',
+  closed: 'complete',
+}
+
+function taskKanbanColumnId(status: string): string {
+  return TASK_KANBAN_STATUS_ALIASES[status] ?? status
+}
 
 function taskKanbanHeaderClasses(status: string): string {
   const classes = TASK_STATUS_CONFIG[status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'
@@ -430,27 +431,28 @@ export default function ProjectDetail() {
   }, [timeLogs])
 
   const kanbanColumns = useMemo(() => {
-    const statusesInTasks = new Set(filteredTasks.map(t => t.status))
+    const columnIdsInTasks = new Set(filteredTasks.map(t => taskKanbanColumnId(t.status)))
     const seen = new Set<string>()
     const ordered: string[] = []
-    for (const status of TASK_KANBAN_STATUS_ORDER) {
-      if (TASK_WORKFLOW_STATUSES.has(status) || statusesInTasks.has(status)) {
-        if (!seen.has(status)) {
-          ordered.push(status)
-          seen.add(status)
+    for (const columnId of TASK_KANBAN_STATUS_ORDER) {
+      if (TASK_WORKFLOW_STATUSES.has(columnId) || columnIdsInTasks.has(columnId)) {
+        if (!seen.has(columnId)) {
+          ordered.push(columnId)
+          seen.add(columnId)
         }
       }
     }
     for (const task of filteredTasks) {
-      if (!seen.has(task.status)) {
-        ordered.push(task.status)
-        seen.add(task.status)
+      const columnId = taskKanbanColumnId(task.status)
+      if (!seen.has(columnId)) {
+        ordered.push(columnId)
+        seen.add(columnId)
       }
     }
-    return ordered.map(status => ({
-      id: status,
-      label: taskStatusLabel(status),
-      headerClasses: taskKanbanHeaderClasses(status),
+    return ordered.map(columnId => ({
+      id: columnId,
+      label: taskStatusLabel(columnId),
+      headerClasses: taskKanbanHeaderClasses(columnId),
     }))
   }, [filteredTasks])
 
@@ -460,8 +462,9 @@ export default function ProjectDetail() {
       grouped[col.id] = []
     }
     for (const task of filteredTasks) {
-      if (!grouped[task.status]) grouped[task.status] = []
-      grouped[task.status].push(task)
+      const columnId = taskKanbanColumnId(task.status)
+      if (!grouped[columnId]) grouped[columnId] = []
+      grouped[columnId].push(task)
     }
     return grouped
   }, [filteredTasks, kanbanColumns])
