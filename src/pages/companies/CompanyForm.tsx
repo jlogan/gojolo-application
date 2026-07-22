@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
+import { findOrCreateCompany } from '@/lib/companyUtils'
 import { supabase } from '@/lib/supabase'
 import { ArrowLeft } from 'lucide-react'
 
@@ -43,9 +44,16 @@ export default function CompanyForm() {
       if (error) console.error(error)
       else navigate(`/companies/${id}`)
     } else {
-      const { data, error } = await supabase.from('companies').insert(payload).select('id').single()
-      if (error) console.error(error)
-      else if (data) navigate(`/companies/${(data as { id: string }).id}`)
+      try {
+        const { id } = await findOrCreateCompany(supabase, {
+          orgId: currentOrg.id,
+          name: payload.name,
+          industry: payload.industry,
+        })
+        navigate(`/companies/${id}`)
+      } catch (error) {
+        console.error(error)
+      }
     }
     setSaving(false)
   }

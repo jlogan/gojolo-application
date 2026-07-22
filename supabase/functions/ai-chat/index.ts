@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.0'
+import { findOrCreateCompany } from '../_shared/companyUtils.ts'
 import { corsHeaders } from '../_shared/cors.ts'
 import { logThreadArchiveDebug } from '../_shared/inboxThreadArchiveLog.ts'
 
@@ -414,10 +415,21 @@ async function executeTool(name: string, args: Record<string, unknown>, orgId: s
       return error ? { error: error.message } : data
     }
     case 'create_company': {
-      const { data, error } = await admin.from('companies').insert({
-        org_id: orgId, name: args.name, industry: args.industry || null,
-      }).select('id, name').single()
-      return error ? { error: error.message } : data
+      try {
+        const companyName = args.name
+        const companyIndustry = args.industry
+        if (typeof companyName !== 'string' || !companyName.trim()) {
+          return { error: 'Company name is required' }
+        }
+        const result = await findOrCreateCompany(admin, {
+          orgId,
+          name: companyName,
+          industry: typeof companyIndustry === 'string' ? companyIndustry : null,
+        })
+        return { id: result.id, name: result.name, reused: !result.created }
+      } catch (e) {
+        return { error: (e as { message?: string }).message ?? String(e) }
+      }
     }
     case 'link_project_company': {
       const { error } = await admin.from('project_companies').insert({ project_id: args.project_id, company_id: args.company_id })

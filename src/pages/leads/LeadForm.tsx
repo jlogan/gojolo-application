@@ -9,6 +9,7 @@ import { formatTemplateEducationText } from '@/lib/templateEducation'
 import { resumeFullDraftInstructionLines } from '@/lib/resumeAiPrompts'
 import { formatResumeYearRange, sanitizeResumeRoleTitle } from '@/lib/resumeFormat'
 import { finalizeExperienceRoleTitles } from '@/lib/resumeExperienceTitles'
+import { findOrCreateCompany } from '@/lib/companyUtils'
 import { normalizeGeneratedResume } from '@/lib/resumeCopyNormalize'
 import { buildResumePdfFromElement } from '@/lib/resumePdf'
 import { coverLetterInstructionLines } from '@/lib/coverLetterAiPrompts'
@@ -895,13 +896,12 @@ export default function LeadForm() {
     if (companyMode === 'existing' && selectedCompanyId) {
       companyId = selectedCompanyId
     } else if (companyMode === 'new' && newCompanyName.trim()) {
-      const { data: createdCompany, error: companyErr } = await supabase
-        .from('companies')
-        .insert({ org_id: currentOrg.id, name: newCompanyName.trim(), sourced_from_lead: true })
-        .select('id')
-        .single()
-      if (companyErr) throw companyErr
-      companyId = (createdCompany as { id: string }).id
+      const { id } = await findOrCreateCompany(supabase, {
+        orgId: currentOrg.id,
+        name: newCompanyName,
+        sourcedFromLead: true,
+      })
+      companyId = id
     }
 
     let contactId: string | null = null
