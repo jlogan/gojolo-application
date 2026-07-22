@@ -2040,22 +2040,23 @@ export default function Inbox() {
                     </select>
                   )}
                 </div>
-                <div className="mt-2">
-                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                    <span className="text-gray-500">Linked invoices:</span>
-                    {threadInvoiceLinks.length === 0 && <span className="text-gray-600">None</span>}
-                    {threadInvoiceLinks.map((link) => link.invoice ? (
-                      <span key={link.invoice_id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted px-2 py-0.5 text-gray-200">
-                        <Link to={`/invoices/${link.invoice_id}`} className="inline-flex items-center gap-1 hover:text-accent">
-                          <FileText className="h-3 w-3" />
-                          {formatInvoiceNumber(link.invoice)}
-                          {link.invoice.companyName ? ` · ${link.invoice.companyName}` : ''}
-                        </Link>
-                        <button type="button" onClick={() => handleUnlinkInvoice(link.invoice_id)} className="text-gray-500 hover:text-red-400" title="Unlink invoice">&times;</button>
-                      </span>
-                    ) : null)}
+                {threadInvoiceLinks.length > 0 && (
+                  <div className="mt-2">
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <span className="text-gray-500">Linked invoices:</span>
+                      {threadInvoiceLinks.map((link) => link.invoice ? (
+                        <span key={link.invoice_id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted px-2 py-0.5 text-gray-200">
+                          <Link to={`/invoices/${link.invoice_id}`} className="inline-flex items-center gap-1 hover:text-accent">
+                            <FileText className="h-3 w-3" />
+                            {formatInvoiceNumber(link.invoice)}
+                            {link.invoice.companyName ? ` · ${link.invoice.companyName}` : ''}
+                          </Link>
+                          <button type="button" onClick={() => handleUnlinkInvoice(link.invoice_id)} className="text-gray-500 hover:text-red-400" title="Unlink invoice">&times;</button>
+                        </span>
+                      ) : null)}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Timeline */}
