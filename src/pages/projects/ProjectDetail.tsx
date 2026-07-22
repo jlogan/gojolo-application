@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   FolderKanban, Pencil, ArrowLeft, Plus, Trash2, Users, Building2, User,
-  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign, Timer,
+  CheckCircle2, Circle, Clock, Upload, Paperclip, X, Lock, Hash, DollarSign, Timer, Filter,
 } from 'lucide-react'
 import { type Project, StatusBadge } from './ProjectsList'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
@@ -177,6 +177,7 @@ export default function ProjectDetail() {
   const [filterPriority, setFilterPriority] = useState<TaskPriorityFilter>('')
   const [filterAssignee, setFilterAssignee] = useState('')
   const [filterDuePreset, setFilterDuePreset] = useState<TaskDuePreset>('all')
+  const [showTaskFilters, setShowTaskFilters] = useState(false)
 
   // Project time logs
   const [timeLogs, setTimeLogs] = useState<ProjectTimeLog[]>([])
@@ -389,6 +390,12 @@ export default function ProjectDetail() {
   )
 
   const hasTaskFilters = filterStatus !== '' || filterPriority !== '' || filterAssignee !== '' || filterDuePreset !== 'all'
+  const activeTaskFilterCount = [
+    filterStatus !== '',
+    filterPriority !== '',
+    filterAssignee !== '',
+    filterDuePreset !== 'all',
+  ].filter(Boolean).length
 
   const clearTaskFilters = () => {
     setFilterStatus('')
@@ -623,14 +630,54 @@ export default function ProjectDetail() {
             <h2 className="text-sm font-medium text-gray-300 min-w-0">
               {hasTaskFilters ? `${filteredTasks.length} of ${tasks.length} tasks` : `${tasks.length} tasks`}
             </h2>
-            <button type="button" onClick={() => { resetTaskForm(); setShowTaskForm(true) }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 shrink-0">
-              <Plus className="w-3.5 h-3.5" /> Add task
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {tasks.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowTaskFilters(v => !v)}
+                    aria-expanded={showTaskFilters}
+                    aria-controls="project-task-filters"
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
+                      showTaskFilters || hasTaskFilters
+                        ? 'border-accent bg-accent/10 text-white'
+                        : 'border-border text-gray-300 hover:text-white hover:bg-surface-muted'
+                    }`}
+                  >
+                    <Filter className="w-3.5 h-3.5 shrink-0" />
+                    <span>Filters</span>
+                    {hasTaskFilters && (
+                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-accent text-accent-foreground text-[10px] font-semibold">
+                        {activeTaskFilterCount}
+                      </span>
+                    )}
+                  </button>
+                  {hasTaskFilters && !showTaskFilters && (
+                    <button
+                      type="button"
+                      onClick={clearTaskFilters}
+                      className="px-2.5 py-1.5 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </>
+              )}
+              <button type="button" onClick={() => { resetTaskForm(); setShowTaskForm(true) }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 shrink-0">
+                <Plus className="w-3.5 h-3.5" /> Add task
+              </button>
+            </div>
           </div>
 
-          {tasks.length > 0 && (
-            <div className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0 space-y-3">
+          {hasTaskFilters && !showTaskFilters && (
+            <p className="text-xs text-gray-500">
+              {activeTaskFilterCount} filter{activeTaskFilterCount === 1 ? '' : 's'} active — open Filters to adjust or use Clear filters.
+            </p>
+          )}
+
+          {tasks.length > 0 && showTaskFilters && (
+            <div id="project-task-filters" className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs text-gray-500">Filter tasks</p>
                 {hasTaskFilters && (
