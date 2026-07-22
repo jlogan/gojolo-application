@@ -259,6 +259,7 @@ export default function Inbox() {
   // Pagination
   const [pageSize] = useState(50)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [hasMoreThreads, setHasMoreThreads] = useState(false)
   const [loadingMoreThreads, setLoadingMoreThreads] = useState(false)
@@ -687,6 +688,11 @@ export default function Inbox() {
     supabase.from('inbox_thread_reads').select('thread_id, last_read_at').eq('user_id', userId)
       .then(({ data }) => setReadStatuses((data as ReadStatus[]) ?? []))
   }, [userId])
+
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchQuery(searchInput), 300)
+    return () => clearTimeout(timer)
+  }, [searchInput])
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
@@ -1765,7 +1771,7 @@ export default function Inbox() {
           <div className="p-2 border-b border-border">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
-              <input type="text" value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setThreads([]); setHasMoreThreads(false); initialLoadDone.current = false }} placeholder="Search email, subject, or body…"
+              <input type="text" value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="Search email, subject, or body…"
                 className="w-full rounded border border-border bg-surface-muted pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent" />
             </div>
           </div>
