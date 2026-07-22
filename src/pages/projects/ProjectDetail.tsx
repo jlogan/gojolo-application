@@ -47,10 +47,6 @@ const TASK_STATUS_CONFIG: Record<string, { label: string; classes: string }> = {
   closed: { label: 'Closed', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
 }
 
-const TASK_STATUS_ORDER = [
-  'open', 'todo', 'in_progress', 'ready_for_testing', 'testing', 'needs_work', 'client_review', 'complete', 'done', 'closed',
-]
-
 function taskStatusLabel(status: string): string {
   return TASK_STATUS_CONFIG[status]?.label ?? status.replace(/_/g, ' ')
 }
@@ -87,6 +83,45 @@ function isTaskDueThisWeek(dueDate: string, today = new Date()): boolean {
   const from = toLocalISODate(startOfWeek(today))
   const to = toLocalISODate(endOfWeek(today))
   return dueDate >= from && dueDate <= to
+}
+
+const COMPLETED_STATUSES = new Set(['complete', 'done', 'closed'])
+const OPEN_STATUSES = new Set(['open', 'todo'])
+
+type TaskStatusFilter = '' | 'open' | 'in_progress' | 'completed' | 'overdue'
+type TaskPriorityFilter = '' | 'high' | 'medium' | 'low'
+type TaskDuePreset = 'all' | 'overdue' | 'this_week' | 'no_due_date'
+
+function isTaskCompleted(status: string): boolean {
+  return COMPLETED_STATUSES.has(status)
+}
+
+function isTaskOpen(status: string): boolean {
+  return OPEN_STATUSES.has(status)
+}
+
+function isTaskInProgress(status: string): boolean {
+  return !isTaskCompleted(status) && !isTaskOpen(status)
+}
+
+function isTaskOverdueActive(task: Pick<Task, 'due_date' | 'status'>): boolean {
+  return !!task.due_date && isTaskOverdue(task.due_date) && !isTaskCompleted(task.status)
+}
+
+function taskMatchesPriorityFilter(priority: string, filter: TaskPriorityFilter): boolean {
+  if (!filter) return true
+  if (filter === 'high') return priority === 'high' || priority === 'urgent'
+  return priority === filter
+}
+
+function getTaskAssigneeUserIds(
+  task: Pick<Task, 'id' | 'assigned_to'>,
+  assigneeRows: TaskAssigneeRow[],
+): string[] {
+  const fromJoin = assigneeRows.filter(a => a.task_id === task.id).map(a => a.user_id)
+  if (fromJoin.length > 0) return fromJoin
+  if (task.assigned_to) return [task.assigned_to]
+  return []
 }
 
 export default function ProjectDetail() {
@@ -138,10 +173,10 @@ export default function ProjectDetail() {
     else next.delete('tab')
     setSearchParams(next, { replace: true })
   }
-  const [filterStatus, setFilterStatus] = useState('')
-  const [filterDuePreset, setFilterDuePreset] = useState<'all' | 'overdue' | 'this_week' | 'no_due_date'>('all')
-  const [filterDueFrom, setFilterDueFrom] = useState('')
-  const [filterDueTo, setFilterDueTo] = useState('')
+  const [filterStatus, setFilterStatus] = useState<TaskStatusFilter>('')
+  const [filterPriority, setFilterPriority] = useState<TaskPriorityFilter>('')
+  const [filterAssignee, setFilterAssignee] = useState('')
+  const [filterDuePreset, setFilterDuePreset] = useState<TaskDuePreset>('all')
 
   // Project time logs
   const [timeLogs, setTimeLogs] = useState<ProjectTimeLog[]>([])
@@ -292,51 +327,57 @@ export default function ProjectDetail() {
   useEffect(() => { fetchAttachments() }, [fetchAttachments])
   useEffect(() => { fetchTimeLogs() }, [fetchTimeLogs])
 
-  const statusCounts = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const t of tasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1)
-    return counts
-  }, [tasks])
+  const taskFilterCounts = useMemo(() => ({
+    open: tasks.filter(t => isTaskOpen(t.status)).length,
+    in_progress: tasks.filter(t => isTaskInProgress(t.status)).length,
+    completed: tasks.filter(t => isTaskCompleted(t.status)).length,
+    overdue: tasks.filter(t => isTaskOverdueActive(t)).length,
+    high: tasks.filter(t => taskMatchesPriorityFilter(t.priority, 'high')).length,
+    medium: tasks.filter(t => t.priority === 'medium').length,
+    low: tasks.filter(t => t.priority === 'low').length,
+    due_overdue: tasks.filter(t => isTaskOverdueActive(t)).length,
+    due_this_week: tasks.filter(t => t.due_date && isTaskDueThisWeek(t.due_date)).length,
+    no_due_date: tasks.filter(t => !t.due_date).length,
+    unassigned: tasks.filter(t => getTaskAssigneeUserIds(t, taskAssignees).length === 0).length,
+  }), [tasks, taskAssignees])
 
-  const statusOverview = useMemo(() => {
-    const items: { status: string; label: string; count: number; classes: string }[] = []
-    for (const status of TASK_STATUS_ORDER) {
-      const count = statusCounts.get(status) ?? 0
-      if (count === 0) continue
-      items.push({
-        status,
-        label: taskStatusLabel(status),
-        count,
-        classes: TASK_STATUS_CONFIG[status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30',
-      })
+  const assigneeFilterOptions = useMemo(() => {
+    const userIds = new Set<string>()
+    for (const m of members) userIds.add(m.user_id)
+    for (const a of taskAssignees) userIds.add(a.user_id)
+    for (const t of tasks) {
+      if (t.assigned_to) userIds.add(t.assigned_to)
     }
-    for (const [status, count] of statusCounts) {
-      if (TASK_STATUS_ORDER.includes(status)) continue
-      items.push({
-        status,
-        label: taskStatusLabel(status),
-        count,
-        classes: TASK_STATUS_CONFIG[status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30',
+    return [...userIds]
+      .map(uid => {
+        const member = members.find(m => m.user_id === uid)
+        const orgUser = orgUsers.find(u => u.user_id === uid)
+        const display_name = member?.display_name ?? orgUser?.display_name ?? uid.slice(0, 8)
+        const count = tasks.filter(t => getTaskAssigneeUserIds(t, taskAssignees).includes(uid)).length
+        return { user_id: uid, display_name, count }
       })
-    }
-    return items
-  }, [statusCounts])
+      .filter(o => o.count > 0)
+      .sort((a, b) => a.display_name.localeCompare(b.display_name))
+  }, [members, taskAssignees, tasks, orgUsers])
 
   const filteredTasks = useMemo(() => {
     return tasks.filter(t => {
-      if (filterStatus && t.status !== filterStatus) return false
+      if (filterStatus === 'open' && !isTaskOpen(t.status)) return false
+      if (filterStatus === 'in_progress' && !isTaskInProgress(t.status)) return false
+      if (filterStatus === 'completed' && !isTaskCompleted(t.status)) return false
+      if (filterStatus === 'overdue' && !isTaskOverdueActive(t)) return false
+      if (!taskMatchesPriorityFilter(t.priority, filterPriority)) return false
+      if (filterAssignee === 'unassigned') {
+        if (getTaskAssigneeUserIds(t, taskAssignees).length > 0) return false
+      } else if (filterAssignee && !getTaskAssigneeUserIds(t, taskAssignees).includes(filterAssignee)) {
+        return false
+      }
       if (filterDuePreset === 'no_due_date' && t.due_date) return false
-      if (filterDuePreset === 'overdue') {
-        if (!t.due_date || !isTaskOverdue(t.due_date)) return false
-      }
-      if (filterDuePreset === 'this_week') {
-        if (!t.due_date || !isTaskDueThisWeek(t.due_date)) return false
-      }
-      if (filterDueFrom && (!t.due_date || t.due_date < filterDueFrom)) return false
-      if (filterDueTo && (!t.due_date || t.due_date > filterDueTo)) return false
+      if (filterDuePreset === 'overdue' && !isTaskOverdueActive(t)) return false
+      if (filterDuePreset === 'this_week' && (!t.due_date || !isTaskDueThisWeek(t.due_date))) return false
       return true
     })
-  }, [tasks, filterStatus, filterDuePreset, filterDueFrom, filterDueTo])
+  }, [tasks, filterStatus, filterPriority, filterAssignee, filterDuePreset, taskAssignees])
 
   const timeLogTotalMinutes = useMemo(
     () => timeLogs.reduce((sum, t) => sum + t.hours * 60 + t.minutes, 0),
@@ -347,14 +388,21 @@ export default function ProjectDetail() {
     [timeLogs],
   )
 
-  const hasTaskFilters = filterStatus !== '' || filterDuePreset !== 'all' || filterDueFrom !== '' || filterDueTo !== ''
+  const hasTaskFilters = filterStatus !== '' || filterPriority !== '' || filterAssignee !== '' || filterDuePreset !== 'all'
 
   const clearTaskFilters = () => {
     setFilterStatus('')
+    setFilterPriority('')
+    setFilterAssignee('')
     setFilterDuePreset('all')
-    setFilterDueFrom('')
-    setFilterDueTo('')
   }
+
+  const STATUS_FILTER_CHIPS: { value: TaskStatusFilter; label: string; count: number; classes: string }[] = [
+    { value: 'open', label: 'Open', count: taskFilterCounts.open, classes: 'bg-gray-500/20 text-gray-300 border-gray-500/30' },
+    { value: 'in_progress', label: 'In Progress', count: taskFilterCounts.in_progress, classes: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+    { value: 'completed', label: 'Completed', count: taskFilterCounts.completed, classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
+    { value: 'overdue', label: 'Overdue', count: taskFilterCounts.overdue, classes: 'bg-red-500/20 text-red-400 border-red-500/30' },
+  ]
 
   const resetTaskForm = () => {
     setTaskTitle(''); setTaskDesc(''); setTaskStatus('todo'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigneeIds([])
@@ -582,65 +630,77 @@ export default function ProjectDetail() {
           </div>
 
           {tasks.length > 0 && (
-            <div className="rounded-lg border border-border bg-surface-elevated p-3 space-y-3">
-              <p className="text-xs text-gray-500">Status overview</p>
+            <div className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-gray-500">Filter tasks</p>
+                {hasTaskFilters && (
+                  <button type="button" onClick={clearTaskFilters}
+                    className="px-2 py-1 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
+                    Clear filters
+                  </button>
+                )}
+              </div>
+
               <div className="flex flex-wrap gap-2">
                 <button type="button" onClick={() => setFilterStatus('')}
                   className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === '' ? 'border-accent bg-accent/10 text-white' : 'border-border text-gray-400 hover:text-white hover:bg-surface-muted'}`}>
                   All ({tasks.length})
                 </button>
-                {statusOverview.map(item => (
-                  <button key={item.status} type="button" onClick={() => setFilterStatus(filterStatus === item.status ? '' : item.status)}
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === item.status ? 'border-accent ring-1 ring-accent/40' : 'border-transparent'} ${item.classes}`}>
+                {STATUS_FILTER_CHIPS.map(item => (
+                  <button key={item.value} type="button"
+                    onClick={() => setFilterStatus(filterStatus === item.value ? '' : item.value)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${filterStatus === item.value ? 'border-accent ring-1 ring-accent/40' : 'border-transparent'} ${item.classes}`}>
                     {item.label} ({item.count})
                   </button>
                 ))}
               </div>
-            </div>
-          )}
 
-          <div className="rounded-lg border border-border bg-surface-muted/30 p-3 min-w-0">
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Status</label>
-                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="">All statuses</option>
-                  {statusOverview.map(item => (
-                    <option key={item.status} value={item.status}>{item.label} ({item.count})</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Due date</label>
-                <select value={filterDuePreset} onChange={e => setFilterDuePreset(e.target.value as typeof filterDuePreset)}
-                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
-                  <option value="all">All due dates</option>
-                  <option value="overdue">Overdue</option>
-                  <option value="this_week">Due this week</option>
-                  <option value="no_due_date">No due date</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Due from</label>
-                <DateInput value={filterDueFrom} onChange={e => setFilterDueFrom(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
-              </div>
-              <div className="sm:col-span-2 xl:col-span-1">
-                <label className="block text-xs text-gray-500 mb-1">Due to</label>
-                <div className="flex flex-wrap items-center gap-2">
-                  <DateInput value={filterDueTo} onChange={e => setFilterDueTo(e.target.value)}
-                    className="min-w-0 flex-1 rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent" />
-                  {hasTaskFilters && (
-                    <button type="button" onClick={clearTaskFilters}
-                      className="px-2 py-1.5 rounded-lg border border-border text-gray-400 hover:text-white hover:bg-surface-muted text-xs shrink-0">
-                      Clear
-                    </button>
-                  )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Status</label>
+                  <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as TaskStatusFilter)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                    <option value="">All statuses</option>
+                    <option value="open">Open ({taskFilterCounts.open})</option>
+                    <option value="in_progress">In Progress ({taskFilterCounts.in_progress})</option>
+                    <option value="completed">Completed ({taskFilterCounts.completed})</option>
+                    <option value="overdue">Overdue ({taskFilterCounts.overdue})</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Priority</label>
+                  <select value={filterPriority} onChange={e => setFilterPriority(e.target.value as TaskPriorityFilter)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                    <option value="">All priorities</option>
+                    <option value="high">High ({taskFilterCounts.high})</option>
+                    <option value="medium">Medium ({taskFilterCounts.medium})</option>
+                    <option value="low">Low ({taskFilterCounts.low})</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Assignee</label>
+                  <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                    <option value="">All assignees</option>
+                    <option value="unassigned">Unassigned ({taskFilterCounts.unassigned})</option>
+                    {assigneeFilterOptions.map(u => (
+                      <option key={u.user_id} value={u.user_id}>{u.display_name} ({u.count})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Due date</label>
+                  <select value={filterDuePreset} onChange={e => setFilterDuePreset(e.target.value as TaskDuePreset)}
+                    className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
+                    <option value="all">All due dates</option>
+                    <option value="overdue">Overdue ({taskFilterCounts.due_overdue})</option>
+                    <option value="this_week">Due this week ({taskFilterCounts.due_this_week})</option>
+                    <option value="no_due_date">No due date ({taskFilterCounts.no_due_date})</option>
+                  </select>
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
           {showTaskForm && (
             <form onSubmit={handleTaskSubmit} className="rounded-lg border border-border bg-surface-elevated p-4 space-y-3">
