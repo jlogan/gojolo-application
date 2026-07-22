@@ -303,6 +303,7 @@ export default function Inbox() {
   // Assign popover (multi-select)
   const [showAssignPopover, setShowAssignPopover] = useState(false)
   const [selectedAssignUserIds, setSelectedAssignUserIds] = useState<Set<string>>(new Set())
+  const [showLinkInvoicePicker, setShowLinkInvoicePicker] = useState(false)
 
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
@@ -696,8 +697,11 @@ export default function Inbox() {
 
   useEffect(() => { fetchThreads() }, [fetchThreads])
 
-  // Close assign popover when thread changes
-  useEffect(() => setShowAssignPopover(false), [selectedThreadId])
+  // Close assign / link-invoice UI when thread changes
+  useEffect(() => {
+    setShowAssignPopover(false)
+    setShowLinkInvoicePicker(false)
+  }, [selectedThreadId])
 
   // Refs for stable realtime callbacks (avoids channel teardown on every state change)
   const selectedThreadIdRef = useRef(selectedThreadId)
@@ -1438,6 +1442,7 @@ export default function Inbox() {
       .upsert({ thread_id: selectedThreadId, invoice_id: invoiceId }, { onConflict: 'thread_id,invoice_id' })
     if (error) { toast(error.message); return }
     await fetchThreadInvoiceLinks(selectedThreadId)
+    setShowLinkInvoicePicker(false)
     toast('Invoice linked')
   }
 
@@ -2011,31 +2016,44 @@ export default function Inbox() {
                     </span>
                   ))}
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
-                  <span className="text-gray-500">Linked invoices:</span>
-                  {threadInvoiceLinks.length === 0 && <span className="text-gray-600">None</span>}
-                  {threadInvoiceLinks.map((link) => link.invoice ? (
-                    <span key={link.invoice_id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted px-2 py-0.5 text-gray-200">
-                      <Link to={`/invoices/${link.invoice_id}`} className="inline-flex items-center gap-1 hover:text-accent">
-                        <FileText className="h-3 w-3" />
-                        {formatInvoiceNumber(link.invoice)}
-                        {link.invoice.companyName ? ` · ${link.invoice.companyName}` : ''}
-                      </Link>
-                      <button type="button" onClick={() => handleUnlinkInvoice(link.invoice_id)} className="text-gray-500 hover:text-red-400" title="Unlink invoice">&times;</button>
-                    </span>
-                  ) : null)}
-                  <select
-                    value=""
-                    onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
-                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowLinkInvoicePicker(v => !v)}
+                    disabled={actionLoading}
+                    className="rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
                   >
-                    <option value="">Link invoice…</option>
-                    {invoiceOptions.filter((inv) => !threadInvoiceLinks.some((link) => link.invoice_id === inv.id)).map((inv) => (
-                      <option key={inv.id} value={inv.id}>
-                        {formatInvoiceNumber(inv)}{inv.companyName ? ` · ${inv.companyName}` : ''} · {inv.status}
-                      </option>
-                    ))}
-                  </select>
+                    Link invoice…
+                  </button>
+                  {showLinkInvoicePicker && (
+                    <select
+                      value=""
+                      onChange={(e) => { if (e.target.value) void handleLinkInvoice(e.target.value) }}
+                      className="mt-1 block max-w-full rounded border border-border bg-surface-muted px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                      autoFocus
+                    >
+                      <option value="">Select invoice…</option>
+                      {invoiceOptions.filter((inv) => !threadInvoiceLinks.some((link) => link.invoice_id === inv.id)).map((inv) => (
+                        <option key={inv.id} value={inv.id}>
+                          {formatInvoiceNumber(inv)}{inv.companyName ? ` · ${inv.companyName}` : ''} · {inv.status}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span className="text-gray-500">Linked invoices:</span>
+                    {threadInvoiceLinks.length === 0 && <span className="text-gray-600">None</span>}
+                    {threadInvoiceLinks.map((link) => link.invoice ? (
+                      <span key={link.invoice_id} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-muted px-2 py-0.5 text-gray-200">
+                        <Link to={`/invoices/${link.invoice_id}`} className="inline-flex items-center gap-1 hover:text-accent">
+                          <FileText className="h-3 w-3" />
+                          {formatInvoiceNumber(link.invoice)}
+                          {link.invoice.companyName ? ` · ${link.invoice.companyName}` : ''}
+                        </Link>
+                        <button type="button" onClick={() => handleUnlinkInvoice(link.invoice_id)} className="text-gray-500 hover:text-red-400" title="Unlink invoice">&times;</button>
+                      </span>
+                    ) : null)}
+                  </div>
                 </div>
               </div>
 
