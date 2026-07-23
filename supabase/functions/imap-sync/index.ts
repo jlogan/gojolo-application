@@ -917,10 +917,14 @@ serve(async (req) => {
       // Check recent open threads — if their UIDs no longer exist, mark as archived
       if (highestUid > 0) {
         const { data: recentOpenThreads } = await service.from('inbox_threads')
-          .select('id').eq('org_id', acc.org_id).eq('imap_account_id', acc.id)
+          .select('id, user_restored_at, status').eq('org_id', acc.org_id).eq('imap_account_id', acc.id)
           .eq('status', 'open').order('last_message_at', { ascending: false }).limit(20)
 
-        for (const t of (recentOpenThreads ?? []) as { id: string }[]) {
+        for (const t of (recentOpenThreads ?? []) as { id: string; user_restored_at: string | null; status: string }[]) {
+          if (t.user_restored_at && t.status !== 'archived') {
+            console.log('[imap-sync] account', acc.id, 'skip uid-missing archive: user_restored_at set', { threadId: t.id })
+            continue
+          }
           const { data: threadMsgs } = await service.from('inbox_messages')
             .select('external_uid').eq('thread_id', t.id).eq('imap_account_id', acc.id)
             .not('external_uid', 'is', null).limit(1)
@@ -995,6 +999,15 @@ serve(async (req) => {
             })
             if (msgMatch?.thread_id) {
               const tid = msgMatch.thread_id as string
+              const { data: threadRow } = await service
+                .from('inbox_threads')
+                .select('status, user_restored_at')
+                .eq('id', tid)
+                .single()
+              if (threadRow?.user_restored_at && threadRow.status !== 'archived') {
+                console.log('[imap-sync] account', acc.id, 'skip trash archive: user_restored_at set', { threadId: tid, messageId })
+                continue
+              }
               await service
                 .from('inbox_threads')
                 .update({ status: 'archived', updated_at: date.toISOString(), last_message_at: date.toISOString() })

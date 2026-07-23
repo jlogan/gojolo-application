@@ -1058,9 +1058,21 @@ export default function Inbox() {
       threads.find((t) => t.id === selectedThreadId)?.status ??
       selectedThreadFallback?.status ??
       null
+    const now = new Date().toISOString()
+    const isRestoreFromTrash =
+      status === 'open' && (opts?.restoreFromTrash === true || previousStatus === 'archived')
+    const statusUpdate: { status: string; updated_at: string; user_restored_at?: string | null } = {
+      status,
+      updated_at: now,
+    }
+    if (status === 'archived') {
+      statusUpdate.user_restored_at = null
+    } else if (isRestoreFromTrash) {
+      statusUpdate.user_restored_at = now
+    }
     const { error: statusErr } = await supabase
       .from('inbox_threads')
-      .update({ status, updated_at: new Date().toISOString() })
+      .update(statusUpdate)
       .eq('id', selectedThreadId)
     if (!statusErr && status === 'archived' && currentOrg?.id && user?.id) {
       void supabase

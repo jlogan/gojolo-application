@@ -80,8 +80,18 @@ Deno.serve(async (req: Request) => {
       try {
         if (isGmail) {
           await client.messageFlagsAdd({ uid: uidRange }, ['\\Inbox'], { uid: true }).catch(() => {})
+          await client.messageFlagsRemove({ uid: uidRange }, ['\\Deleted', '\\Trash'], { uid: true }).catch(() => {})
         }
       } finally { await lock.release() }
+      if (isGmail) {
+        try {
+          const trashLock = await client.getMailboxLock(trashPath)
+          try {
+            await client.messageFlagsRemove({ uid: uidRange }, ['\\Deleted', '\\Trash'], { uid: true }).catch(() => {})
+            await client.messageMove({ uid: uidRange }, mailboxPath, { uid: true }).catch(() => {})
+          } finally { await trashLock.release() }
+        } catch { /* Trash folder may not exist */ }
+      }
     }
 
     await client.logout().catch(() => client.close())
