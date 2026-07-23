@@ -15,6 +15,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { corsHeaders } from '../_shared/cors.ts'
+import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
   buildRefThreadMap,
   buildSubjectThreadMap,
@@ -236,7 +237,7 @@ Deno.serve(async (req: Request) => {
               .select('external_id, thread_id, inbox_threads(imap_account_id, mailbox_address)')
               .eq('imap_account_id', acc.id)
               .in('external_id', allRefIds.slice(0, 50))
-            for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.id)) {
+            for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.email)) {
               refMap.set(k, v)
             }
           }
@@ -249,6 +250,19 @@ Deno.serve(async (req: Request) => {
             refMap,
             subjectThreadMap: new Map(),
           })
+
+          if (!threadId && direction === 'outbound') {
+            threadId = await findOutboundAppThreadId(service, {
+              imapAccountId: acc.id,
+              fromAddr,
+              toAddr,
+              subject,
+              receivedAt: date,
+            })
+            if (threadId) {
+              console.log('[imap-idle] account', acc.id, 'outbound app-row dedup (pre-thread): reusing thread', threadId, 'uid=', uid)
+            }
+          }
 
           if (!threadId && subject) {
             const normSubject = normalizeSubject(subject)
@@ -275,9 +289,37 @@ Deno.serve(async (req: Request) => {
             const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
               p_thread_id: threadId,
               p_last_message_at: date.toISOString(),
-              p_is_inbound: true,
+              p_is_inbound: direction === 'inbound',
             })
             if (touchErr) console.log('[imap-idle] touch_inbox_thread_on_new_message', threadId, touchErr.message)
+          }
+
+          if (direction === 'outbound' && threadId) {
+            const cutoff = new Date(date.getTime() - 10 * 60 * 1000).toISOString()
+            const { data: existingOutbound } = await service.from('inbox_messages')
+              .select('id')
+              .eq('thread_id', threadId)
+              .eq('imap_account_id', acc.id)
+              .eq('direction', 'outbound')
+              .is('external_uid', null)
+              .gte('received_at', cutoff)
+              .limit(1)
+            if (existingOutbound?.length) {
+              const existingId = (existingOutbound[0] as { id: string }).id
+              const externalId = messageId ?? `uid-${acc.id}-${uid}`
+              console.log('[imap-idle] account', acc.id, 'outbound dedup: updating existing msg', existingId, 'threadId=', threadId, 'uid=', uid)
+              await service.from('inbox_messages')
+                .update({ external_id: externalId, external_uid: uid })
+                .eq('id', existingId)
+              const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+                p_thread_id: threadId,
+                p_last_message_at: date.toISOString(),
+                p_is_inbound: false,
+              })
+              if (touchDedupErr) console.log('[imap-idle] touch_inbox_thread_on_new_message (outbound dedup)', threadId, touchDedupErr.message)
+              inserted++
+              continue
+            }
           }
 
           // Upload inline images (CID). Rewrite htmlBody now; defer the inbox_attachments

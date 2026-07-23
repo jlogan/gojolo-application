@@ -8,6 +8,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import { corsHeaders } from '../_shared/cors.ts'
+import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
   buildRefThreadMap,
   buildSubjectThreadMap,
@@ -376,7 +377,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         .select('external_id, thread_id, inbox_threads(imap_account_id, mailbox_address)')
         .eq('imap_account_id', acc.id)
         .in('external_id', allRefIds.slice(0, 200))
-      for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.id)) {
+      for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.email)) {
         refMap.set(k, v)
       }
       console.log('[refresh-email] refMap size:', refMap.size)
@@ -457,6 +458,19 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         refMap,
         subjectThreadMap,
       })
+
+      if (!threadId && direction === 'outbound') {
+        threadId = await findOutboundAppThreadId(service, {
+          imapAccountId: acc.id,
+          fromAddr: p.fromAddr,
+          toAddr: p.toAddr,
+          subject: p.subject,
+          receivedAt: p.date,
+        })
+        if (threadId) {
+          console.log('[refresh-email] outbound app-row dedup (pre-thread): reusing thread', threadId, 'uid=', p.uid)
+        }
+      }
 
       if (!threadId) {
         const { data: newThread, error: threadErr } = await service

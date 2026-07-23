@@ -7,6 +7,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { logThreadArchiveDebug } from '../_shared/inboxThreadArchiveLog.ts'
+import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
   buildRefThreadMap,
   buildSubjectThreadMap,
@@ -625,7 +626,7 @@ serve(async (req) => {
         const { data: refRows } = await service.from('inbox_messages')
           .select('external_id, thread_id, inbox_threads(imap_account_id, mailbox_address)').eq('imap_account_id', acc.id)
           .in('external_id', allRefIds.slice(0, 200))
-        for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.id)) {
+        for (const [k, v] of buildRefThreadMap((refRows ?? []) as Parameters<typeof buildRefThreadMap>[0], acc.email)) {
           refMap.set(k, v)
         }
       }
@@ -700,7 +701,7 @@ serve(async (req) => {
         const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
         const mailboxAddress = deriveMailboxAddress(direction, p.toAddr, p.fromAddr, acc.email)
 
-        // Thread matching: references + mailbox → subject + mailbox → new thread
+        // Thread matching: references + mailbox → subject + mailbox → app outbound dedup → new thread
         let threadId = resolveThreadIdFromMaps({
           inReplyTo: p.inReplyTo,
           refsList: p.refsList,
@@ -709,6 +710,19 @@ serve(async (req) => {
           refMap,
           subjectThreadMap,
         })
+
+        if (!threadId && direction === 'outbound') {
+          threadId = await findOutboundAppThreadId(service, {
+            imapAccountId: acc.id,
+            fromAddr: p.fromAddr,
+            toAddr: p.toAddr,
+            subject: p.subject,
+            receivedAt: p.date,
+          })
+          if (threadId) {
+            console.log('[imap-sync] account', acc.id, 'outbound app-row dedup (pre-thread): reusing thread', threadId, 'uid=', p.uid)
+          }
+        }
 
         if (!threadId) {
           const { data: newThread, error: threadErr } = await service.from('inbox_threads')

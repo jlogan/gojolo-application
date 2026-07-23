@@ -1,5 +1,12 @@
 /** Shared inbox thread resolution — disambiguate sibling copies by mailbox/recipient. */
 
+/** Normalize Message-ID for consistent threading (strip angle brackets, trim). */
+export function normalizeMessageId(id: string | null | undefined): string | null {
+  if (!id?.trim()) return null
+  const s = id.trim().replace(/^</, '').replace(/>$/, '').trim()
+  return s || null
+}
+
 export function normalizeEmail(addr: string): string {
   if (!addr?.trim()) return ''
   const m = addr.trim().match(/<([^>]+)>/)
@@ -41,19 +48,27 @@ type RefRow = {
 
 /**
  * Build reference map keyed by external_id+mailbox_address.
+ * Rows are already scoped to the syncing account via message imap_account_id; map each ref
+ * under the thread mailbox and the account email so sent copies resolve even when the thread
+ * mailbox differs (e.g. thread owned by jay@coacho.com, sent via jay@jaylogan.com account).
  * Legacy external_id-only entries are included only when unambiguous (single thread).
  */
-export function buildRefThreadMap(refRows: RefRow[], accountId: string): Map<string, string> {
+export function buildRefThreadMap(refRows: RefRow[], accountEmail?: string | null): Map<string, string> {
   const map = new Map<string, string>()
   const legacyCounts = new Map<string, number>()
   const legacyWinner = new Map<string, string>()
+  const accountMailbox = normalizeEmail(accountEmail ?? '')
 
   for (const r of refRows) {
-    const threadAccId = r.inbox_threads?.imap_account_id
-    if (threadAccId != null && threadAccId !== accountId) continue
-    const mailbox = normalizeEmail(r.inbox_threads?.mailbox_address ?? '')
-    if (mailbox) {
-      map.set(refMapKey(r.external_id, mailbox), r.thread_id)
+    if (!r.external_id) continue
+    const threadMailbox = normalizeEmail(r.inbox_threads?.mailbox_address ?? '')
+    const mailboxes = new Set<string>()
+    if (threadMailbox) mailboxes.add(threadMailbox)
+    if (accountMailbox) mailboxes.add(accountMailbox)
+    if (mailboxes.size > 0) {
+      for (const mailbox of mailboxes) {
+        map.set(refMapKey(r.external_id, mailbox), r.thread_id)
+      }
     } else {
       const n = (legacyCounts.get(r.external_id) ?? 0) + 1
       legacyCounts.set(r.external_id, n)

@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import nodemailer from 'npm:nodemailer'
 import { corsHeaders } from '../_shared/cors.ts'
+import { normalizeMessageId } from '../_shared/inboxThreadResolve.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -117,8 +118,8 @@ Deno.serve(async (req: Request) => {
     imapAccountId = (accountId || last?.imap_account_id) as string
     if (!imapAccountId) return jsonRes({ error: 'No email account for this thread' })
     toAddress = reqTo?.trim() || (last?.from_identifier as string) || ''
-    inReplyTo = (last?.external_id as string) ?? undefined
-    references = msgs?.slice(0, 10).map(m => m.external_id).filter(Boolean).reverse().join(' ') || undefined
+    inReplyTo = normalizeMessageId((last?.external_id as string) ?? null) ?? undefined
+    references = msgs?.slice(0, 10).map(m => normalizeMessageId(m.external_id as string)).filter(Boolean).reverse().join(' ') || undefined
     console.log(`[inbox-send-reply] ${reqId} reply context: orgId=${orgId}, imapAccountId=${imapAccountId}, toAddress=${toAddress}, subject=${subject?.slice(0, 50)}`)
   } else {
     if (!accountId) {
@@ -213,10 +214,12 @@ Deno.serve(async (req: Request) => {
     mailOpts.attachments = nodeAttachments
   }
 
+  let sentMessageId: string | null = null
   try {
     console.log(`[inbox-send-reply] ${reqId} sending via SMTP: from=${mailOpts.from}, to=${toAddress}, subject=${subject?.slice(0, 50)}`)
-    await transporter.sendMail(mailOpts)
-    console.log(`[inbox-send-reply] ${reqId} SMTP send succeeded`)
+    const sendResult = await transporter.sendMail(mailOpts)
+    sentMessageId = normalizeMessageId(sendResult.messageId ?? null)
+    console.log(`[inbox-send-reply] ${reqId} SMTP send succeeded messageId=${sentMessageId ?? '(none)'}`)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.log(`[inbox-send-reply] ${reqId} SMTP send failed:`, msg)
@@ -246,8 +249,14 @@ Deno.serve(async (req: Request) => {
     }
     if (isHtml) { msgPayload.html_body = effectiveBody; msgPayload.body = stripHtml(effectiveBody) }
     else { msgPayload.body = effectiveBody }
+    if (sentMessageId) {
+      msgPayload.external_id = sentMessageId
+      msgPayload.message_id_header = sentMessageId
+    }
+    if (inReplyTo) msgPayload.in_reply_to_header = inReplyTo
+    if (references) msgPayload.references_header = references
 
-    console.log(`[inbox-send-reply] ${reqId} inserting outbound message: threadId=${saveThreadId}, from=${account.email}, to=${toAddress}, received_at=${now}`)
+    console.log(`[inbox-send-reply] ${reqId} inserting outbound message: threadId=${saveThreadId}, from=${account.email}, to=${toAddress}, received_at=${now}, external_id=${sentMessageId ?? '(none)'}`)
     const { data: insertedMsg, error: msgErr } = await service
       .from('inbox_messages')
       .insert(msgPayload)
