@@ -13,6 +13,7 @@ import RichTextEditor from '@/components/inbox/RichTextEditor'
 import DateInput from '@/components/DateInput'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 import { htmlToPlainText, parseMentionUserIds } from '@/lib/mentionUtils'
+import { TASK_STATUS_FLOW, normalizeTaskStatus, taskStatusLabel } from '@/lib/taskStatus'
 
 type Task = {
   id: string; project_id: string; title: string; description: string | null
@@ -33,15 +34,6 @@ type SlackMsg = { id: string; user_name: string | null; content: string; receive
 type VaultCred = { id: string; credential_id: string; label: string; url: string | null; username: string | null }
 type OrgUser = { user_id: string; display_name: string | null; avatar_url: string | null; email?: string | null }
 type TaskAssignee = { user_id: string; display_name?: string | null; avatar_url?: string | null }
-
-const STATUS_FLOW = [
-  { value: 'open', label: 'Open', color: 'bg-gray-500/20 text-gray-300', step: 0 },
-  { value: 'in_progress', label: 'In Progress', color: 'bg-blue-500/20 text-blue-400', step: 1 },
-  { value: 'ready_for_testing', label: 'Ready For Testing', color: 'bg-purple-500/20 text-purple-400', step: 2 },
-  { value: 'needs_work', label: 'Needs Work', color: 'bg-orange-500/20 text-orange-400', step: 3 },
-  { value: 'client_review', label: 'Client Review', color: 'bg-yellow-500/20 text-yellow-400', step: 4 },
-  { value: 'complete', label: 'Complete', color: 'bg-green-500/20 text-green-400', step: 5 },
-]
 
 const PRIORITY_COLORS: Record<string, string> = { low: 'text-gray-400', medium: 'text-yellow-400', high: 'text-orange-400', urgent: 'text-red-400' }
 
@@ -762,7 +754,7 @@ export default function TaskDetail() {
 
   const totalMinutes = timeLogs.reduce((sum, t) => sum + (t.hours * 60) + t.minutes, 0)
   const billableMinutes = timeLogs.filter(t => t.billed !== false).reduce((sum, t) => sum + (t.hours * 60) + t.minutes, 0)
-  const currentStatusInfo = STATUS_FLOW.find(s => s.value === task?.status) ?? STATUS_FLOW[0]
+  const currentStatusInfo = TASK_STATUS_FLOW.find(s => s.value === normalizeTaskStatus(task?.status ?? '')) ?? TASK_STATUS_FLOW[0]
   const currentStep = currentStatusInfo.step
 
   type ActivityItem = { type: 'status'; id: string; created_at: string; display_name?: string | null; from_status: string | null; to_status: string } | { type: 'comment'; id: string; created_at: string; display_name?: string | null; content: string }
@@ -836,15 +828,15 @@ export default function TaskDetail() {
               >
                 <Pencil className="w-3 h-3" /> Edit
               </button>
-              <select value={task.status} onChange={e => handleStatusChange(e.target.value)}
+              <select value={normalizeTaskStatus(task.status)} onChange={e => handleStatusChange(e.target.value)}
                 className={`rounded-lg px-3 py-2 text-xs font-medium border-0 focus:outline-none focus:ring-2 focus:ring-accent shrink-0 ${currentStatusInfo.color}`}>
-                {STATUS_FLOW.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                {TASK_STATUS_FLOW.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
               </select>
             </div>
 
             {/* Status progress bar */}
             <div className="flex items-center gap-1 mb-4">
-              {STATUS_FLOW.map((s, i) => (
+              {TASK_STATUS_FLOW.map((s, i) => (
                 <div key={s.value} className={`h-1.5 flex-1 rounded-full transition-colors ${i <= currentStep ? 'bg-accent' : 'bg-surface-muted'}`} title={s.label} />
               ))}
             </div>
@@ -1243,9 +1235,9 @@ export default function TaskDetail() {
                   <>
                     <span className="text-gray-400">{item.display_name ?? 'System'}</span>
                     <span className="text-gray-500"> changed status from </span>
-                    <span className="text-gray-300">{STATUS_FLOW.find(f => f.value === item.from_status)?.label ?? item.from_status ?? 'none'}</span>
+                    <span className="text-gray-300">{item.from_status ? taskStatusLabel(item.from_status) : 'none'}</span>
                     <span className="text-gray-500"> to </span>
-                    <span className="text-white font-medium">{STATUS_FLOW.find(f => f.value === item.to_status)?.label ?? item.to_status}</span>
+                    <span className="text-white font-medium">{taskStatusLabel(item.to_status)}</span>
                   </>
                 ) : (
                   <>

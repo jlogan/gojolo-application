@@ -12,6 +12,18 @@ import RichTextEditor from '@/components/inbox/RichTextEditor'
 import DateInput from '@/components/DateInput'
 import LinkedInvoices from '@/components/LinkedInvoices'
 import CredentialsPanel from '@/components/CredentialsPanel'
+import {
+  TASK_STATUS_FLOW,
+  TASK_STATUS_CONFIG,
+  TASK_KANBAN_STATUS_ORDER,
+  TASK_WORKFLOW_STATUSES,
+  type TaskCanonicalStatus,
+  isTaskCompleted,
+  normalizeTaskStatus,
+  taskKanbanColumnId,
+  taskKanbanHeaderClasses,
+  taskStatusLabel,
+} from '@/lib/taskStatus'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -32,23 +44,6 @@ type ProjectTimeLog = {
 const STATUS_ICON: Record<string, typeof Circle> = { todo: Circle, in_progress: Clock, done: CheckCircle2 }
 const PRIORITY_COLORS: Record<string, string> = {
   low: 'text-gray-400', medium: 'text-yellow-400', high: 'text-orange-400', urgent: 'text-red-400',
-}
-
-const TASK_STATUS_CONFIG: Record<string, { label: string; classes: string }> = {
-  open: { label: 'Open', classes: 'bg-gray-500/20 text-gray-300 border-gray-500/30' },
-  todo: { label: 'Open', classes: 'bg-gray-500/20 text-gray-300 border-gray-500/30' },
-  in_progress: { label: 'In Progress', classes: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
-  ready_for_testing: { label: 'Ready For Testing', classes: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
-  testing: { label: 'To Be Tested', classes: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
-  needs_work: { label: 'Needs Work', classes: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
-  client_review: { label: 'Client Review', classes: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
-  complete: { label: 'Complete', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
-  done: { label: 'Complete', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
-  closed: { label: 'Closed', classes: 'bg-green-500/20 text-green-400 border-green-500/30' },
-}
-
-function taskStatusLabel(status: string): string {
-  return TASK_STATUS_CONFIG[status]?.label ?? status.replace(/_/g, ' ')
 }
 
 function toLocalISODate(date: Date): string {
@@ -85,24 +80,9 @@ function isTaskDueThisWeek(dueDate: string, today = new Date()): boolean {
   return dueDate >= from && dueDate <= to
 }
 
-const COMPLETED_STATUSES = new Set(['complete', 'done', 'closed'])
-const OPEN_STATUSES = new Set(['open', 'todo'])
-
-type TaskStatusFilter = '' | 'open' | 'in_progress' | 'completed' | 'overdue'
+type TaskStatusFilter = '' | TaskCanonicalStatus
 type TaskPriorityFilter = '' | 'high' | 'medium' | 'low'
 type TaskDuePreset = 'all' | 'overdue' | 'this_week' | 'no_due_date'
-
-function isTaskCompleted(status: string): boolean {
-  return COMPLETED_STATUSES.has(status)
-}
-
-function isTaskOpen(status: string): boolean {
-  return OPEN_STATUSES.has(status)
-}
-
-function isTaskInProgress(status: string): boolean {
-  return !isTaskCompleted(status) && !isTaskOpen(status)
-}
 
 function isTaskOverdueActive(task: Pick<Task, 'due_date' | 'status'>): boolean {
   return !!task.due_date && isTaskOverdue(task.due_date) && !isTaskCompleted(task.status)
@@ -125,36 +105,6 @@ function getTaskAssigneeUserIds(
 }
 
 type TaskPresentationView = 'list' | 'kanban'
-
-/** Canonical Kanban column ids (matches TaskDetail STATUS_FLOW). */
-const TASK_KANBAN_STATUS_ORDER = [
-  'open',
-  'in_progress',
-  'ready_for_testing',
-  'needs_work',
-  'client_review',
-  'complete',
-] as const
-
-/** Workflow stages always shown as Kanban columns (even when empty). */
-const TASK_WORKFLOW_STATUSES = new Set(TASK_KANBAN_STATUS_ORDER)
-
-/** Legacy/raw statuses grouped under a canonical Kanban column (display only). */
-const TASK_KANBAN_STATUS_ALIASES: Record<string, string> = {
-  todo: 'open',
-  testing: 'ready_for_testing',
-  done: 'complete',
-  closed: 'complete',
-}
-
-function taskKanbanColumnId(status: string): string {
-  return TASK_KANBAN_STATUS_ALIASES[status] ?? status
-}
-
-function taskKanbanHeaderClasses(status: string): string {
-  const classes = TASK_STATUS_CONFIG[status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'
-  return classes.replace(/\sborder-[^\s]+/g, '')
-}
 
 function formatTaskTimeLogged(totalMinutes: number): string | null {
   if (totalMinutes <= 0) return null
@@ -182,7 +132,7 @@ export default function ProjectDetail() {
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [taskTitle, setTaskTitle] = useState('')
   const [taskDesc, setTaskDesc] = useState('')
-  const [taskStatus, setTaskStatus] = useState('todo')
+  const [taskStatus, setTaskStatus] = useState<TaskCanonicalStatus>('open')
   const [taskPriority, setTaskPriority] = useState('medium')
   const [taskDue, setTaskDue] = useState('')
   const [taskAssigneeIds, setTaskAssigneeIds] = useState<string[]>([])
@@ -370,19 +320,23 @@ export default function ProjectDetail() {
   useEffect(() => { fetchAttachments() }, [fetchAttachments])
   useEffect(() => { fetchTimeLogs() }, [fetchTimeLogs])
 
-  const taskFilterCounts = useMemo(() => ({
-    open: tasks.filter(t => isTaskOpen(t.status)).length,
-    in_progress: tasks.filter(t => isTaskInProgress(t.status)).length,
-    completed: tasks.filter(t => isTaskCompleted(t.status)).length,
-    overdue: tasks.filter(t => isTaskOverdueActive(t)).length,
-    high: tasks.filter(t => taskMatchesPriorityFilter(t.priority, 'high')).length,
-    medium: tasks.filter(t => t.priority === 'medium').length,
-    low: tasks.filter(t => t.priority === 'low').length,
-    due_overdue: tasks.filter(t => isTaskOverdueActive(t)).length,
-    due_this_week: tasks.filter(t => t.due_date && isTaskDueThisWeek(t.due_date)).length,
-    no_due_date: tasks.filter(t => !t.due_date).length,
-    unassigned: tasks.filter(t => getTaskAssigneeUserIds(t, taskAssignees).length === 0).length,
-  }), [tasks, taskAssignees])
+  const taskFilterCounts = useMemo(() => {
+    const byStatus = Object.fromEntries(TASK_STATUS_FLOW.map(s => [s.value, 0])) as Record<TaskCanonicalStatus, number>
+    for (const t of tasks) {
+      const canonical = normalizeTaskStatus(t.status) as TaskCanonicalStatus
+      if (canonical in byStatus) byStatus[canonical]++
+    }
+    return {
+      byStatus,
+      high: tasks.filter(t => taskMatchesPriorityFilter(t.priority, 'high')).length,
+      medium: tasks.filter(t => t.priority === 'medium').length,
+      low: tasks.filter(t => t.priority === 'low').length,
+      due_overdue: tasks.filter(t => isTaskOverdueActive(t)).length,
+      due_this_week: tasks.filter(t => t.due_date && isTaskDueThisWeek(t.due_date)).length,
+      no_due_date: tasks.filter(t => !t.due_date).length,
+      unassigned: tasks.filter(t => getTaskAssigneeUserIds(t, taskAssignees).length === 0).length,
+    }
+  }, [tasks, taskAssignees])
 
   const assigneeFilterOptions = useMemo(() => {
     const userIds = new Set<string>()
@@ -405,10 +359,7 @@ export default function ProjectDetail() {
 
   const filteredTasks = useMemo(() => {
     return tasks.filter(t => {
-      if (filterStatus === 'open' && !isTaskOpen(t.status)) return false
-      if (filterStatus === 'in_progress' && !isTaskInProgress(t.status)) return false
-      if (filterStatus === 'completed' && !isTaskCompleted(t.status)) return false
-      if (filterStatus === 'overdue' && !isTaskOverdueActive(t)) return false
+      if (filterStatus && normalizeTaskStatus(t.status) !== filterStatus) return false
       if (!taskMatchesPriorityFilter(t.priority, filterPriority)) return false
       if (filterAssignee === 'unassigned') {
         if (getTaskAssigneeUserIds(t, taskAssignees).length > 0) return false
@@ -494,7 +445,7 @@ export default function ProjectDetail() {
   }
 
   const resetTaskForm = () => {
-    setTaskTitle(''); setTaskDesc(''); setTaskStatus('todo'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigneeIds([])
+    setTaskTitle(''); setTaskDesc(''); setTaskStatus('open'); setTaskPriority('medium'); setTaskDue(''); setTaskAssigneeIds([])
     setEditingTaskId(null); setShowTaskForm(false); setTaskFiles([])
   }
 
@@ -567,7 +518,7 @@ export default function ProjectDetail() {
 
   const startEditTask = (t: Task) => {
     setEditingTaskId(t.id); setTaskTitle(t.title); setTaskDesc(t.description ?? '')
-    setTaskStatus(t.status); setTaskPriority(t.priority); setTaskDue(t.due_date ?? '')
+    setTaskStatus(normalizeTaskStatus(t.status) as TaskCanonicalStatus); setTaskPriority(t.priority); setTaskDue(t.due_date ?? '')
     const fromJoin = taskAssignees.filter(a => a.task_id === t.id).map(a => a.user_id)
     setTaskAssigneeIds(fromJoin.length > 0 ? fromJoin : (t.assigned_to ? [t.assigned_to] : []))
     setTaskFiles([]); setShowTaskForm(true)
@@ -817,10 +768,11 @@ export default function ProjectDetail() {
                   <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as TaskStatusFilter)}
                     className="w-full rounded-lg border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent">
                     <option value="">All statuses</option>
-                    <option value="open">Open ({taskFilterCounts.open})</option>
-                    <option value="in_progress">In Progress ({taskFilterCounts.in_progress})</option>
-                    <option value="completed">Completed ({taskFilterCounts.completed})</option>
-                    <option value="overdue">Overdue ({taskFilterCounts.overdue})</option>
+                    {TASK_STATUS_FLOW.map(s => (
+                      <option key={s.value} value={s.value}>
+                        {s.label} ({taskFilterCounts.byStatus[s.value]})
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -875,9 +827,11 @@ export default function ProjectDetail() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div>
                   <label className="block text-[10px] text-gray-500 mb-0.5">Status</label>
-                  <select value={taskStatus} onChange={e => setTaskStatus(e.target.value)}
+                  <select value={taskStatus} onChange={e => setTaskStatus(e.target.value as TaskCanonicalStatus)}
                     className="w-full h-10 rounded-lg border border-border bg-surface-muted px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent appearance-none">
-                    <option value="open">Open</option><option value="in_progress">In Progress</option><option value="needs_work">Needs Work</option><option value="testing">To Be Tested</option><option value="closed">Closed</option>
+                    {TASK_STATUS_FLOW.map(s => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -985,7 +939,7 @@ export default function ProjectDetail() {
                           </p>
                         )}
                         <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs">
-                          <span className={`px-1.5 py-0.5 rounded border text-[10px] ${TASK_STATUS_CONFIG[t.status]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
+                          <span className={`px-1.5 py-0.5 rounded border text-[10px] ${TASK_STATUS_CONFIG[normalizeTaskStatus(t.status)]?.classes ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
                             {taskStatusLabel(t.status)}
                           </span>
                           <span className={PRIORITY_COLORS[t.priority] ?? 'text-gray-400'}>{t.priority}</span>
