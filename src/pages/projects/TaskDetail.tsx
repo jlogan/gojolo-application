@@ -289,7 +289,7 @@ export default function TaskDetail() {
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([])
   const [loading, setLoading] = useState(true)
   const [projectName, setProjectName] = useState('')
-  const [activeTab, setActiveTab] = useState<'comments' | 'time' | 'activity' | 'emails'>('comments')
+  const [activeTab, setActiveTab] = useState<'comments' | 'time' | 'activity' | 'emails' | 'attachments'>('comments')
 
   // Editing
   const [editing, setEditing] = useState(false)
@@ -764,6 +764,37 @@ export default function TaskDetail() {
     return [...statusItems, ...commentItems].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
   }, [statusHistory, comments])
 
+  type TaskFileEntry = { id: string; label: string; href: string; isImage: boolean; created_at: string; source: string }
+  const taskFileEntries: TaskFileEntry[] = useMemo(() => {
+    const entries: TaskFileEntry[] = []
+    for (const a of artifacts) {
+      if (a.type !== 'file' || !a.file_path) continue
+      const label = a.file_name ?? a.label ?? 'File'
+      entries.push({
+        id: `artifact-${a.id}`,
+        label,
+        href: `task-artifacts://${encodeURIComponent(a.file_path)}`,
+        isImage: isImageAttachment(`task-artifacts://${encodeURIComponent(a.file_path)}`, label),
+        created_at: a.created_at,
+        source: 'Task upload',
+      })
+    }
+    for (const c of comments) {
+      const { attachments: commentAtts } = parseCommentContent(c.content)
+      commentAtts.forEach((att, i) => {
+        entries.push({
+          id: `comment-${c.id}-${i}`,
+          label: att.label,
+          href: att.href,
+          isImage: att.isImage,
+          created_at: c.created_at,
+          source: c.display_name ?? 'Comment',
+        })
+      })
+    }
+    return entries.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  }, [artifacts, comments])
+
   if (loading) return <div className="p-4 md:p-6 text-gray-400">Loading…</div>
   if (!task) return <div className="p-4 md:p-6"><p className="text-gray-400">Task not found.</p><Link to={`/projects/${projectId}`} className="text-accent hover:underline">Back to project</Link></div>
 
@@ -1002,6 +1033,7 @@ export default function TaskDetail() {
           ['time', `Time (${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m)`],
           ['activity', `Activity (${activityItems.length})`],
           ['emails', `Emails (${linkedThreads.length})`],
+          ['attachments', `Attachments (${taskFileEntries.length})`],
         ] as const).map(([id, label]) => (
           <button key={id} type="button" onClick={() => setActiveTab(id)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === id ? 'border-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'}`}>
@@ -1250,6 +1282,43 @@ export default function TaskDetail() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {activeTab === 'attachments' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm text-gray-400">Task Files</h3>
+            {!showAttachmentForm && (
+              <button type="button" onClick={() => setShowAttachmentForm(true)}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-dashed border-border text-xs text-gray-500 hover:text-accent hover:border-accent/30">
+                <Plus className="w-3 h-3" /> Add
+              </button>
+            )}
+          </div>
+          {showAttachmentForm && (
+            <div className="rounded-lg border border-border bg-surface-muted p-3 flex flex-wrap items-center gap-2">
+              <label className="text-xs text-gray-500">Upload file</label>
+              <input type="file" onChange={e => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); e.target.value = '' }}
+                className="text-xs text-gray-400 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-accent file:text-white file:cursor-pointer hover:file:opacity-90" />
+              <button type="button" onClick={() => setShowAttachmentForm(false)} className="px-3 py-1.5 rounded border border-border text-xs text-gray-300 hover:bg-surface-elevated">Cancel</button>
+            </div>
+          )}
+          {taskFileEntries.length === 0 ? (
+            <p className="text-gray-500 text-sm">No attachments yet.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+              {taskFileEntries.map(entry => (
+                <div key={entry.id} className="flex flex-col items-center gap-1.5 min-w-0">
+                  <CommentAttachmentCard href={entry.href} label={entry.label} isImage={entry.isImage} />
+                  <p className="text-xs text-gray-300 truncate max-w-[88px] text-center" title={entry.label}>{entry.label}</p>
+                  <p className="text-[10px] text-gray-500 text-center truncate max-w-[88px]" title={`${entry.source} · ${new Date(entry.created_at).toLocaleString()}`}>
+                    {entry.source} · {new Date(entry.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
