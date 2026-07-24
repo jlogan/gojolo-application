@@ -7,7 +7,7 @@ import {
   ArrowLeft, Send, Plus, User,
   Paperclip, Key, Mail, ChevronRight,
   FileText, Pencil, Trash2, Play, Square,
-  ExternalLink, X,
+  ExternalLink, X, Copy, Download,
 } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 import DateInput from '@/components/DateInput'
@@ -89,11 +89,13 @@ function parseInboxThreadId(url: string): string | null {
 
 const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp|svg)(\?|$)/i
+const PDF_EXT_RE = /\.pdf(\?|$)/i
 const STORAGE_URL_RE = /\/storage\/v1\/object\/(?:public|sign)\/(task-artifacts|task-attachments)\/([^?#]+)/
 const PSEUDO_STORAGE_RE = /^task-(artifacts|attachments):\/\/(.+)$/
 const PAPERCLIP_EMOJI = /\u{1F4CE}\s*/gu
 type StorageRef = { bucket: 'task-artifacts' | 'task-attachments'; path: string }
 function isImageUrl(url: string): boolean { return IMAGE_EXT_RE.test(url) }
+function isPdfUrl(url: string): boolean { return PDF_EXT_RE.test(url) }
 function parseStorageRef(url: string): StorageRef | null {
   const trimmed = url.trim()
   const pseudo = trimmed.match(PSEUDO_STORAGE_RE)
@@ -120,6 +122,11 @@ function isImageAttachment(href: string, label: string): boolean {
   if (isImageUrl(href) || isImageUrl(label)) return true
   const ref = parseStorageRef(href)
   return ref ? isImageUrl(ref.path) : false
+}
+function isPdfAttachment(href: string, label: string): boolean {
+  if (isPdfUrl(href) || isPdfUrl(label)) return true
+  const ref = parseStorageRef(href)
+  return ref ? isPdfUrl(ref.path) : false
 }
 function attachmentDisplayLabel(label: string, href: string): string {
   const trimmedLabel = label.trim()
@@ -154,7 +161,151 @@ function parseCommentContent(content: string): ParsedComment {
 
 const THUMB_SIZE = 72
 
-function CommentAttachmentCard({ href, label, isImage }: { href: string; label: string; isImage: boolean }) {
+type AttachmentPreviewTarget = { label: string; href: string }
+
+function TaskAttachmentPreviewModal({ target, onClose }: { target: AttachmentPreviewTarget | null; onClose: () => void }) {
+  const storageRef = target ? parseStorageRef(target.href) : null
+  const [signedUrl, setSignedUrl] = useState<string | null>(null)
+  const [signing, setSigning] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!target) {
+      setSignedUrl(null)
+      setSigning(false)
+      setFailed(false)
+      setCopied(false)
+      return
+    }
+    setCopied(false)
+    if (!storageRef) {
+      setSignedUrl(target.href)
+      setSigning(false)
+      setFailed(false)
+      return
+    }
+    let cancelled = false
+    setSigning(true)
+    setFailed(false)
+    setSignedUrl(null)
+    supabase.storage.from(storageRef.bucket).createSignedUrl(storageRef.path, 3600).then(({ data, error }) => {
+      if (cancelled) return
+      setSigning(false)
+      if (error || !data?.signedUrl) setFailed(true)
+      else setSignedUrl(data.signedUrl)
+    })
+    return () => { cancelled = true }
+  }, [target?.href, target?.label])
+
+  useEffect(() => {
+    if (!target) return
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [target, onClose])
+
+  if (!target) return null
+
+  const label = target.label
+  const isImage = isImageAttachment(target.href, label)
+  const isPdf = isPdfAttachment(target.href, label)
+  const openUrl = storageRef ? signedUrl : target.href
+  const canUseUrl = !storageRef || (!signing && !failed && !!signedUrl)
+
+  const handleCopyLink = async () => {
+    if (!canUseUrl || !openUrl) return
+    try {
+      await navigator.clipboard.writeText(openUrl)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      alert('Could not copy link. Please try again.')
+    }
+  }
+
+  const handleOpenNewTab = () => {
+    if (!canUseUrl || !openUrl) return
+    window.open(openUrl, '_blank', 'noreferrer')
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview ${label}`}
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-lg border border-border bg-surface-elevated overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
+          <p className="text-sm text-white font-medium truncate flex-1 min-w-0" title={label}>{label}</p>
+          <button
+            type="button"
+            onClick={handleCopyLink}
+            disabled={!canUseUrl}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-border text-xs text-gray-300 hover:text-white hover:bg-surface-muted disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Copy link"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            {copied ? 'Copied' : 'Copy link'}
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenNewTab}
+            disabled={!canUseUrl}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-border text-xs text-gray-300 hover:text-white hover:bg-surface-muted disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Open in new tab"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            New tab
+          </button>
+          {canUseUrl && openUrl && (
+            <a
+              href={openUrl}
+              download={label}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded border border-border text-xs text-gray-300 hover:text-white hover:bg-surface-muted"
+              title="Download"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-surface-muted"
+            aria-label="Close preview"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-auto flex items-center justify-center p-4 bg-black/20">
+          {signing && <p className="text-sm text-gray-400">Loading preview…</p>}
+          {failed && <p className="text-sm text-red-400">Could not load attachment.</p>}
+          {!signing && !failed && canUseUrl && openUrl && isImage && (
+            <img src={openUrl} alt={label} className="max-w-full max-h-[70vh] object-contain rounded" />
+          )}
+          {!signing && !failed && canUseUrl && openUrl && isPdf && (
+            <iframe src={openUrl} title={label} className="w-full h-[70vh] rounded border-0 bg-white" />
+          )}
+          {!signing && !failed && canUseUrl && openUrl && !isImage && !isPdf && (
+            <div className="flex flex-col items-center gap-3 text-center py-8">
+              <FileText className="w-16 h-16 text-gray-500" />
+              <p className="text-sm text-gray-300">{label}</p>
+              <p className="text-xs text-gray-500">Preview not available for this file type.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CommentAttachmentCard({ href, label, isImage, onPreview }: { href: string; label: string; isImage: boolean; onPreview?: (target: AttachmentPreviewTarget) => void }) {
   const storageRef = parseStorageRef(href)
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
   const [signing, setSigning] = useState(false)
@@ -179,26 +330,29 @@ function CommentAttachmentCard({ href, label, isImage }: { href: string; label: 
     return () => { cancelled = true }
   }, [href])
   const isStorageAttachment = !!storageRef
-  const openUrl = isStorageAttachment ? signedUrl : href
   const canOpen = !isStorageAttachment || (!signing && !failed && !!signedUrl)
   const imgSrc = isStorageAttachment
     ? (canOpen && isImage ? signedUrl : null)
     : (isImage ? href : null)
   const canPreview = isImage && !!imgSrc && !failed
   const thumbClass = `flex items-center justify-center rounded-lg border bg-surface-elevated overflow-hidden shrink-0 ${
-    failed ? 'border-red-500/40 opacity-60' : signing ? 'border-border opacity-70' : canOpen ? 'border-border hover:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent' : 'border-border opacity-60 cursor-not-allowed'
+    failed ? 'border-red-500/40 opacity-60' : signing ? 'border-border opacity-70' : canOpen ? 'border-border hover:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent cursor-pointer' : 'border-border opacity-60 cursor-not-allowed'
   }`
-  const linkClass = `text-xs truncate max-w-[72px] ${failed ? 'text-red-400' : signing ? 'text-gray-500' : canOpen ? 'text-gray-500 hover:text-accent' : 'text-gray-600 cursor-not-allowed'}`
+  const linkClass = `text-xs truncate max-w-[72px] ${failed ? 'text-red-400' : signing ? 'text-gray-500' : canOpen ? 'text-gray-500 hover:text-accent cursor-pointer' : 'text-gray-600 cursor-not-allowed'}`
+  const handleOpenPreview = () => {
+    if (!canOpen || !onPreview) return
+    onPreview({ label, href })
+  }
   return (
     <div className="flex flex-col items-center gap-1 shrink-0">
-      {canOpen && openUrl ? (
-        <a
-          href={openUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          download={label}
+      {canOpen ? (
+        <button
+          type="button"
+          onClick={handleOpenPreview}
+          disabled={!onPreview}
           className={thumbClass}
           style={{ width: THUMB_SIZE, height: THUMB_SIZE }}
+          title={onPreview ? `Preview ${label}` : undefined}
         >
           {canPreview ? (
             <img src={imgSrc!} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setFailed(true)} />
@@ -207,7 +361,7 @@ function CommentAttachmentCard({ href, label, isImage }: { href: string; label: 
               <FileText className="w-8 h-8" />
             </div>
           )}
-        </a>
+        </button>
       ) : (
         <div
           className={thumbClass}
@@ -224,13 +378,13 @@ function CommentAttachmentCard({ href, label, isImage }: { href: string; label: 
           )}
         </div>
       )}
-      {canOpen && openUrl ? (
-        <a href={openUrl} target="_blank" rel="noopener noreferrer" download={label} className={linkClass}>
-          Download
-        </a>
+      {canOpen && onPreview ? (
+        <button type="button" onClick={handleOpenPreview} className={linkClass}>
+          Preview
+        </button>
       ) : (
         <span className={linkClass}>
-          {failed ? 'Failed' : signing ? 'Loading…' : 'Download'}
+          {failed ? 'Failed' : signing ? 'Loading…' : 'Preview'}
         </span>
       )}
     </div>
@@ -253,7 +407,7 @@ function LoomCompactPreview({ url, onExpand }: { url: string; onExpand: (url: st
   )
 }
 
-function CommentContent({ content }: { content: string }) {
+function CommentContent({ content, onAttachmentPreview }: { content: string; onAttachmentPreview?: (target: AttachmentPreviewTarget) => void }) {
   const { text, attachments, isHtml } = parseCommentContent(content)
   const hasText = isHtml ? !isHtmlEffectivelyEmpty(text) : !!text
   return (
@@ -268,7 +422,7 @@ function CommentContent({ content }: { content: string }) {
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-3 mt-2">
           {attachments.map((a, i) => (
-            <CommentAttachmentCard key={i} href={a.href} label={a.label} isImage={a.isImage} />
+            <CommentAttachmentCard key={i} href={a.href} label={a.label} isImage={a.isImage} onPreview={onAttachmentPreview} />
           ))}
         </div>
       )}
@@ -312,6 +466,7 @@ export default function TaskDetail() {
   const [commentFiles, setCommentFiles] = useState<File[]>([])
 
   const [loomModalUrl, setLoomModalUrl] = useState<string | null>(null)
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreviewTarget | null>(null)
 
   // Time log form
   const [showTimeForm, setShowTimeForm] = useState(false)
@@ -694,10 +849,11 @@ export default function TaskDetail() {
     fetchAll()
   }
 
-  const openAttachment = async (path: string) => {
-    const { data, error } = await supabase.storage.from('task-artifacts').createSignedUrl(path, 60 * 60)
-    if (error || !data?.signedUrl) { alert('Could not generate download link. Please try again.'); return }
-    window.open(data.signedUrl, '_blank', 'noreferrer')
+  const openAttachmentPreview = (label: string, filePath: string) => {
+    setAttachmentPreview({
+      label,
+      href: `task-artifacts://${encodeURIComponent(filePath)}`,
+    })
   }
 
   const handleAddAssignee = async (uid?: string) => {
@@ -840,6 +996,8 @@ export default function TaskDetail() {
         </div>
       )}
 
+      <TaskAttachmentPreviewModal target={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
+
       {/* Task header */}
       <div className="rounded-lg border border-border bg-surface-elevated p-6 mb-6">
         {editing ? (
@@ -976,7 +1134,7 @@ export default function TaskDetail() {
           <h3 className="text-xs font-medium text-gray-500 uppercase mb-2">Attachments</h3>
           <div className="flex flex-wrap gap-2 items-center">
             {artifacts.filter(a => a.type === 'file').map(a => (
-              <button key={a.id} type="button" onClick={() => a.file_path && openAttachment(a.file_path)}
+              <button key={a.id} type="button" onClick={() => a.file_path && openAttachmentPreview(a.file_name ?? a.label ?? 'File', a.file_path)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-muted text-xs text-gray-300 hover:text-accent border border-border hover:border-accent/30">
                 <Paperclip className="w-3 h-3" /> {a.file_name ?? a.label}
               </button>
@@ -1103,7 +1261,7 @@ export default function TaskDetail() {
                     </div>
                   ) : (
                     <div className="text-sm text-gray-200">
-                      <CommentContent content={c.content} />
+                      <CommentContent content={c.content} onAttachmentPreview={setAttachmentPreview} />
                     </div>
                   )}
                 </div>
@@ -1340,7 +1498,7 @@ export default function TaskDetail() {
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
               {taskFileEntries.map(entry => (
                 <div key={entry.id} className="flex flex-col items-center gap-1.5 min-w-0">
-                  <CommentAttachmentCard href={entry.href} label={entry.label} isImage={entry.isImage} />
+                  <CommentAttachmentCard href={entry.href} label={entry.label} isImage={entry.isImage} onPreview={setAttachmentPreview} />
                   <p className="text-xs text-gray-300 truncate max-w-[88px] text-center" title={entry.label}>{entry.label}</p>
                   <p className="text-[10px] text-gray-500 text-center truncate max-w-[88px]" title={`${entry.source} · ${new Date(entry.created_at).toLocaleString()}`}>
                     {entry.source} · {new Date(entry.created_at).toLocaleDateString()}
