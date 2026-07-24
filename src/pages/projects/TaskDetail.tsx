@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -16,7 +16,7 @@ import { htmlToPlainText, parseMentionUserIds } from '@/lib/mentionUtils'
 import { TASK_STATUS_FLOW, normalizeTaskStatus, taskStatusLabel } from '@/lib/taskStatus'
 
 type Task = {
-  id: string; project_id: string; title: string; description: string | null
+  id: string; project_id: string; org_id: string; title: string; description: string | null
   status: string; priority: string; due_date: string | null
   assigned_to: string | null; created_at: string; status_changed_at: string | null
 }
@@ -141,6 +141,14 @@ function formatCommentAttachmentMarkdown(fileName: string, path: string): string
 }
 function appendCommentFiles(prev: File[], incoming: FileList | File[]): File[] {
   return [...prev, ...Array.from(incoming)]
+}
+function sanitizeTaskStorageFileName(name: string): string {
+  const base = name.replace(/[/\\]/g, '_').trim() || 'attachment'
+  return base.length > 180 ? base.slice(0, 180) : base
+}
+function buildTaskArtifactPath(orgId: string, projectId: string, taskId: string, fileName: string, index: number, subfolder?: string): string {
+  const segment = subfolder ? `${subfolder}/` : ''
+  return `${orgId}/${projectId}/${taskId}/${segment}${Date.now()}-${index}-${sanitizeTaskStorageFileName(fileName)}`
 }
 
 type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[]; isHtml: boolean }
@@ -432,7 +440,8 @@ function CommentContent({ content, onAttachmentPreview }: { content: string; onA
 
 export default function TaskDetail() {
   const { projectId, taskId } = useParams<{ projectId: string; taskId: string }>()
-  const { currentOrg } = useOrg()
+  const navigate = useNavigate()
+  const { currentOrg, memberships, setCurrentOrg } = useOrg()
   const { user } = useAuth()
   const [task, setTask] = useState<Task | null>(null)
   const [comments, setComments] = useState<TaskComment[]>([])
@@ -590,6 +599,18 @@ export default function TaskDetail() {
   useEffect(() => { fetchAll() }, [fetchAll])
 
   useEffect(() => {
+    if (!task) return
+    if (projectId && task.project_id !== projectId) {
+      navigate(`/projects/${task.project_id}/tasks/${task.id}`, { replace: true })
+      return
+    }
+    if (task.org_id && currentOrg?.id !== task.org_id) {
+      const membership = memberships.find(m => m.org.id === task.org_id)
+      if (membership) setCurrentOrg(membership.org)
+    }
+  }, [task, projectId, currentOrg?.id, memberships, setCurrentOrg, navigate])
+
+  useEffect(() => {
     if (!currentOrg?.id || !user?.id) return
     supabase.rpc('user_has_permission', { p_org_id: currentOrg.id, p_permission: 'timesheets.billable_status' })
       .then(({ data }) => setCanEditBillable(data === true))
@@ -717,17 +738,17 @@ export default function TaskDetail() {
     const trimmedComment = commentText.trim()
     let attachmentMarkdown = ''
     if (commentFiles.length > 0) {
-      if (!currentOrg?.id) {
+      if (!task?.org_id || !task?.project_id) {
         alert('Could not upload attachment. Please refresh and try again.')
         return
       }
       const uploaded: string[] = []
       for (let i = 0; i < commentFiles.length; i++) {
         const file = commentFiles[i]
-        const path = `${currentOrg.id}/${projectId}/${taskId}/comments/${Date.now()}-${i}-${file.name}`
+        const path = buildTaskArtifactPath(task.org_id, task.project_id, taskId, file.name, i, 'comments')
         const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
         if (error) {
-          alert(`Could not upload ${file.name}. Please try again.`)
+          alert(`Could not upload ${file.name}: ${error.message}`)
           return
         }
         uploaded.push(formatCommentAttachmentMarkdown(file.name, path))
@@ -758,10 +779,10 @@ export default function TaskDetail() {
     // Slack alert is sent by DB trigger (notify_slack_on_task_comment) on insert
 
     const { data: { session } } = await supabase.auth.getSession()
-    if (!session?.access_token || !currentOrg?.id || !projectId) return
+    if (!session?.access_token || !task?.org_id || !task?.project_id) return
     const payload = {
       task_id: taskId,
-      project_id: projectId,
+      project_id: task.project_id,
       task_title: taskTitle,
       commenter_name: commenterName,
       content_preview: contentPreview,
@@ -778,7 +799,7 @@ export default function TaskDetail() {
         body: JSON.stringify({
           event_type: 'mentioned_in_task',
           user_id: mentionedId,
-          org_id: currentOrg.id,
+          org_id: task.org_id,
           payload,
         }),
       }).catch(() => {})
@@ -831,19 +852,28 @@ export default function TaskDetail() {
   }
 
   const handleFileUpload = async (files: File[]) => {
-    if (!taskId || !currentOrg?.id || !user?.id || files.length === 0) return
+    if (!taskId || !user?.id || files.length === 0) return
+    if (!task?.org_id || !task?.project_id) {
+      alert('Could not upload attachment. Please refresh and try again.')
+      return
+    }
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      const path = `${currentOrg.id}/${projectId}/${taskId}/${Date.now()}-${i}-${file.name}`
+      const path = buildTaskArtifactPath(task.org_id, task.project_id, taskId, file.name, i)
       const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
       if (error) {
-        alert(`Could not upload ${file.name}. Please try again.`)
+        alert(`Could not upload ${file.name}: ${error.message}`)
         return
       }
-      await supabase.from('task_artifacts').insert({
+      const { error: insertErr } = await supabase.from('task_artifacts').insert({
         task_id: taskId, type: 'file', label: file.name,
         file_path: path, file_name: file.name, content_type: file.type, uploaded_by: user.id,
       })
+      if (insertErr) {
+        alert(`Could not save ${file.name}: ${insertErr.message}`)
+        await supabase.storage.from('task-artifacts').remove([path])
+        return
+      }
     }
     setShowAttachmentForm(false)
     fetchAll()

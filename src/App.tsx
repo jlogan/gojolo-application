@@ -23,6 +23,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 const INBOX_THREAD_PATH = /^\/inbox\/([a-f0-9-]+)$/i
+const TASK_DETAIL_PATH = /^\/projects\/([a-f0-9-]+)\/tasks\/([a-f0-9-]+)$/i
 
 function RequireOrg({ children }: { children: React.ReactNode }) {
   const { currentOrg, loading, memberships, setCurrentOrg } = useOrg()
@@ -33,10 +34,12 @@ function RequireOrg({ children }: { children: React.ReactNode }) {
   const pathname = location.pathname
   const threadMatch = pathname.match(INBOX_THREAD_PATH)
   const threadId = threadMatch?.[1] ?? null
+  const taskMatch = pathname.match(TASK_DETAIL_PATH)
+  const taskIdFromUrl = taskMatch?.[2] ?? null
 
   useEffect(() => {
-    if (!threadId) setResolveDone(false)
-  }, [threadId])
+    if (!threadId && !taskIdFromUrl) setResolveDone(false)
+  }, [threadId, taskIdFromUrl])
 
   // When no org is selected but URL is /inbox/:threadId, try to resolve org from thread and auto-select
   useEffect(() => {
@@ -61,6 +64,33 @@ function RequireOrg({ children }: { children: React.ReactNode }) {
     })()
     return () => { cancelled = true }
   }, [loading, currentOrg, threadId, memberships, setCurrentOrg, resolveDone])
+
+  // When no org is selected but URL is /projects/:projectId/tasks/:taskId, resolve org from task/project
+  useEffect(() => {
+    if (loading || currentOrg || !taskIdFromUrl || resolveDone) return
+    setResolvingFromUrl(true)
+    let cancelled = false
+    ;(async () => {
+      const { data: taskRow } = await supabase.from('tasks').select('org_id, project_id').eq('id', taskIdFromUrl).maybeSingle()
+      if (cancelled) return
+      let orgId = taskRow?.org_id as string | undefined
+      if (!orgId && taskMatch?.[1]) {
+        const { data: projectRow } = await supabase.from('projects').select('org_id').eq('id', taskMatch[1]).maybeSingle()
+        orgId = projectRow?.org_id as string | undefined
+      }
+      setResolveDone(true)
+      setResolvingFromUrl(false)
+      const membership = orgId ? memberships.find((m) => m.org.id === orgId) : null
+      if (membership) {
+        setCurrentOrg(membership.org)
+        return
+      }
+      if (memberships.length > 0) {
+        setCurrentOrg(memberships[0].org)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [loading, currentOrg, taskIdFromUrl, taskMatch?.[1], memberships, setCurrentOrg, resolveDone])
 
   if (loading || resolvingFromUrl) {
     return (
