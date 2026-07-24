@@ -128,6 +128,13 @@ function attachmentDisplayLabel(label: string, href: string): string {
   if (ref) return ref.path.split('/').pop() || 'attachment'
   return href.split('/').pop() || 'attachment'
 }
+function formatCommentAttachmentMarkdown(fileName: string, path: string): string {
+  const safeName = fileName.replace(/[\[\]]/g, '')
+  return `\n\n📎 [${safeName}](task-artifacts://${encodeURIComponent(path)})`
+}
+function appendCommentFiles(prev: File[], incoming: FileList | File[]): File[] {
+  return [...prev, ...Array.from(incoming)]
+}
 
 type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[]; isHtml: boolean }
 function parseCommentContent(content: string): ParsedComment {
@@ -302,7 +309,7 @@ export default function TaskDetail() {
   const [commentText, setCommentText] = useState('')
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
-  const [commentFile, setCommentFile] = useState<File | null>(null)
+  const [commentFiles, setCommentFiles] = useState<File[]>([])
 
   const [loomModalUrl, setLoomModalUrl] = useState<string | null>(null)
 
@@ -551,19 +558,28 @@ export default function TaskDetail() {
   }
 
   const handleAddComment = async () => {
-    if (!taskId || ((isHtmlEffectivelyEmpty(commentText) || !commentText.trim()) && !commentFile) || !user?.id) return
-    let fileUrl: string | null = null
-    let fileName: string | null = null
-    if (commentFile && currentOrg?.id) {
-      const path = `${currentOrg.id}/${projectId}/${taskId}/comments/${Date.now()}-${commentFile.name}`
-      const { error } = await supabase.storage.from('task-artifacts').upload(path, commentFile)
-      if (!error) {
-        fileUrl = `task-artifacts://${encodeURIComponent(path)}`
-        fileName = commentFile.name
-      }
-    }
+    if (!taskId || (isHtmlEffectivelyEmpty(commentText) && commentFiles.length === 0) || !user?.id) return
     const trimmedComment = commentText.trim()
-    const content = trimmedComment + (fileUrl && fileName ? `\n\n📎 [${fileName}](${fileUrl})` : '')
+    let attachmentMarkdown = ''
+    if (commentFiles.length > 0) {
+      if (!currentOrg?.id) {
+        alert('Could not upload attachment. Please refresh and try again.')
+        return
+      }
+      const uploaded: string[] = []
+      for (let i = 0; i < commentFiles.length; i++) {
+        const file = commentFiles[i]
+        const path = `${currentOrg.id}/${projectId}/${taskId}/comments/${Date.now()}-${i}-${file.name}`
+        const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
+        if (error) {
+          alert(`Could not upload ${file.name}. Please try again.`)
+          return
+        }
+        uploaded.push(formatCommentAttachmentMarkdown(file.name, path))
+      }
+      attachmentMarkdown = uploaded.join('')
+    }
+    const content = trimmedComment + attachmentMarkdown
     if (!content.trim()) return
     const mentionIds = parseMentionUserIds(trimmedComment, orgUsers)
     const { error: insertErr } = await supabase.from('task_comments').insert({
@@ -572,14 +588,17 @@ export default function TaskDetail() {
       content,
       mentions: mentionIds.length > 0 ? mentionIds : null,
     }).select('id').single()
-    if (insertErr) return
+    if (insertErr) {
+      alert('Could not save comment. Please try again.')
+      return
+    }
     const plainPreview = htmlToPlainText(trimmedComment)
     const contentPreview = plainPreview.slice(0, 200) + (plainPreview.length > 200 ? '...' : '')
     const commenterProfile = orgUsers.find(u => u.user_id === user.id)
     const commenterName = commenterProfile?.display_name ?? commenterProfile?.email ?? 'Someone'
     const taskTitle = task?.title ?? 'Task'
     setCommentText('')
-    setCommentFile(null)
+    setCommentFiles([])
     await fetchAll()
     // Slack alert is sent by DB trigger (notify_slack_on_task_comment) on insert
 
@@ -656,15 +675,21 @@ export default function TaskDetail() {
     setArtLabel(''); setArtUrl(''); setShowArtifactForm(false); fetchAll()
   }
 
-  const handleFileUpload = async (file: File) => {
-    if (!taskId || !currentOrg?.id || !user?.id) return
-    const path = `${currentOrg.id}/${projectId}/${taskId}/${Date.now()}-${file.name}`
-    const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
-    if (error) return
-    await supabase.from('task_artifacts').insert({
-      task_id: taskId, type: 'file', label: file.name,
-      file_path: path, file_name: file.name, content_type: file.type, uploaded_by: user.id,
-    })
+  const handleFileUpload = async (files: File[]) => {
+    if (!taskId || !currentOrg?.id || !user?.id || files.length === 0) return
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const path = `${currentOrg.id}/${projectId}/${taskId}/${Date.now()}-${i}-${file.name}`
+      const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
+      if (error) {
+        alert(`Could not upload ${file.name}. Please try again.`)
+        return
+      }
+      await supabase.from('task_artifacts').insert({
+        task_id: taskId, type: 'file', label: file.name,
+        file_path: path, file_name: file.name, content_type: file.type, uploaded_by: user.id,
+      })
+    }
     setShowAttachmentForm(false)
     fetchAll()
   }
@@ -966,7 +991,7 @@ export default function TaskDetail() {
           {showAttachmentForm && (
             <div className="rounded-lg border border-border bg-surface-muted p-3 mt-2 flex flex-wrap items-center gap-2">
               <label className="text-xs text-gray-500">Upload file</label>
-              <input type="file" onChange={e => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); e.target.value = '' }}
+              <input type="file" multiple onChange={e => { if (e.target.files?.length) void handleFileUpload(Array.from(e.target.files)); e.target.value = '' }}
                 className="text-xs text-gray-400 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-accent file:text-white file:cursor-pointer hover:file:opacity-90" />
               <button type="button" onClick={() => setShowAttachmentForm(false)} className="px-3 py-1.5 rounded border border-border text-xs text-gray-300 hover:bg-surface-elevated">Cancel</button>
             </div>
@@ -1091,23 +1116,28 @@ export default function TaskDetail() {
               content={commentText}
               placeholder="Add a comment… (type @ to mention)"
               onChange={html => setCommentText(html === '<p></p>' ? '' : html)}
+              onFilesPasted={(files) => setCommentFiles(prev => appendCommentFiles(prev, files))}
               minHeight="min-h-[80px]"
               mentionableUsers={orgUsers}
             />
-            {commentFile && (
-              <span className="text-xs text-gray-400 flex items-center gap-1">
-                <Paperclip className="w-3 h-3" /> {commentFile.name}
-                <button type="button" onClick={() => setCommentFile(null)} className="text-gray-500 hover:text-red-400" aria-label="Remove attachment">&times;</button>
-              </span>
+            {commentFiles.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {commentFiles.map((file, i) => (
+                  <span key={`${file.name}-${i}`} className="text-xs text-gray-400 inline-flex items-center gap-1 bg-surface-muted rounded px-2 py-1">
+                    <Paperclip className="w-3 h-3 shrink-0" /> <span className="truncate max-w-[200px]">{file.name}</span>
+                    <button type="button" onClick={() => setCommentFiles(prev => prev.filter((_, j) => j !== i))} className="text-gray-500 hover:text-red-400" aria-label="Remove attachment">&times;</button>
+                  </span>
+                ))}
+              </div>
             )}
             <div className="flex items-center gap-2">
-              <button type="button" onClick={handleAddComment} disabled={!commentText.trim() && !commentFile}
+              <button type="button" onClick={handleAddComment} disabled={isHtmlEffectivelyEmpty(commentText) && commentFiles.length === 0}
                 className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
                 <Send className="w-4 h-4 inline mr-1" /> Comment
               </button>
               <label className="px-3 py-2 rounded-lg border border-border text-sm text-gray-400 hover:text-white hover:bg-surface-muted cursor-pointer">
                 <Paperclip className="w-4 h-4 inline mr-1" /> Attach
-                <input type="file" className="hidden" onChange={e => { if (e.target.files?.[0]) setCommentFile(e.target.files[0]); e.target.value = '' }} />
+                <input type="file" multiple className="hidden" onChange={e => { if (e.target.files?.length) setCommentFiles(prev => appendCommentFiles(prev, e.target.files!)); e.target.value = '' }} />
               </label>
             </div>
           </div>
@@ -1299,7 +1329,7 @@ export default function TaskDetail() {
           {showAttachmentForm && (
             <div className="rounded-lg border border-border bg-surface-muted p-3 flex flex-wrap items-center gap-2">
               <label className="text-xs text-gray-500">Upload file</label>
-              <input type="file" onChange={e => { if (e.target.files?.[0]) handleFileUpload(e.target.files[0]); e.target.value = '' }}
+              <input type="file" multiple onChange={e => { if (e.target.files?.length) void handleFileUpload(Array.from(e.target.files)); e.target.value = '' }}
                 className="text-xs text-gray-400 file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-accent file:text-white file:cursor-pointer hover:file:opacity-90" />
               <button type="button" onClick={() => setShowAttachmentForm(false)} className="px-3 py-1.5 rounded border border-border text-xs text-gray-300 hover:bg-surface-elevated">Cancel</button>
             </div>

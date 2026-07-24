@@ -20,6 +20,7 @@ type Props = {
   content?: string
   placeholder?: string
   onChange?: (html: string) => void
+  onFilesPasted?: (files: File[]) => void
   autofocus?: boolean
   minHeight?: string
   mentionableUsers?: MentionableUser[]
@@ -35,6 +36,7 @@ export default function RichTextEditor({
   content = '',
   placeholder = 'Write your message…',
   onChange,
+  onFilesPasted,
   autofocus = false,
   minHeight = 'min-h-[240px]',
   mentionableUsers,
@@ -166,6 +168,17 @@ export default function RichTextEditor({
           return true
         }
         return false
+      },
+      handlePaste: (_view, event) => {
+        if (!onFilesPasted) return false
+        const files = Array.from(event.clipboardData?.items ?? [])
+          .filter(item => item.kind === 'file')
+          .map(item => item.getAsFile())
+          .filter((file): file is File => Boolean(file))
+        if (files.length === 0) return false
+        event.preventDefault()
+        onFilesPasted(files)
+        return true
       },
     },
   })
