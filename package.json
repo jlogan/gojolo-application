@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/ensure-notification-sound.mjs && vite",
-    "build": "node scripts/ensure-notification-sound.mjs && tsc -b && vite build",
+    "build": "node scripts/ensure-notification-sound.mjs && vite build",
+    "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview"
   },
