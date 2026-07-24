@@ -147,8 +147,11 @@ function sanitizeTaskStorageFileName(name: string): string {
   return base.length > 180 ? base.slice(0, 180) : base
 }
 function buildTaskArtifactPath(orgId: string, projectId: string, taskId: string, fileName: string, index: number, subfolder?: string): string {
-  const segment = subfolder ? `${subfolder}/` : ''
-  return `${orgId}/${projectId}/${taskId}/${segment}${Date.now()}-${index}-${sanitizeTaskStorageFileName(fileName)}`
+  const parts = [orgId, projectId, taskId]
+  const folder = subfolder?.trim()
+  if (folder) parts.push(folder)
+  parts.push(`${Date.now()}-${index}-${sanitizeTaskStorageFileName(fileName)}`)
+  return parts.filter(Boolean).join('/')
 }
 
 type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[]; isHtml: boolean }
