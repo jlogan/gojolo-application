@@ -14,6 +14,7 @@ import DateInput from '@/components/DateInput'
 import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 import { htmlToPlainText, parseMentionUserIds } from '@/lib/mentionUtils'
 import { TASK_STATUS_FLOW, normalizeTaskStatus, taskStatusLabel } from '@/lib/taskStatus'
+import { buildTaskArtifactPath } from '@/lib/taskArtifactStorage'
 
 type Task = {
   id: string; project_id: string; org_id: string; title: string; description: string | null
@@ -141,17 +142,6 @@ function formatCommentAttachmentMarkdown(fileName: string, path: string): string
 }
 function appendCommentFiles(prev: File[], incoming: FileList | File[]): File[] {
   return [...prev, ...Array.from(incoming)]
-}
-function sanitizeTaskStorageFileName(name: string): string {
-  const base = name.replace(/[/\\]/g, '_').trim() || 'attachment'
-  return base.length > 180 ? base.slice(0, 180) : base
-}
-function buildTaskArtifactPath(orgId: string, projectId: string, taskId: string, fileName: string, index: number, subfolder?: string): string {
-  const parts = [orgId, projectId, taskId]
-  const folder = subfolder?.trim()
-  if (folder) parts.push(folder)
-  parts.push(`${Date.now()}-${index}-${sanitizeTaskStorageFileName(fileName)}`)
-  return parts.filter(Boolean).join('/')
 }
 
 type ParsedComment = { text: string; attachments: { href: string; label: string; isImage: boolean }[]; isHtml: boolean }
@@ -740,20 +730,34 @@ export default function TaskDetail() {
     if (!taskId || (isHtmlEffectivelyEmpty(commentText) && commentFiles.length === 0) || !user?.id) return
     const trimmedComment = commentText.trim()
     let attachmentMarkdown = ''
+    const uploadedPaths: string[] = []
     if (commentFiles.length > 0) {
       if (!task?.org_id || !task?.project_id) {
         alert('Could not upload attachment. Please refresh and try again.')
         return
       }
+      const batchTs = Date.now()
       const uploaded: string[] = []
       for (let i = 0; i < commentFiles.length; i++) {
         const file = commentFiles[i]
-        const path = buildTaskArtifactPath(task.org_id, task.project_id, taskId, file.name, i, 'comments')
-        const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
-        if (error) {
-          alert(`Could not upload ${file.name}: ${error.message}`)
+        let path: string
+        try {
+          path = buildTaskArtifactPath(task.org_id, task.project_id, taskId, file.name, i, 'comments', batchTs)
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Invalid upload path'
+          console.error('[TaskDetail:comment-attachment] invalid path', { fileName: file.name, message, err })
+          alert(`Could not upload ${file.name}: ${message}`)
+          if (uploadedPaths.length > 0) await supabase.storage.from('task-artifacts').remove(uploadedPaths)
           return
         }
+        const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
+        if (error) {
+          console.error('[TaskDetail:comment-attachment] upload failed', { path, name: file.name, message: error.message, error })
+          alert(`Could not upload ${file.name}: ${error.message}`)
+          if (uploadedPaths.length > 0) await supabase.storage.from('task-artifacts').remove(uploadedPaths)
+          return
+        }
+        uploadedPaths.push(path)
         uploaded.push(formatCommentAttachmentMarkdown(file.name, path))
       }
       attachmentMarkdown = uploaded.join('')
@@ -768,7 +772,9 @@ export default function TaskDetail() {
       mentions: mentionIds.length > 0 ? mentionIds : null,
     }).select('id').single()
     if (insertErr) {
-      alert('Could not save comment. Please try again.')
+      console.error('[TaskDetail:comment-attachment] comment insert failed', { taskId, uploadedPaths, message: insertErr.message, insertErr })
+      if (uploadedPaths.length > 0) await supabase.storage.from('task-artifacts').remove(uploadedPaths)
+      alert(`Could not save comment: ${insertErr.message}`)
       return
     }
     const plainPreview = htmlToPlainText(trimmedComment)
@@ -860,11 +866,21 @@ export default function TaskDetail() {
       alert('Could not upload attachment. Please refresh and try again.')
       return
     }
+    const batchTs = Date.now()
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
-      const path = buildTaskArtifactPath(task.org_id, task.project_id, taskId, file.name, i)
+      let path: string
+      try {
+        path = buildTaskArtifactPath(task.org_id, task.project_id, taskId, file.name, i, undefined, batchTs)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Invalid upload path'
+        console.error('[TaskDetail:attachment] invalid path', { fileName: file.name, message, err })
+        alert(`Could not upload ${file.name}: ${message}`)
+        return
+      }
       const { error } = await supabase.storage.from('task-artifacts').upload(path, file)
       if (error) {
+        console.error('[TaskDetail:attachment] upload failed', { path, name: file.name, message: error.message, error })
         alert(`Could not upload ${file.name}: ${error.message}`)
         return
       }
@@ -873,6 +889,7 @@ export default function TaskDetail() {
         file_path: path, file_name: file.name, content_type: file.type, uploaded_by: user.id,
       })
       if (insertErr) {
+        console.error('[TaskDetail:attachment] artifact insert failed', { path, name: file.name, message: insertErr.message, insertErr })
         alert(`Could not save ${file.name}: ${insertErr.message}`)
         await supabase.storage.from('task-artifacts').remove([path])
         return

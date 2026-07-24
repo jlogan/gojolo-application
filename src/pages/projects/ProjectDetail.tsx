@@ -24,6 +24,7 @@ import {
   taskKanbanHeaderClasses,
   taskStatusLabel,
 } from '@/lib/taskStatus'
+import { buildTaskArtifactPath } from '@/lib/taskArtifactStorage'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -493,8 +494,10 @@ export default function ProjectDetail() {
     }
     // Upload any attached files
     if (newTaskId && taskFiles.length > 0) {
-      for (const file of taskFiles) {
-        const path = `${currentOrg!.id}/${id}/${newTaskId}/${Date.now()}-${file.name}`
+      const batchTs = Date.now()
+      for (let i = 0; i < taskFiles.length; i++) {
+        const file = taskFiles[i]
+        const path = buildTaskArtifactPath(currentOrg!.id, id, newTaskId, file.name, i, undefined, batchTs)
         const { error: upErr } = await supabase.storage.from('task-artifacts').upload(path, file)
         if (!upErr) {
           await supabase.from('task_artifacts').insert({
@@ -576,9 +579,23 @@ export default function ProjectDetail() {
 
   const handleFileUpload = async (taskId: string, file: File) => {
     setUploading(true)
-    const path = `${currentOrg!.id}/${id}/${taskId}/${Date.now()}-${file.name}`
+    let path: string
+    try {
+      path = buildTaskArtifactPath(currentOrg!.id, id!, taskId, file.name, 0)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Invalid upload path'
+      console.error('[ProjectDetail:attachment] invalid path', { fileName: file.name, message, err })
+      alert(`Could not upload ${file.name}: ${message}`)
+      setUploading(false)
+      return
+    }
     const { error: upErr } = await supabase.storage.from('task-artifacts').upload(path, file)
-    if (upErr) { console.error(upErr); setUploading(false); return }
+    if (upErr) {
+      console.error('[ProjectDetail:attachment] upload failed', { path, name: file.name, message: upErr.message, upErr })
+      alert(`Could not upload ${file.name}: ${upErr.message}`)
+      setUploading(false)
+      return
+    }
     await supabase.from('task_artifacts').insert({
       task_id: taskId, type: 'file', label: file.name, file_name: file.name,
       file_path: path, content_type: file.type, uploaded_by: user?.id ?? null,
