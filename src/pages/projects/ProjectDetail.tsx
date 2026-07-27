@@ -484,12 +484,28 @@ export default function ProjectDetail() {
       newTaskId = editingTaskId
       await syncTaskAssignees(editingTaskId, taskAssigneeIds)
     } else {
-      const { data: insertedTask } = await supabase.from('tasks').insert({ ...payload, created_by: user?.id ?? null }).select('id').single()
-      newTaskId = (insertedTask as { id: string } | null)?.id ?? null
-      if (newTaskId && taskAssigneeIds.length > 0) {
-        await supabase.from('task_assignees').insert(
-          taskAssigneeIds.map(user_id => ({ task_id: newTaskId!, user_id }))
-        )
+      const { data: rpcTaskId, error: rpcErr } = await supabase.rpc('create_task_with_assignees', {
+        p_project_id: id,
+        p_org_id: currentOrg.id,
+        p_title: taskTitle.trim(),
+        p_description: taskDesc.trim() || null,
+        p_status: taskStatus,
+        p_priority: taskPriority,
+        p_due_date: taskDue || null,
+        p_assignee_ids: taskAssigneeIds.length > 0 ? taskAssigneeIds : null,
+        p_created_by: user?.id ?? null,
+      })
+      if (rpcErr) {
+        console.warn('[ProjectDetail] create_task_with_assignees failed, falling back:', rpcErr.message)
+        const { data: insertedTask } = await supabase.from('tasks').insert({ ...payload, created_by: user?.id ?? null }).select('id').single()
+        newTaskId = (insertedTask as { id: string } | null)?.id ?? null
+        if (newTaskId && taskAssigneeIds.length > 0) {
+          await supabase.from('task_assignees').insert(
+            taskAssigneeIds.map(user_id => ({ task_id: newTaskId!, user_id }))
+          )
+        }
+      } else {
+        newTaskId = rpcTaskId as string
       }
     }
     // Upload any attached files

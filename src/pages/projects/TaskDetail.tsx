@@ -764,7 +764,7 @@ export default function TaskDetail() {
     }
     const content = trimmedComment + attachmentMarkdown
     if (!content.trim()) return
-    const mentionIds = parseMentionUserIds(trimmedComment, orgUsers)
+    const mentionIds = parseMentionUserIds(trimmedComment, orgUsers).filter(id => id !== user.id)
     const { error: insertErr } = await supabase.from('task_comments').insert({
       task_id: taskId,
       user_id: user.id,
