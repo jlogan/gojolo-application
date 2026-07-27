@@ -125,6 +125,7 @@ export default function InvoiceForm() {
   const [items, setItems] = useState<LineItem[]>([emptyItem()])
   const [saving, setSaving] = useState(false)
   const [invoiceStatus, setInvoiceStatus] = useState<'draft' | 'unpaid' | 'paid' | 'cancelled'>('draft')
+  const [existingInvoiceNumber, setExistingInvoiceNumber] = useState<number | null>(null)
 
   /* ── vendor multi-select (inbound) ── */
   const [vendorUsers, setVendorUsers] = useState<VendorUser[]>([])
@@ -257,6 +258,7 @@ export default function InvoiceForm() {
       setDiscountValue(Number(d.discount_value) || 0)
       setAdjustment(Number(d.adjustment) || 0)
       setInvoiceStatus((d.status as 'draft' | 'unpaid' | 'paid' | 'cancelled') ?? 'draft')
+      setExistingInvoiceNumber((d.number as number | null) ?? null)
       setIsRecurring(Boolean(d.is_recurring))
       setRecurringInterval((d.recurring_interval as string) ?? 'monthly')
       setNextRecurringDate((d.next_recurring_date as string | null) ?? null)
@@ -781,6 +783,19 @@ export default function InvoiceForm() {
       let invoiceId: string
 
       if (isEdit && id) {
+        if (!isRecurring && existingInvoiceNumber == null) {
+          const { data: numData, error: numErr } = await supabase.rpc('next_invoice_number', {
+            p_org_id: currentOrg.id,
+            p_direction: direction,
+          })
+          if (numErr) {
+            console.error('Error getting invoice number:', numErr)
+            setSaving(false)
+            return
+          }
+          invoicePayload.number = numData as number
+        }
+
         // Update existing
         const { error } = await supabase
           .from('invoices')
@@ -799,19 +814,19 @@ export default function InvoiceForm() {
         await supabase.from('invoice_items').delete().eq('invoice_id', id)
         await supabase.from('invoice_contacts').delete().eq('invoice_id', id)
       } else {
-        // Get next invoice number
-        const { data: numData, error: numErr } = await supabase.rpc('next_invoice_number', {
-          p_org_id: currentOrg.id,
-          p_direction: direction,
-        })
-
-        if (numErr) {
-          console.error('Error getting invoice number:', numErr)
-          setSaving(false)
-          return
+        if (!isRecurring) {
+          const { data: numData, error: numErr } = await supabase.rpc('next_invoice_number', {
+            p_org_id: currentOrg.id,
+            p_direction: direction,
+          })
+          if (numErr) {
+            console.error('Error getting invoice number:', numErr)
+            setSaving(false)
+            return
+          }
+          invoicePayload.number = numData as number
         }
 
-        invoicePayload.number = numData as number
         invoicePayload.created_by = user.id
 
         const { data: insertedInv, error: insertErr } = await supabase

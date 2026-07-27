@@ -22,6 +22,7 @@ type Invoice = {
   email_sent_thread_id: string | null
   total: number | null
   hash: string | null
+  is_recurring?: boolean | null
 }
 
 type ContactInfo = { id: string; name: string | null; email: string | null; company_id?: string | null }
@@ -42,7 +43,59 @@ function fmtDate(date: string | null | undefined): string {
 function invoiceNumber(inv: Invoice | null): string {
   if (!inv) return ''
   const prefix = (inv.prefix ?? 'INV-').replace(/-+$/, '')
-  return inv.number ? `${prefix}-${String(inv.number).padStart(4, '0')}` : `${prefix}-DRAFT`
+  if (!inv.number) return `${prefix}-DRAFT`
+  return `${prefix}-${String(inv.number).padStart(4, '0')}`
+}
+
+async function ensureInvoiceNumber(inv: Invoice, orgId: string): Promise<{ invoice: Invoice; error?: string }> {
+  if (inv.is_recurring) {
+    return { invoice: inv, error: 'Recurring invoice templates cannot be sent to clients.' }
+  }
+  if (inv.number != null) {
+    return { invoice: inv }
+  }
+
+  const { data: numData, error: numErr } = await supabase.rpc('next_invoice_number', {
+    p_org_id: orgId,
+    p_direction: inv.direction,
+  })
+  if (numErr || numData == null) {
+    return { invoice: inv, error: numErr?.message ?? 'Could not assign invoice number.' }
+  }
+
+  const { data: updated, error: updateErr } = await supabase
+    .from('invoices')
+    .update({ number: numData as number, updated_at: new Date().toISOString() })
+    .eq('id', inv.id)
+    .select('*')
+    .single()
+
+  if (updateErr || !updated) {
+    return { invoice: inv, error: updateErr?.message ?? 'Could not save invoice number.' }
+  }
+
+  return { invoice: updated as Invoice }
+}
+
+function buildInvoiceEmailContent(args: {
+  invoiceRow: Invoice
+  contactName: string
+  signature: string
+}) {
+  const number = invoiceNumber(args.invoiceRow)
+  return {
+    number,
+    subject: `Invoice - ${number} from Brogrammers Agency`,
+    message: buildDefaultInvoiceMessage({
+      contactName: args.contactName,
+      invoiceAmountDue: fmtCurrency(args.invoiceRow.amount_due ?? args.invoiceRow.total ?? 0),
+      invoiceNumber: number,
+      invoiceDate: fmtDate(args.invoiceRow.issue_date),
+      dueDate: fmtDate(args.invoiceRow.due_date),
+      payUrl: args.invoiceRow.hash ? `${window.location.origin}/invoice/${args.invoiceRow.hash}` : '',
+      signature: args.signature,
+    }),
+  }
 }
 
 function splitContactName(name: string | null | undefined): { first: string; last: string } {
@@ -185,7 +238,6 @@ export default function InvoiceEmailDraft() {
 
   const invNum = invoiceNumber(invoice)
   const payUrl = invoice?.hash ? `${window.location.origin}/invoice/${invoice.hash}` : ''
-  const bodyHtml = message
 
   const load = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -206,11 +258,25 @@ export default function InvoiceEmailDraft() {
     }
 
     const invoiceRow = inv as Invoice
+    if (invoiceRow.is_recurring) {
+      setInvoice(invoiceRow)
+      setError('Recurring invoice templates cannot be sent to clients.')
+      setLoading(false)
+      return
+    }
+
+    const ensured = await ensureInvoiceNumber(invoiceRow, currentOrg.id)
+    if (ensured.error) {
+      setInvoice(invoiceRow)
+      setError(ensured.error)
+      setLoading(false)
+      return
+    }
+
+    const readyInvoice = ensured.invoice
     let loadedContact: ContactInfo | null = null
     let loadedCompany: CompanyInfo | null = null
-    setInvoice(invoiceRow)
-    const number = invoiceNumber(invoiceRow)
-    setSubject(`Invoice - ${number} from Brogrammers Agency`)
+    setInvoice(readyInvoice)
 
     const invoiceContactRows: ContactInfo[] = []
     const { data: invoiceContacts } = await supabase
@@ -281,15 +347,13 @@ export default function InvoiceEmailDraft() {
 
     const loadedContactNameParts = splitContactName(loadedContact?.name)
     const loadedContactName = [loadedContactNameParts.first, loadedContactNameParts.last].filter(Boolean).join(' ')
-    setMessage(buildDefaultInvoiceMessage({
+    const emailContent = buildInvoiceEmailContent({
+      invoiceRow: readyInvoice,
       contactName: loadedContactName || 'there',
-      invoiceAmountDue: fmtCurrency(invoiceRow.amount_due ?? invoiceRow.total ?? 0),
-      invoiceNumber: number,
-      invoiceDate: fmtDate(invoiceRow.issue_date),
-      dueDate: fmtDate(invoiceRow.due_date),
-      payUrl: invoiceRow.hash ? `${window.location.origin}/invoice/${invoiceRow.hash}` : '',
       signature,
-    }))
+    })
+    setSubject(emailContent.subject)
+    setMessage(emailContent.message)
 
     setLoading(false)
   }, [currentOrg?.id, id])
@@ -297,10 +361,11 @@ export default function InvoiceEmailDraft() {
   useEffect(() => { load() }, [load])
 
   const handleSend = async () => {
-    if (!invoice || !user?.id || sending) return
+    if (!invoice || !user?.id || !currentOrg?.id || sending) return
     setError(null)
     if (isVendor) { setError('Vendors cannot send invoices.'); return }
     if (invoice.direction !== 'outbound') { setError('Only outbound invoices can be sent to clients.'); return }
+    if (invoice.is_recurring) { setError('Recurring invoice templates cannot be sent to clients.'); return }
     if (['paid', 'cancelled'].includes(invoice.status)) { setError('Paid or cancelled invoices cannot be sent.'); return }
     if (invoice.email_sent_at) { setError('This invoice has already been sent by email.'); return }
     const recipients = to.split(',').map((email) => email.trim()).filter(Boolean)
@@ -310,6 +375,38 @@ export default function InvoiceEmailDraft() {
     if (!message.trim()) { setError('Message is required.'); return }
 
     setSending(true)
+    const ensured = await ensureInvoiceNumber(invoice, currentOrg.id)
+    if (ensured.error) {
+      setSending(false)
+      setError(ensured.error)
+      return
+    }
+
+    let sendInvoice = ensured.invoice
+    let sendSubject = subject.trim()
+    let sendMessage = message
+    if (sendInvoice.number !== invoice.number) {
+      setInvoice(sendInvoice)
+      const loadedContactNameParts = splitContactName(contact?.name)
+      const loadedContactName = [loadedContactNameParts.first, loadedContactNameParts.last].filter(Boolean).join(' ')
+      const emailContent = buildInvoiceEmailContent({
+        invoiceRow: sendInvoice,
+        contactName: loadedContactName || 'there',
+        signature,
+      })
+      sendSubject = emailContent.subject
+      sendMessage = emailContent.message
+      setSubject(sendSubject)
+      setMessage(sendMessage)
+    }
+
+    const sendNum = invoiceNumber(sendInvoice)
+    if (!sendInvoice.number) {
+      setSending(false)
+      setError('This invoice does not have an invoice number yet.')
+      return
+    }
+
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) {
       setSending(false)
@@ -317,7 +414,7 @@ export default function InvoiceEmailDraft() {
       return
     }
 
-    const sendHtml = finalizeInvoiceEmailHtml(bodyHtml)
+    const sendHtml = finalizeInvoiceEmailHtml(sendMessage)
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: {
@@ -328,7 +425,7 @@ export default function InvoiceEmailDraft() {
       body: JSON.stringify({
         compose: true,
         to: recipients.join(', '),
-        subject: subject.trim() || `Invoice - ${invNum} from Brogrammers Agency`,
+        subject: sendSubject || `Invoice - ${sendNum} from Brogrammers Agency`,
         body: sendHtml,
         isHtml: true,
         accountId: selectedSendable.accountId,
@@ -352,12 +449,12 @@ export default function InvoiceEmailDraft() {
 
     const sentUpdate: Record<string, string> = { updated_at: new Date().toISOString(), email_sent_at: new Date().toISOString() }
     if (threadId) sentUpdate.email_sent_thread_id = threadId
-    if (invoice.status === 'draft') sentUpdate.status = 'unpaid'
-    await supabase.from('invoices').update(sentUpdate).eq('id', invoice.id)
+    if (sendInvoice.status === 'draft') sentUpdate.status = 'unpaid'
+    await supabase.from('invoices').update(sentUpdate).eq('id', sendInvoice.id)
     if (threadId) {
       await supabase
         .from('inbox_thread_invoices')
-        .upsert({ thread_id: threadId, invoice_id: invoice.id, created_by: user.id }, { onConflict: 'thread_id,invoice_id' })
+        .upsert({ thread_id: threadId, invoice_id: sendInvoice.id, created_by: user.id }, { onConflict: 'thread_id,invoice_id' })
         .then(({ error }) => {
           if (error) console.warn('[InvoiceEmailDraft] invoice/thread link failed', error.message)
         })

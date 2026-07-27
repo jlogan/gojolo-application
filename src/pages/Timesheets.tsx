@@ -290,11 +290,21 @@ export default function Timesheets() {
 
     const subtotal = lineItems.reduce((s, i) => s + i.quantity * i.unit_price, 0)
 
+    const { data: nextNum, error: numErr } = await supabase.rpc('next_invoice_number', {
+      p_org_id: currentOrg.id,
+      p_direction: 'outbound',
+    })
+    if (numErr || nextNum == null) {
+      setCreatingInvoice(false)
+      return
+    }
+
     // Create the invoice with all auto-populated fields
     const { data: inv, error } = await supabase.from('invoices').insert({
       org_id: currentOrg.id,
       direction: 'outbound',
       prefix: 'INV-',
+      number: nextNum as number,
       status: 'draft',
       issue_date: new Date().toISOString().split('T')[0],
       project_id: projectId,
