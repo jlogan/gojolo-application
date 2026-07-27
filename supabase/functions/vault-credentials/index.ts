@@ -76,6 +76,39 @@ async function hasPermission(client: ReturnType<typeof createClient>, orgId: str
   return !error && data === true
 }
 
+async function canViewVaultScope(
+  client: ReturnType<typeof createClient>,
+  orgId: string,
+  projectId?: string | null,
+  companyId?: string | null,
+) {
+  if (await hasPermission(client, orgId, 'vault.view')) return true
+  const { data, error } = await client.rpc('user_can_view_vault_scope', {
+    p_org_id: orgId,
+    p_project_id: projectId ?? null,
+    p_company_id: companyId ?? null,
+  })
+  return !error && data === true
+}
+
+async function canRevealCredential(
+  client: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  orgId: string,
+  credentialId: string,
+) {
+  if (await hasPermission(client, orgId, 'vault.reveal')) return true
+  const { data, error } = await service
+    .from('vault_credentials')
+    .select('project_id, company_id')
+    .eq('id', credentialId)
+    .eq('org_id', orgId)
+    .single()
+  if (error || !data) return false
+  const row = data as { project_id: string | null; company_id: string | null }
+  return canViewVaultScope(client, orgId, row.project_id, row.company_id)
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
@@ -101,7 +134,12 @@ serve(async (req) => {
   if (userError || !user) return json({ error: 'Unauthorized' }, 401)
 
   if (action === 'list') {
-    if (!(await hasPermission(userClient, orgId, 'vault.view'))) return json({ error: 'Forbidden' }, 403)
+    if (!(await canViewVaultScope(userClient, orgId, body.projectId, body.companyId))) return json({ error: 'Forbidden' }, 403)
+    const [canCreate, canUpdate, canDelete] = await Promise.all([
+      hasPermission(userClient, orgId, 'vault.create'),
+      hasPermission(userClient, orgId, 'vault.update'),
+      hasPermission(userClient, orgId, 'vault.delete'),
+    ])
 
     const companyIds = new Set<string>()
     const linkedProjectIds = new Set<string>()
@@ -143,7 +181,7 @@ serve(async (req) => {
 
     const { data, error } = await query
     if (error) return json({ error: error.message }, 400)
-    return json({ credentials: data ?? [] })
+    return json({ credentials: data ?? [], permissions: { canCreate, canUpdate, canDelete } })
   }
 
   if (action === 'save') {
@@ -192,8 +230,8 @@ serve(async (req) => {
   }
 
   if (action === 'reveal') {
-    if (!(await hasPermission(userClient, orgId, 'vault.reveal'))) return json({ error: 'Forbidden' }, 403)
     if (!body.credentialId) return json({ error: 'Missing credentialId' }, 400)
+    if (!(await canRevealCredential(userClient, service, orgId, body.credentialId))) return json({ error: 'Forbidden' }, 403)
     if (!encryptionKeyHex || encryptionKeyHex.length < 64) return json({ error: 'Server not configured for vault encryption' }, 500)
     const iat = tokenIssuedAt(auth)
     if (!iat || Math.floor(Date.now() / 1000) - iat > 5 * 60) {

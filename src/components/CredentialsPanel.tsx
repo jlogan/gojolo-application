@@ -35,6 +35,12 @@ type CredentialsPanelProps = {
   description?: string
 }
 
+type VaultPermissions = {
+  canCreate: boolean
+  canUpdate: boolean
+  canDelete: boolean
+}
+
 const emptyForm = (scope: 'company' | 'project'): CredentialForm => ({
   label: '',
   username: '',
@@ -84,6 +90,7 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
   const [editing, setEditing] = useState<Credential | null>(null)
   const [form, setForm] = useState<CredentialForm>(() => emptyForm(defaultScope))
   const [saving, setSaving] = useState(false)
+  const [permissions, setPermissions] = useState<VaultPermissions>({ canCreate: false, canUpdate: false, canDelete: false })
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [unlockCredential, setUnlockCredential] = useState<Credential | null>(null)
   const [unlockPassword, setUnlockPassword] = useState('')
@@ -107,9 +114,11 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
         projectId,
       })
       setCredentials((data.credentials as Credential[]) ?? [])
+      setPermissions((data.permissions as VaultPermissions | undefined) ?? { canCreate: false, canUpdate: false, canDelete: false })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load credentials')
       setCredentials([])
+      setPermissions({ canCreate: false, canUpdate: false, canDelete: false })
     } finally {
       setLoading(false)
     }
@@ -311,13 +320,15 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
             {description ?? 'Store site, hosting, and service logins. Passwords stay locked until you confirm your identity.'}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={startNew}
-          className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90"
-        >
-          <Plus className="w-3.5 h-3.5" /> Add credential
-        </button>
+        {permissions.canCreate && (
+          <button
+            type="button"
+            onClick={startNew}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add credential
+          </button>
+        )}
       </div>
 
       {error && <div className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div>}
@@ -415,10 +426,12 @@ export default function CredentialsPanel({ orgId, companyId = null, projectId = 
                     </div>
                     {credential.notes && <p className="text-xs text-gray-400 mt-2 whitespace-pre-wrap">{credential.notes}</p>}
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button type="button" onClick={() => startEdit(credential)} className="p-1.5 rounded text-gray-500 hover:text-white hover:bg-surface-muted" aria-label="Edit credential"><Pencil className="w-4 h-4" /></button>
-                    <button type="button" onClick={() => deleteCredential(credential)} className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10" aria-label="Delete credential"><Trash2 className="w-4 h-4" /></button>
-                  </div>
+                  {(permissions.canUpdate || permissions.canDelete) && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      {permissions.canUpdate && <button type="button" onClick={() => startEdit(credential)} className="p-1.5 rounded text-gray-500 hover:text-white hover:bg-surface-muted" aria-label="Edit credential"><Pencil className="w-4 h-4" /></button>}
+                      {permissions.canDelete && <button type="button" onClick={() => deleteCredential(credential)} className="p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-red-500/10" aria-label="Delete credential"><Trash2 className="w-4 h-4" /></button>}
+                    </div>
+                  )}
                 </div>
               </div>
             )
