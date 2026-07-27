@@ -69,6 +69,34 @@ function escapeSlack(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/** Inbox email/Slack must only go to assigned users or explicit @mention targets. */
+async function validateInboxNotificationRecipient(
+  admin: ReturnType<typeof createClient>,
+  item: NotificationItem,
+): Promise<boolean> {
+  if (item.event_type !== 'thread_assigned' && item.event_type !== 'mentioned_in_thread') {
+    return true
+  }
+
+  const { data, error } = await admin.rpc('validate_inbox_notification_recipient', {
+    p_user_id: item.user_id,
+    p_org_id: item.org_id,
+    p_event_type: item.event_type,
+    p_payload: item.payload,
+  })
+
+  if (error) {
+    console.error('[process-user-notification] recipient validation failed', error.message)
+    return false
+  }
+
+  return data === true
+}
+
+async function markQueueProcessed(admin: ReturnType<typeof createClient>, queueId: string): Promise<void> {
+  await admin.from('notification_queue').update({ sent_at: new Date().toISOString() }).eq('id', queueId)
+}
+
 async function sendNotification(admin: ReturnType<typeof createClient>, item: NotificationItem, queueId: string | null): Promise<void> {
   const { data: pref } = await admin
     .from('user_notification_preferences')
@@ -125,7 +153,7 @@ async function sendNotification(admin: ReturnType<typeof createClient>, item: No
   }
 
   if (queueId) {
-    await admin.from('notification_queue').update({ sent_at: new Date().toISOString() }).eq('id', queueId)
+    await markQueueProcessed(admin, queueId)
   }
 }
 
@@ -202,6 +230,17 @@ Deno.serve(async (req: Request) => {
     item = { user_id, org_id, event_type, payload }
   } else {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  }
+
+  const recipientValid = await validateInboxNotificationRecipient(admin, item)
+  if (!recipientValid) {
+    if (queueId) {
+      await markQueueProcessed(admin, queueId)
+    }
+    return new Response(
+      JSON.stringify({ ok: true, skipped: true, reason: 'invalid_recipient' }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    )
   }
 
   await sendNotification(admin, item, queueId)

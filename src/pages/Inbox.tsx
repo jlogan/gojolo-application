@@ -1394,11 +1394,11 @@ export default function Inbox() {
   const handleAddComment = async () => {
     if (!selectedThreadId || !commentText.trim() || !userId || !currentOrg?.id) return
     const mentionIds = parseMentionUserIds(commentText.trim(), inboxUsers).filter(id => id !== userId)
-    const { error: insertErr } = await supabase.from('inbox_comments').insert({
+    const { data: insertedComment, error: insertErr } = await supabase.from('inbox_comments').insert({
       thread_id: selectedThreadId, user_id: userId, content: commentText.trim(),
       mentions: mentionIds.length > 0 ? mentionIds : null,
-    })
-    if (insertErr) return
+    }).select('id').single()
+    if (insertErr || !insertedComment) return
     const contentPreview = commentText.trim().slice(0, 200) + (commentText.trim().length > 200 ? '...' : '')
     const commenterName = getUserName(userId)
     const selectedThread = threads.find(t => t.id === selectedThreadId)
@@ -1412,6 +1412,7 @@ export default function Inbox() {
     if (!session?.access_token) return
     const payload = {
       thread_id: selectedThreadId,
+      comment_id: insertedComment.id,
       subject,
       commenter_name: commenterName,
       content_preview: contentPreview,

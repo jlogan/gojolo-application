@@ -28,6 +28,13 @@ export function parseMentionUserIds(text: string, users: MentionUser[]): string[
       i++
       continue
     }
+    if (i > 0) {
+      const before = plain[i - 1]
+      if (before !== ' ' && before !== '\n' && before !== '\t') {
+        i++
+        continue
+      }
+    }
     const rest = plain.slice(i + 1)
     let matched = false
     for (const { user_id, label } of labels) {
