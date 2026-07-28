@@ -318,6 +318,7 @@ export default function Inbox() {
 
   const userId = user?.id ?? null
   const timelineEndRef = useRef<HTMLDivElement>(null)
+  const draftMessageIdRef = useRef<string | null>(null)
   const sendingReplyRef = useRef(false)
   const outboundEmptyWarnedKeyRef = useRef<string | null>(null)
   /** When set (from /inbox?compose=1&leadId=...), a successful send logs a lead_attempt for that lead. */
@@ -481,6 +482,16 @@ export default function Inbox() {
     })
   }, [])
 
+  const clearComposeIfDraftDeleted = useCallback((deletedIds: Set<string>) => {
+    const editingDraftId = draftMessageIdRef.current
+    if (!editingDraftId || !deletedIds.has(editingDraftId)) return
+    setDraftMessageId(null)
+    setReplyMode(null)
+    setReplyAnchorMsgId(null)
+    setReplyHtml('')
+    setReplyAttachments([])
+  }, [])
+
   const fetchMessages = useCallback(async (tid: string) => {
     debugLog('fetchMessages', { event: 'START', threadId: tid }, tid)
     setMessagesLoading(true)
@@ -550,19 +561,20 @@ export default function Inbox() {
       await supabase.from('inbox_thread_reads').upsert({ thread_id: tid, user_id: userId, last_read_at: new Date().toISOString() }, { onConflict: 'thread_id,user_id' })
     }
 
-    // Lazy-load bodies from IMAP only when at least one row has no body/html in DB (avoids edge round-trip when data is already complete)
+    // Lazy-load bodies from IMAP when rows lack body/html, or reconcile DB drafts against provider Drafts mailbox
     if (msgs.length > 0) {
       const emptyBeforeBodies = msgs.filter(m => !m.body?.trim() && !m.html_body?.trim())
-      if (emptyBeforeBodies.length === 0) {
-        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'all_bodies_in_db', messageCount: msgs.length }, tid)
+      const hasDraftRows = msgs.some(m => m.is_draft)
+      if (emptyBeforeBodies.length === 0 && !hasDraftRows) {
+        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'all_bodies_in_db_no_drafts', messageCount: msgs.length }, tid)
       } else {
-        debugLog('fetchMessages', { event: 'empty_bodies_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), count: emptyBeforeBodies.length }, tid)
+        debugLog('fetchMessages', { event: emptyBeforeBodies.length ? 'empty_bodies_before_fetch' : 'draft_reconcile_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), draftCount: msgs.filter(m => m.is_draft).length, count: emptyBeforeBodies.length }, tid)
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.access_token) {
           try {
             const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fetch-thread-bodies`
             const t0 = performance.now()
-            console.log('[Inbox:fetch-thread-bodies] calling', { threadId: tid, messageCount: msgs.length, emptyCount: emptyBeforeBodies.length })
+            console.log('[Inbox:fetch-thread-bodies] calling', { threadId: tid, messageCount: msgs.length, emptyCount: emptyBeforeBodies.length, draftCount: msgs.filter(m => m.is_draft).length })
             const res = await fetch(url, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
@@ -570,17 +582,32 @@ export default function Inbox() {
             })
             const elapsed = Math.round(performance.now() - t0)
             const result = await res.json().catch(() => ({}))
-            console.log('[Inbox:fetch-thread-bodies] response', { threadId: tid, elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error })
-            debugLog('fetchMessages', { event: 'fetch_thread_bodies_response', elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, hasMore: result.hasMore, error: result.error, bodies: (result.messages ?? []).map((m: { id: string; body?: string | null; htmlBody?: string | null }) => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.htmlBody?.trim()) })) }, tid)
+            console.log('[Inbox:fetch-thread-bodies] response', { threadId: tid, elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, deletedCount: result.deletedMessageIds?.length ?? 0, hasMore: result.hasMore, error: result.error })
+            debugLog('fetchMessages', { event: 'fetch_thread_bodies_response', elapsedMs: elapsed, status: res.status, ok: res.ok, messageCount: result.messages?.length ?? 0, deletedCount: result.deletedMessageIds?.length ?? 0, hasMore: result.hasMore, error: result.error, bodies: (result.messages ?? []).map((m: { id: string; body?: string | null; htmlBody?: string | null }) => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.htmlBody?.trim()) })) }, tid)
             if (!res.ok) {
               console.warn('[Inbox] fetch-thread-bodies HTTP error', { threadId: tid, status: res.status, error: (result as { error?: string }).error })
               debugLog('fetchMessages', { event: 'fetch_thread_bodies_http_error', status: res.status, error: (result as { error?: string }).error }, tid)
             }
-            if (result.messages?.length) {
+            const deletedIds = new Set<string>((result.deletedMessageIds ?? []) as string[])
+            if (result.messages?.length || deletedIds.size > 0) {
               if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
-              type BodyEntry = { body: string | null; html_body: string | null }
-              const bodyMap = new Map<string, BodyEntry>(result.messages.map((r: { id: string; body: string | null; htmlBody: string | null }) => [r.id, { body: r.body, html_body: r.htmlBody }]))
+              clearComposeIfDraftDeleted(deletedIds)
+              type BodyEntry = {
+                body: string | null
+                html_body: string | null
+                from_identifier?: string | null
+                to_identifier?: string | null
+                cc?: string | null
+              }
+              const bodyMap = new Map<string, BodyEntry>((result.messages ?? []).map((r: { id: string; body: string | null; htmlBody: string | null; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null }) => [r.id, {
+                body: r.body,
+                html_body: r.htmlBody,
+                from_identifier: r.from_identifier,
+                to_identifier: r.to_identifier,
+                cc: r.cc,
+              }]))
               const stillEmptyAfter = msgs.filter((pm) => {
+                if (deletedIds.has(pm.id)) return false
                 const b = bodyMap.get(pm.id)
                 const bodyVal = b ? (b.body ?? pm.body) : pm.body
                 const htmlVal = b ? (b.html_body ?? pm.html_body) : pm.html_body
@@ -597,10 +624,20 @@ export default function Inbox() {
                 debugLog('fetchMessages', { event: 'bodies_still_empty_after_fetch', threadId: tid, count: stillEmptyAfter.length, details }, tid)
               }
               setMessages(prev => {
-                const merged = prev.map(pm => {
-                  const b = bodyMap.get(pm.id)
-                  return b ? { ...pm, body: b.body ?? pm.body, html_body: b.html_body ?? pm.html_body } : pm
-                })
+                const merged = prev
+                  .filter(pm => !deletedIds.has(pm.id))
+                  .map(pm => {
+                    const b = bodyMap.get(pm.id)
+                    if (!b) return pm
+                    return {
+                      ...pm,
+                      body: b.body ?? pm.body,
+                      html_body: b.html_body ?? pm.html_body,
+                      from_identifier: b.from_identifier ?? pm.from_identifier,
+                      to_identifier: b.to_identifier ?? pm.to_identifier,
+                      cc: b.cc ?? pm.cc,
+                    }
+                  })
                 return merged.sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
               })
               fetchAttachments(tid)
@@ -609,12 +646,30 @@ export default function Inbox() {
                   .then(r => r.json().catch(() => ({})))
                   .then(r => {
                     if (selectedThreadIdRef.current !== tid) return // user switched thread, cancel retries
-                    if (r.messages?.length) {
-                      const m = new Map<string, BodyEntry>(r.messages.map((x: { id: string; body: string | null; htmlBody: string | null }) => [x.id, { body: x.body, html_body: x.htmlBody }]))
-                      setMessages(prev2 => prev2.map(p => {
-                        const entry = m.get(p.id)
-                        return entry ? { ...p, body: entry.body ?? p.body, html_body: entry.html_body ?? p.html_body } : p
-                      }).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
+                    const retryDeleted = new Set<string>((r.deletedMessageIds ?? []) as string[])
+                    if (r.messages?.length || retryDeleted.size > 0) {
+                      clearComposeIfDraftDeleted(retryDeleted)
+                      const m = new Map<string, BodyEntry>((r.messages ?? []).map((x: { id: string; body: string | null; htmlBody: string | null; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null }) => [x.id, {
+                        body: x.body,
+                        html_body: x.htmlBody,
+                        from_identifier: x.from_identifier,
+                        to_identifier: x.to_identifier,
+                        cc: x.cc,
+                      }]))
+                      setMessages(prev2 => prev2
+                        .filter(p => !retryDeleted.has(p.id))
+                        .map(p => {
+                          const entry = m.get(p.id)
+                          if (!entry) return p
+                          return {
+                            ...p,
+                            body: entry.body ?? p.body,
+                            html_body: entry.html_body ?? p.html_body,
+                            from_identifier: entry.from_identifier ?? p.from_identifier,
+                            to_identifier: entry.to_identifier ?? p.to_identifier,
+                            cc: entry.cc ?? p.cc,
+                          }
+                        }).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
                       fetchAttachments(tid)
                       if (r.hasMore) setTimeout(retry, 800)
                     }
@@ -635,7 +690,7 @@ export default function Inbox() {
       console.log('[Inbox] Skipping fetch-thread-bodies: no messages', { threadId: tid })
       debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_messages', threadId: tid }, tid)
     }
-  }, [userId, fetchAttachments, debugLog])
+  }, [userId, fetchAttachments, debugLog, clearComposeIfDraftDeleted])
 
   const fetchComments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
@@ -734,6 +789,7 @@ export default function Inbox() {
   const fetchMessagesRef = useRef(fetchMessages)
   const fetchCommentsRef = useRef(fetchComments)
   useEffect(() => { selectedThreadIdRef.current = selectedThreadId }, [selectedThreadId])
+  useEffect(() => { draftMessageIdRef.current = draftMessageId }, [draftMessageId])
   useEffect(() => { fetchThreadsRef.current = fetchThreads }, [fetchThreads])
   useEffect(() => { fetchMessagesRef.current = fetchMessages }, [fetchMessages])
   useEffect(() => { fetchCommentsRef.current = fetchComments }, [fetchComments])
