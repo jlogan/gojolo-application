@@ -279,6 +279,86 @@ Deno.serve(async (req: Request) => {
     })
   }
 
+  /** imap-sync inserts inbound + outbound with null bodies; bodies are lazy-loaded from IMAP by UID (same mailbox as sync: All Mail / INBOX). */
+  const isBodyEmpty = (m: { body: unknown; html_body: unknown }) => {
+    const b = m.body
+    const h = m.html_body
+    const bodyEmpty = b == null || (typeof b === 'string' && !b.trim())
+    const htmlEmpty = h == null || (typeof h === 'string' && !h.trim())
+    return bodyEmpty && htmlEmpty
+  }
+
+  const isDraftRow = (m: { is_draft?: boolean | null }) => !!m.is_draft
+
+  const normNullableStr = (s: string | null | undefined) => {
+    const t = (s ?? '').trim()
+    return t || null
+  }
+
+  const recipientsOverlap = (a: string | null, b: string | null): boolean => {
+    const aParts = (a ?? '').split(',').map((s) => normalizeEmail(s)).filter(Boolean).sort()
+    const bParts = (b ?? '').split(',').map((s) => normalizeEmail(s)).filter(Boolean).sort()
+    if (!aParts.length && !bParts.length) return true
+    if (aParts.join(',') === bParts.join(',')) return true
+    const overlap = aParts.filter((t) => bParts.includes(t)).length
+    return overlap > 0 && (overlap === aParts.length || overlap === bParts.length)
+  }
+
+  const isPhantomOutboundDuplicate = (
+    draft: { from_identifier: string; to_identifier: string | null; body: string | null; html_body: string | null },
+    cand: {
+      id: string
+      direction?: string
+      is_draft?: boolean | null
+      from_identifier: string
+      to_identifier: string | null
+      body: string | null
+      html_body: string | null
+    },
+    reconciled: { body: string | null; htmlBody: string | null },
+  ): boolean => {
+    if (cand.id === (draft as { id?: string }).id) return false
+    if (cand.direction !== 'outbound' || cand.is_draft) return false
+    if (normalizeEmail(draft.from_identifier) !== normalizeEmail(cand.from_identifier)) return false
+    if (!recipientsOverlap(draft.to_identifier, cand.to_identifier)) return false
+    const candEmpty = isBodyEmpty(cand)
+    const draftEmpty = isBodyEmpty({ body: reconciled.body, html_body: reconciled.htmlBody })
+    if (!candEmpty && !draftEmpty) {
+      return bodySnippetsMatch(
+        { body: reconciled.body, html_body: reconciled.htmlBody },
+        { text: cand.body, html: cand.html_body },
+      )
+    }
+    return true
+  }
+
+  const deletePhantomOutboundDuplicates = async (
+    draft: DraftReconcileRow,
+    reconciled: { body: string | null; htmlBody: string | null; fromIdentifier: string; toIdentifier: string | null },
+  ): Promise<void> => {
+    const candidates = messages.filter((m) =>
+      m.id !== draft.id
+      && m.thread_id === draft.thread_id
+      && m.direction === 'outbound'
+      && !m.is_draft
+      && m.imap_account_id === draft.imap_account_id
+    )
+    for (const cand of candidates) {
+      if (!isPhantomOutboundDuplicate(
+        { ...draft, body: reconciled.body, html_body: reconciled.htmlBody },
+        cand as typeof cand & { direction: string; is_draft?: boolean | null },
+        reconciled,
+      )) continue
+      const { error: delErr } = await service.from('inbox_messages').delete().eq('id', cand.id)
+      if (delErr) {
+        console.log('[fetch-thread-bodies] phantom outbound delete failed', { draftId: draft.id, phantomId: cand.id, error: delErr.message })
+        continue
+      }
+      deletedMessageIds.push(cand.id)
+      console.log('[fetch-thread-bodies] deleted phantom outbound duplicate of draft', { draftId: draft.id, phantomId: cand.id, uid: cand.external_uid })
+    }
+  }
+
   const applyDraftReconcile = async (
     msg: DraftReconcileRow,
     source: Uint8Array,
@@ -294,8 +374,34 @@ Deno.serve(async (req: Request) => {
     if (bodyText.length > 50000) bodyText = bodyText.slice(0, 50000)
     if (htmlBody && htmlBody.length > 50000) htmlBody = htmlBody.slice(0, 50000)
 
+    const bodyStored = bodyText || null
+    const resultEntry: MessageResult = {
+      id: msg.id,
+      body: bodyStored,
+      htmlBody,
+      attachments: attsByMsg.get(msg.id) ?? [],
+      from_identifier: fromIdentifier,
+      to_identifier: toIdentifier,
+      cc,
+    }
+
+    const unchanged =
+      normNullableStr(bodyStored) === normNullableStr(msg.body)
+      && normNullableStr(htmlBody) === normNullableStr(msg.html_body)
+      && fromIdentifier === msg.from_identifier
+      && normNullableStr(toIdentifier) === normNullableStr(msg.to_identifier)
+      && normNullableStr(cc) === normNullableStr(msg.cc)
+      && resolvedUid === msg.external_uid
+
+    if (unchanged) {
+      console.log('[fetch-thread-bodies] draft reconcile skip UPDATE (unchanged)', { msgId: msg.id, uid: resolvedUid })
+      result.push(resultEntry)
+      await deletePhantomOutboundDuplicates(msg, { body: bodyStored, htmlBody, fromIdentifier, toIdentifier })
+      return true
+    }
+
     const updatePayload: Record<string, unknown> = {
-      body: bodyText || null,
+      body: bodyStored,
       html_body: htmlBody,
       from_identifier: fromIdentifier,
       to_identifier: toIdentifier,
@@ -313,28 +419,10 @@ Deno.serve(async (req: Request) => {
       return false
     }
 
-    result.push({
-      id: msg.id,
-      body: bodyText || null,
-      htmlBody,
-      attachments: attsByMsg.get(msg.id) ?? [],
-      from_identifier: fromIdentifier,
-      to_identifier: toIdentifier,
-      cc,
-    })
+    result.push(resultEntry)
+    await deletePhantomOutboundDuplicates(msg, { body: bodyStored, htmlBody, fromIdentifier, toIdentifier })
     return true
   }
-
-  /** imap-sync inserts inbound + outbound with null bodies; bodies are lazy-loaded from IMAP by UID (same mailbox as sync: All Mail / INBOX). */
-  const isBodyEmpty = (m: { body: unknown; html_body: unknown }) => {
-    const b = m.body
-    const h = m.html_body
-    const bodyEmpty = b == null || (typeof b === 'string' && !b.trim())
-    const htmlEmpty = h == null || (typeof h === 'string' && !h.trim())
-    return bodyEmpty && htmlEmpty
-  }
-
-  const isDraftRow = (m: { is_draft?: boolean | null }) => !!m.is_draft
 
   // For messages with null imap_account_id, resolve a fallback from the thread or org
   let fallbackAccountId: string | null = null

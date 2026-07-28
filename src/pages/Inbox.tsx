@@ -321,6 +321,8 @@ export default function Inbox() {
   const draftMessageIdRef = useRef<string | null>(null)
   const sendingReplyRef = useRef(false)
   const outboundEmptyWarnedKeyRef = useRef<string | null>(null)
+  /** Per-thread guard: draft reconciliation via fetch-thread-bodies runs once per thread load unless bodies are empty. */
+  const draftReconcileDoneForThreadRef = useRef<string | null>(null)
   /** When set (from /inbox?compose=1&leadId=...), a successful send logs a lead_attempt for that lead. */
   const leadComposeContextRef = useRef<{ leadId: string; contactId: string | null } | null>(null)
 
@@ -565,10 +567,13 @@ export default function Inbox() {
     if (msgs.length > 0) {
       const emptyBeforeBodies = msgs.filter(m => !m.body?.trim() && !m.html_body?.trim())
       const hasDraftRows = msgs.some(m => m.is_draft)
-      if (emptyBeforeBodies.length === 0 && !hasDraftRows) {
-        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'all_bodies_in_db_no_drafts', messageCount: msgs.length }, tid)
+      const needsBodyFetch = emptyBeforeBodies.length > 0
+      const needsDraftReconcile = hasDraftRows && draftReconcileDoneForThreadRef.current !== tid
+      if (!needsBodyFetch && !needsDraftReconcile) {
+        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: hasDraftRows ? 'draft_reconcile_already_done' : 'all_bodies_in_db_no_drafts', messageCount: msgs.length }, tid)
       } else {
-        debugLog('fetchMessages', { event: emptyBeforeBodies.length ? 'empty_bodies_before_fetch' : 'draft_reconcile_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), draftCount: msgs.filter(m => m.is_draft).length, count: emptyBeforeBodies.length }, tid)
+        if (hasDraftRows) draftReconcileDoneForThreadRef.current = tid
+        debugLog('fetchMessages', { event: needsBodyFetch ? 'empty_bodies_before_fetch' : 'draft_reconcile_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), draftCount: msgs.filter(m => m.is_draft).length, count: emptyBeforeBodies.length }, tid)
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.access_token) {
           try {
@@ -891,10 +896,11 @@ export default function Inbox() {
 
   useEffect(() => {
     if (!selectedThreadId) {
-      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setDraftMessageId(null); setExpandedMsgs(new Set()); return
+      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setDraftMessageId(null); setExpandedMsgs(new Set()); draftReconcileDoneForThreadRef.current = null; return
     }
     debugLog('selectThread', { selectedThreadId, filter }, selectedThreadId ?? undefined)
     setExpandedMsgs(new Set()) // Reset accordion on thread change
+    draftReconcileDoneForThreadRef.current = null
     // Use ref so this effect does not re-run when fetchMessages identity changes (e.g. debugLog after auth/org hydrate) — avoids duplicate fetch-thread-bodies
     fetchMessagesRef.current(selectedThreadId)
     fetchComments(selectedThreadId)

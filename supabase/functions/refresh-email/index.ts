@@ -531,7 +531,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         const cutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
         const { data: existing } = await service
           .from('inbox_messages')
-          .select('id')
+          .select('id, is_draft')
           .eq('thread_id', tid)
           .eq('imap_account_id', acc.id)
           .eq('direction', 'outbound')
@@ -539,12 +539,16 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
           .gte('received_at', cutoff)
           .limit(1)
         if (existing?.length) {
-          const existingId = (existing[0] as { id: string }).id
-          console.log('[refresh-email] outbound dedup: updating existing msg', existingId, 'threadId=', tid, 'uid=', p.uid)
+          const existingRow = existing[0] as { id: string; is_draft?: boolean | null }
+          if (existingRow.is_draft) {
+            console.log('[refresh-email] outbound dedup skip: existing row is draft', existingRow.id, 'uid=', p.uid)
+            continue
+          }
+          console.log('[refresh-email] outbound dedup: updating existing msg', existingRow.id, 'threadId=', tid, 'uid=', p.uid)
           await service
             .from('inbox_messages')
             .update({ external_id: p.externalId, external_uid: p.uid, is_draft: false })
-            .eq('id', existingId)
+            .eq('id', existingRow.id)
           const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
             p_thread_id: tid,
             p_last_message_at: p.date.toISOString(),
@@ -552,6 +556,29 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
           })
           if (touchDedupErr) console.log('[refresh-email] touch_inbox_thread_on_new_message (outbound dedup)', touchDedupErr.message)
           continue
+        }
+
+        const { data: threadDrafts } = await service.from('inbox_messages')
+          .select('id, from_identifier, to_identifier')
+          .eq('thread_id', tid)
+          .eq('imap_account_id', acc.id)
+          .eq('direction', 'outbound')
+          .eq('is_draft', true)
+        if (threadDrafts?.length) {
+          const normFrom = normalizeEmail(p.fromAddr)
+          const pToParts = p.toAddr.split(',').map((s) => normalizeEmail(s)).filter(Boolean)
+          const matchesDraft = (threadDrafts as { from_identifier: string; to_identifier: string | null }[]).some((dr) => {
+            if (normalizeEmail(dr.from_identifier) !== normFrom) return false
+            const drParts = (dr.to_identifier ?? '').split(',').map((s) => normalizeEmail(s)).filter(Boolean)
+            if (!drParts.length && !pToParts.length) return true
+            if (drParts.join(',') === pToParts.join(',')) return true
+            const overlap = drParts.filter((t) => pToParts.includes(t)).length
+            return overlap > 0 && (overlap === drParts.length || overlap === pToParts.length)
+          })
+          if (matchesDraft) {
+            console.log('[refresh-email] skip outbound insert — matches thread draft', tid, 'uid=', p.uid)
+            continue
+          }
         }
       }
       insertRows.push({
