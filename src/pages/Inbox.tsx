@@ -278,6 +278,8 @@ export default function Inbox() {
   // Reply
   const [replyMode, setReplyMode] = useState<'reply' | 'reply_all' | 'forward' | 'compose' | null>(null)
   const [replyAnchorMsgId, setReplyAnchorMsgId] = useState<string | null>(null)
+  /** When set, compose replaces that draft bubble (edit/save flow). Cleared on cancel/send. */
+  const [draftMessageId, setDraftMessageId] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState('')
   const [replyCc, setReplyCc] = useState('')
   const [replyBcc, setReplyBcc] = useState('')
@@ -288,6 +290,7 @@ export default function Inbox() {
   const [selectedAccountId, setSelectedAccountId] = useState('')
   const [selectedFromAddress, setSelectedFromAddress] = useState('')
   const [replyAttachments, setReplyAttachments] = useState<File[]>([])
+  const [savingDraft, setSavingDraft] = useState(false)
 
   // Comment
   const [commentText, setCommentText] = useState('')
@@ -810,7 +813,7 @@ export default function Inbox() {
 
   useEffect(() => {
     if (!selectedThreadId) {
-      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setExpandedMsgs(new Set()); return
+      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setDraftMessageId(null); setExpandedMsgs(new Set()); return
     }
     debugLog('selectThread', { selectedThreadId, filter }, selectedThreadId ?? undefined)
     setExpandedMsgs(new Set()) // Reset accordion on thread change
@@ -1212,6 +1215,7 @@ export default function Inbox() {
 
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
     setReplyAnchorMsgId(null)
+    setDraftMessageId(null)
     if (mode === 'compose') {
       leadComposeContextRef.current = null
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
@@ -1261,6 +1265,7 @@ export default function Inbox() {
     leadComposeContextRef.current = leadId ? { leadId, contactId: contactId || null } : null
     setSelectedThreadId(null)
     setReplyAnchorMsgId(null)
+    setDraftMessageId(null)
     setReplyTo(decodeURIComponent(to.trim()))
     setReplyCc('')
     setReplyBcc('')
@@ -1290,6 +1295,7 @@ export default function Inbox() {
     }
     sendingReplyRef.current = true
     setSendingReply(true)
+    const draftIdToRemove = draftMessageId
     const sendId = `send-${Date.now()}`
     console.log('[Inbox] handleSendReply:', sendId, 'threadId=', selectedThreadId, 'to=', replyTo?.slice(0, 50), 'mode=', replyMode, 'pendingAttachments=', replyAttachments.length)
     const { data: { session } } = await supabase.auth.getSession()
@@ -1340,6 +1346,12 @@ export default function Inbox() {
     setSendingReply(false)
     if (data?.error) { toast(data.error); return }
 
+    if (draftIdToRemove) {
+      const { error: delErr } = await supabase.from('inbox_messages').delete().eq('id', draftIdToRemove)
+      if (delErr) console.warn('[Inbox] failed to delete draft after send:', delErr.message)
+      else setMessages(prev => prev.filter(msg => msg.id !== draftIdToRemove))
+    }
+
     const leadCtx = leadComposeContextRef.current
     if (leadCtx?.leadId && currentOrg?.id && replyMode === 'compose') {
       leadComposeContextRef.current = null
@@ -1381,13 +1393,136 @@ export default function Inbox() {
       setSelectedThreadId(next?.id ?? null)
     }
 
-    setReplyMode(null); setReplyHtml(''); setReplyAttachments([])
+    setReplyMode(null); setReplyHtml(''); setReplyAttachments([]); setReplyAnchorMsgId(null); setDraftMessageId(null)
     console.log('[Inbox] handleSendReply:', sendId, 'success, refreshing thread list')
     toast('Sent')
     await fetchThreads()
     if (sentThreadId && !shouldAdvanceSelection) {
       fetchMessages(sentThreadId)
       fetchAttachments(sentThreadId)
+    }
+  }
+
+  const syncDraftOnServer = async (messageId: string, action: 'save' | 'delete' = 'save') => {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) return null
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-save-draft`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ messageId, action }),
+      })
+      return await res.json().catch(() => ({}))
+    } catch (err) {
+      console.warn('[Inbox] imap-save-draft failed:', err)
+      return null
+    }
+  }
+
+  const handleSaveDraft = async () => {
+    if (!currentOrg?.id) return
+    if (savingDraft) return
+    const selectedSendable = getSendableAddresses().find((a) => a.email.toLowerCase() === selectedFromAddress.toLowerCase())
+      ?? getSendableAddresses().find((a) => a.accountId === selectedAccountId)
+    const fromEmail = selectedSendable?.email || selectedFromAddress
+    if (!fromEmail) { toast('Select a From address'); return }
+    setSavingDraft(true)
+    const now = new Date().toISOString()
+    let threadId = selectedThreadId
+    const isNewComposeDraft = !threadId && replyMode === 'compose'
+    const subject = replySubject.trim() || '(No subject)'
+
+    if (isNewComposeDraft) {
+      const accountId = selectedSendable?.accountId || selectedAccountId || null
+      const { data: newThread, error: threadErr } = await supabase.from('inbox_threads').insert({
+        org_id: currentOrg.id,
+        channel: 'email',
+        status: 'open',
+        subject,
+        last_message_at: now,
+        imap_account_id: accountId,
+        from_address: fromEmail,
+        mailbox_address: fromEmail.toLowerCase(),
+      }).select(INBOX_THREAD_LIST_SELECT).single()
+      if (threadErr || !newThread) {
+        setSavingDraft(false)
+        toast('Failed to save draft: ' + (threadErr?.message ?? 'Could not create thread'))
+        return
+      }
+      threadId = (newThread as InboxThread).id
+      setThreads(prev => [{ ...(newThread as InboxThread), inbox_messages: [{ count: 1 }] }, ...prev])
+    }
+
+    if (!threadId) {
+      setSavingDraft(false)
+      return
+    }
+
+    await supabase.from('inbox_threads').update({ subject, last_message_at: now, updated_at: now }).eq('id', threadId)
+
+    const payload = {
+      thread_id: threadId,
+      channel: 'email' as const,
+      direction: 'outbound' as const,
+      from_identifier: fromEmail,
+      to_identifier: replyTo.trim() || null,
+      cc: replyCc.trim() || null,
+      html_body: replyHtml,
+      body: stripHtmlToText(replyHtml, 100_000),
+      is_draft: true,
+      imap_account_id: selectedSendable?.accountId || selectedAccountId || null,
+      received_at: now,
+    }
+    let savedMessageId = draftMessageId
+    if (draftMessageId) {
+      const { data, error } = await supabase.from('inbox_messages').update(payload).eq('id', draftMessageId).select().single()
+      if (error) {
+        setSavingDraft(false)
+        toast('Failed to save draft: ' + error.message)
+        return
+      }
+      setMessages(prev => prev.map(m => m.id === draftMessageId ? { ...m, ...(data as InboxMessage) } : m))
+    } else {
+      const { data, error } = await supabase.from('inbox_messages').insert(payload).select().single()
+      if (error) {
+        setSavingDraft(false)
+        toast('Failed to save draft: ' + error.message)
+        return
+      }
+      const draftMsg = data as InboxMessage
+      savedMessageId = draftMsg.id
+      if (isNewComposeDraft) {
+        setSelectedThreadId(threadId)
+        setMessages([draftMsg])
+        setExpandedMsgs(new Set([draftMsg.id]))
+      } else {
+        setMessages(prev => [...prev, draftMsg])
+        setExpandedMsgs(prev => new Set([...prev, draftMsg.id]))
+      }
+    }
+
+    setSavingDraft(false)
+    setReplyMode(null)
+    setReplyAnchorMsgId(null)
+    setDraftMessageId(null)
+    setReplyHtml('')
+    setReplyAttachments([])
+    toast('Draft saved')
+    if (isNewComposeDraft) void fetchThreads()
+
+    if (savedMessageId) {
+      void syncDraftOnServer(savedMessageId, 'save').then((result) => {
+        if (result?.external_uid != null) {
+          setMessages(prev => prev.map(m => m.id === savedMessageId
+            ? { ...m, external_uid: result.external_uid as number, is_draft: true }
+            : m))
+        }
+        if (result?.imapError) console.warn('[Inbox] IMAP draft sync:', result.imapError)
+      })
     }
   }
 
@@ -1711,7 +1846,13 @@ export default function Inbox() {
   // Compose reply form (shared between compose mode and inline reply)
   const renderReplyForm = (isCompose: boolean) => (
     <EmailComposeForm
-      modeLabel={replyMode === 'reply' ? 'Reply' : replyMode === 'reply_all' ? 'Reply All' : replyMode === 'forward' ? 'Forward' : 'New message'}
+      modeLabel={
+        draftMessageId ? 'Edit draft'
+          : replyMode === 'reply' ? 'Reply'
+          : replyMode === 'reply_all' ? 'Reply All'
+          : replyMode === 'forward' ? 'Forward'
+          : 'New message'
+      }
       sendableAddresses={sendableAddresses}
       selectedFromAddress={selectedFromAddress}
       onFromAddressChange={(email, accountId) => {
@@ -1740,9 +1881,16 @@ export default function Inbox() {
       onSend={handleSendReply}
       sending={sendingReply}
       sendDisabled={!replyTo.trim()}
+      saveDraftDisabled={!selectedFromAddress.trim() && sendableAddresses.length === 0}
+      showSaveDraft={replyMode !== null && (replyMode === 'compose' || !!selectedThreadId)}
+      onSaveDraft={handleSaveDraft}
+      savingDraft={savingDraft}
+      stickyActions={replyMode === 'compose' && !selectedThreadId}
       onCancel={() => {
         console.log('[Inbox:nav] Reply form Cancel click')
         setReplyMode(null)
+        setReplyAnchorMsgId(null)
+        setDraftMessageId(null)
       }}
     />
   )
@@ -1876,6 +2024,7 @@ export default function Inbox() {
               <button type="button" onClick={async () => {
                 const ids = [...selectedIds]
                 const bulkCount = ids.length
+                const { data: { session } } = await supabase.auth.getSession()
                 for (const tid of ids) {
                   const { error } = await supabase.from('inbox_threads').update({ status: 'archived', updated_at: new Date().toISOString() }).eq('id', tid)
                   if (!error && currentOrg?.id && user?.id) {
@@ -1896,14 +2045,31 @@ export default function Inbox() {
                         if (logErr) console.warn('[Inbox] thread_archived debug log failed', logErr)
                       })
                   }
+                  if (session?.access_token) {
+                    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+                      body: JSON.stringify({ threadId: tid, action: 'trash' }),
+                    }).catch(() => {})
+                  }
                 }
                 setSelectedIds(new Set()); fetchThreads(); toast(`${bulkCount} thread(s) trashed`)
               }} className="px-2 py-1 rounded text-[11px] font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30">Trash</button>
               <button type="button" onClick={async () => {
-                for (const tid of selectedIds) {
+                const ids = [...selectedIds]
+                const bulkCount = ids.length
+                const { data: { session } } = await supabase.auth.getSession()
+                for (const tid of ids) {
                   await supabase.from('inbox_threads').update({ status: 'closed', updated_at: new Date().toISOString() }).eq('id', tid)
+                  if (session?.access_token) {
+                    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+                      body: JSON.stringify({ threadId: tid, action: 'archive' }),
+                    }).catch(() => {})
+                  }
                 }
-                setSelectedIds(new Set()); fetchThreads(); toast(`${selectedIds.size} thread(s) closed`)
+                setSelectedIds(new Set()); fetchThreads(); toast(`${bulkCount} thread(s) closed`)
               }} className="px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">Close</button>
               <button type="button" onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-500 hover:text-gray-300 ml-auto">Cancel</button>
             </div>
@@ -2009,7 +2175,7 @@ export default function Inbox() {
                 }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                 <h2 className="text-white font-medium text-sm">New message</h2>
               </div>
-              <div className="flex-1 overflow-y-auto p-4">{renderReplyForm(true)}</div>
+              <div className="flex-1 min-h-0 p-4">{renderReplyForm(true)}</div>
             </div>
           ) : selectedThread && (
             <>
@@ -2206,6 +2372,14 @@ export default function Inbox() {
                       const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
                       const isDraftMsg = !!m.is_draft
+                      const isEditingThisDraft = draftMessageId === m.id && replyMode !== null && replyMode !== 'compose'
+                      if (isEditingThisDraft) {
+                        return (
+                          <React.Fragment key={`msg-${m.id}`}>
+                            {renderReplyForm(false)}
+                          </React.Fragment>
+                        )
+                      }
                       return (<React.Fragment key={`msg-${m.id}`}>
                         <article className={`rounded-lg border overflow-hidden group/msg ${isDraftMsg ? 'border-yellow-500/50 bg-yellow-500/5' : 'border-border'}`}>
                           <header onClick={() => setExpandedMsgs(prev => { const n = new Set(prev); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n })}
@@ -2253,12 +2427,15 @@ export default function Inbox() {
                                   setReplySubject(selectedThread?.subject ?? '')
                                   const { content: draftContent, html: draftIsHtml } = cleanMessageBody(m)
                                   setReplyHtml(draftIsHtml ? draftContent : draftContent.replace(/\n/g, '<br/>'))
-                                  setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
+                                  setReplyAttachments([]); setReplyAnchorMsgId(m.id); setDraftMessageId(m.id); setReplyMode('reply')
                                 }} className="p-1 rounded text-yellow-500/70 hover:text-yellow-400 hover:bg-surface-muted">
                                   <Pencil className="w-3.5 h-3.5" />
                                 </button>
                                 <button type="button" title="Delete draft" onClick={async (e) => { e.stopPropagation()
                                   if (!confirm('Delete this draft message?')) return
+                                  if (m.external_uid != null && m.imap_account_id) {
+                                    await syncDraftOnServer(m.id, 'delete').catch(() => {})
+                                  }
                                   const { error: delErr } = await supabase.from('inbox_messages').delete().eq('id', m.id)
                                   if (delErr) { alert('Failed to delete draft: ' + delErr.message); return }
                                   setMessages(prev => prev.filter(msg => msg.id !== m.id))
@@ -2269,6 +2446,7 @@ export default function Inbox() {
                               <button type="button" title="Reply" onClick={(e) => { e.stopPropagation()
                                 const fromAddress = findFromAddressForReply(m)
                                 if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
+                                setDraftMessageId(null)
                                 setReplyTo(m.from_identifier); setReplyCc(''); setReplyBcc('')
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Re: ') ? selectedThread!.subject! : 'Re: ' + (selectedThread?.subject ?? ''))
                                 setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([]); setReplyAnchorMsgId(m.id); setReplyMode('reply')
@@ -2276,6 +2454,7 @@ export default function Inbox() {
                               <button type="button" title="Reply All" onClick={(e) => { e.stopPropagation()
                                 const fromAddress = findFromAddressForReply(m)
                                 if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
+                                setDraftMessageId(null)
                                 const { to, cc } = getThreadRecipientsForReplyAll(m)
                                 setReplyTo(to)
                                 setReplyCc(cc)
@@ -2287,6 +2466,7 @@ export default function Inbox() {
                               <button type="button" title="Forward" onClick={(e) => { e.stopPropagation()
                                 const fromAddress = findFromAddressForReply(m)
                                 if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
+                                setDraftMessageId(null)
                                 setReplyTo(''); setReplyCc(''); setReplyBcc(''); setShowCcBcc(false)
                                 setReplySubject((selectedThread?.subject ?? '').startsWith('Fwd: ') ? selectedThread!.subject! : 'Fwd: ' + (selectedThread?.subject ?? ''))
                                 const { content: fwdContent } = cleanMessageBody(m)
@@ -2320,8 +2500,8 @@ export default function Inbox() {
                             </div>
                           )}
                         </article>
-                        {/* Render reply form directly below the anchored message */}
-                        {replyMode && replyMode !== 'compose' && replyAnchorMsgId === m.id && (
+                        {/* Render reply form directly below the anchored message (not when editing a draft inline) */}
+                        {replyMode && replyMode !== 'compose' && replyAnchorMsgId === m.id && draftMessageId !== m.id && (
                           <div className="mt-2">{renderReplyForm(replyMode === 'forward')}</div>
                         )}
                       </React.Fragment>)

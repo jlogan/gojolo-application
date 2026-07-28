@@ -412,6 +412,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       if (p.isDraft) {
         console.log('[refresh-email] draft envelope uid=', p.uid, '— checking for matching app row to flag')
         const draftCutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
+        const draftWindowEnd = new Date(p.date.getTime() + 5 * 60 * 1000).toISOString()
         const draftDirection = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
         const draftMailbox = deriveMailboxAddress(draftDirection, p.toAddr, p.fromAddr, acc.email)
         let draftThreadId: string | undefined
@@ -428,20 +429,35 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
           }
         }
         if (draftThreadId) {
-          const { data: draftRows } = await service.from('inbox_messages')
+          const { data: sentOutbound } = await service.from('inbox_messages')
             .select('id')
             .eq('thread_id', draftThreadId)
             .eq('imap_account_id', acc.id)
             .eq('direction', 'outbound')
-            .is('external_uid', null)
+            .eq('is_draft', false)
+            .not('external_uid', 'is', null)
             .gte('received_at', draftCutoff)
             .limit(1)
-          if (draftRows?.length) {
-            const draftRowId = (draftRows[0] as { id: string }).id
-            console.log('[refresh-email] marking app row', draftRowId, 'as is_draft=true (uid=', p.uid, ')')
-            await service.from('inbox_messages')
-              .update({ external_uid: p.uid, is_draft: true })
-              .eq('id', draftRowId)
+          if (sentOutbound?.length) {
+            console.log('[refresh-email] skip stale draft uid=', p.uid, '— thread already has sent outbound')
+          } else {
+            const { data: draftRows } = await service.from('inbox_messages')
+              .select('id')
+              .eq('thread_id', draftThreadId)
+              .eq('imap_account_id', acc.id)
+              .eq('direction', 'outbound')
+              .eq('is_draft', true)
+              .is('external_uid', null)
+              .gte('received_at', draftCutoff)
+              .lte('received_at', draftWindowEnd)
+              .limit(1)
+            if (draftRows?.length) {
+              const draftRowId = (draftRows[0] as { id: string }).id
+              console.log('[refresh-email] marking app row', draftRowId, 'as is_draft=true (uid=', p.uid, ')')
+              await service.from('inbox_messages')
+                .update({ external_uid: p.uid, is_draft: true })
+                .eq('id', draftRowId)
+            }
           }
         }
         continue
@@ -528,7 +544,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
           console.log('[refresh-email] outbound dedup: updating existing msg', existingId, 'threadId=', tid, 'uid=', p.uid)
           await service
             .from('inbox_messages')
-            .update({ external_id: p.externalId, external_uid: p.uid })
+            .update({ external_id: p.externalId, external_uid: p.uid, is_draft: false })
             .eq('id', existingId)
           const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
             p_thread_id: tid,

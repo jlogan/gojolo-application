@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { ChevronDown, Paperclip, Send } from 'lucide-react'
+import { ChevronDown, Paperclip, Save, Send } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
 
 export type SendableAddress = { accountId: string; email: string; label: string }
@@ -34,11 +34,19 @@ type Props = {
   onSend: () => void
   sending?: boolean
   sendDisabled?: boolean
+  saveDraftDisabled?: boolean
   sendLabel?: string
   sendingLabel?: string
   sentLabel?: string
   onCancel?: () => void
   cancelLabel?: string
+  onSaveDraft?: () => void
+  savingDraft?: boolean
+  saveDraftLabel?: string
+  savingDraftLabel?: string
+  showSaveDraft?: boolean
+  /** Pin Send / Save draft / Cancel in a visible footer (standalone compose). */
+  stickyActions?: boolean
   autofocus?: boolean
   minHeight?: string
 }
@@ -72,11 +80,18 @@ export default function EmailComposeForm({
   onSend,
   sending = false,
   sendDisabled = false,
+  saveDraftDisabled = false,
   sendLabel = 'Send',
   sendingLabel = 'Sending…',
   sentLabel,
   onCancel,
   cancelLabel = 'Cancel',
+  onSaveDraft,
+  savingDraft = false,
+  saveDraftLabel = 'Save draft',
+  savingDraftLabel = 'Saving…',
+  showSaveDraft = false,
+  stickyActions = false,
   autofocus = true,
   minHeight = 'min-h-[240px]',
 }: Props) {
@@ -112,15 +127,53 @@ export default function EmailComposeForm({
     onToChange(Array.from(next).join(', '))
   }
 
-  return (
-    <div
-      className={`rounded-lg border ${isDragging ? 'border-accent bg-accent/5' : 'border-accent/30 bg-surface-elevated'} p-4 space-y-3`}
-      onDrop={handleDrop}
-      onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
-      onDragLeave={() => setIsDragging(false)}
-    >
-      {isDragging && <div className="text-center py-4 text-accent text-sm font-medium">Drop files to attach</div>}
+  const actionBar = (
+    <div className={`flex items-center gap-2 ${stickyActions ? 'px-4 py-3 border-t border-border bg-surface-elevated shrink-0' : 'pt-1'}`}>
+      <button
+        type="button"
+        onClick={onSend}
+        disabled={sending || sendDisabled}
+        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+      >
+        <Send className="w-4 h-4" /> {sending ? sendingLabel : (sentLabel ?? sendLabel)}
+      </button>
+      {onAttachmentsChange && (
+        <>
+          <button type="button" onClick={() => fileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
+            <Paperclip className="w-4 h-4" />
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) appendFiles(Array.from(e.target.files))
+              e.target.value = ''
+            }}
+          />
+        </>
+      )}
+      {showSaveDraft && onSaveDraft && (
+        <button
+          type="button"
+          onClick={onSaveDraft}
+          disabled={savingDraft || sending || saveDraftDisabled}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-yellow-500/40 text-yellow-400 text-sm font-medium hover:bg-yellow-500/10 disabled:opacity-50"
+        >
+          <Save className="w-4 h-4" /> {savingDraft ? savingDraftLabel : saveDraftLabel}
+        </button>
+      )}
+      {onCancel && (
+        <button type="button" onClick={onCancel} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">
+          {cancelLabel}
+        </button>
+      )}
+    </div>
+  )
 
+  const formFields = (
+    <>
       <div className="flex items-center justify-between text-xs">
         <span className="text-accent font-medium">{modeLabel}</span>
       </div>
@@ -277,39 +330,29 @@ export default function EmailComposeForm({
           </div>
         </div>
       )}
+    </>
+  )
 
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onSend}
-          disabled={sending || sendDisabled}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
-        >
-          <Send className="w-4 h-4" /> {sending ? sendingLabel : (sentLabel ?? sendLabel)}
-        </button>
-        {onAttachmentsChange && (
-          <>
-            <button type="button" onClick={() => fileRef.current?.click()} className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-surface-muted" title="Attach file">
-              <Paperclip className="w-4 h-4" />
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) appendFiles(Array.from(e.target.files))
-                e.target.value = ''
-              }}
-            />
-          </>
-        )}
-        {onCancel && (
-          <button type="button" onClick={onCancel} className="px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted ml-auto">
-            {cancelLabel}
-          </button>
-        )}
-      </div>
+  return (
+    <div
+      className={`rounded-lg border ${isDragging ? 'border-accent bg-accent/5' : 'border-accent/30 bg-surface-elevated'} ${stickyActions ? 'flex flex-col min-h-0 h-full overflow-hidden' : ''}`}
+      onDrop={handleDrop}
+      onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
+      onDragLeave={() => setIsDragging(false)}
+    >
+      {isDragging && <div className="text-center py-4 text-accent text-sm font-medium">Drop files to attach</div>}
+
+      {stickyActions ? (
+        <>
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">{formFields}</div>
+          {actionBar}
+        </>
+      ) : (
+        <div className="p-4 space-y-3">
+          {formFields}
+          {actionBar}
+        </div>
+      )}
     </div>
   )
 }
