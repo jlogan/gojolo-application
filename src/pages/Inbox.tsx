@@ -10,7 +10,7 @@ import {
   Search, User, Link2, Pencil, Trash2, FileText, ChevronDown, Mailbox,
 } from 'lucide-react'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
-import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
+import { sanitizeEmailHtml, buildEmailSrcDoc, prepareDraftHtmlForDisplay } from '@/lib/emailSanitizer'
 import { parseMentionUserIds } from '@/lib/mentionUtils'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -2506,12 +2506,13 @@ export default function Inbox() {
                         )
                       }
                       const m = item.data
+                      const isDraftMsg = !!m.is_draft
                       const isExpanded = m.id === lastMsgId || expandedMsgs.has(m.id)
                       const { html, content } = isExpanded ? cleanMessageBody(m) : { html: false, content: '' }
-                      const sanitized = html ? sanitizeEmailHtml(content) : content
+                      const displayContent = isDraftMsg && html ? prepareDraftHtmlForDisplay(content) : content
+                      const sanitized = html ? sanitizeEmailHtml(displayContent) : displayContent
                       const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
-                      const isDraftMsg = !!m.is_draft
                       const isEditingThisDraft = draftMessageId === m.id && replyMode !== null && replyMode !== 'compose'
                       if (isEditingThisDraft) {
                         return (
@@ -2566,7 +2567,8 @@ export default function Inbox() {
                                   setReplyTo(m.to_identifier ?? ''); setReplyCc(m.cc ?? ''); setReplyBcc(''); setShowCcBcc(!!(m.cc?.trim()))
                                   setReplySubject(selectedThread?.subject ?? '')
                                   const { content: draftContent, html: draftIsHtml } = cleanMessageBody(m)
-                                  setReplyHtml(draftIsHtml ? draftContent : draftContent.replace(/\n/g, '<br/>'))
+                                  const normalizedDraft = draftIsHtml ? prepareDraftHtmlForDisplay(draftContent) : draftContent
+                                  setReplyHtml(draftIsHtml ? normalizedDraft : normalizedDraft.replace(/\n/g, '<br/>'))
                                   setReplyAttachments([]); setReplyAnchorMsgId(m.id); setDraftMessageId(m.id); setReplyMode('reply')
                                 }} className="p-1 rounded text-yellow-500/70 hover:text-yellow-400 hover:bg-surface-muted">
                                   <Pencil className="w-3.5 h-3.5" />
@@ -2608,7 +2610,7 @@ export default function Inbox() {
                             </div>}
                           </header>
                           {isExpanded && (html ? (() => {
-                            const { srcDoc, isDark } = buildEmailSrcDoc(sanitized)
+                            const { srcDoc, isDark } = buildEmailSrcDoc(sanitized, isDraftMsg ? { forceDark: true } : undefined)
                             return (
                               <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
                                 <iframe title="Email" srcDoc={srcDoc}

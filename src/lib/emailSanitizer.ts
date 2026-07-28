@@ -124,13 +124,96 @@ function hasOwnStyling(html: string): boolean {
   return false
 }
 
+const DOC_LEVEL_STYLE_PROPS = new Set([
+  'background',
+  'background-color',
+  'background-image',
+  'color',
+  'font',
+  'font-family',
+  'font-size',
+])
+
+const DRAFT_WRAPPER_TAGS = new Set(['HTML', 'BODY', 'DIV', 'SPAN', 'CENTER'])
+
+function cleanDocumentLevelStyles(style: string): string {
+  return style
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((decl) => {
+      const prop = decl.split(':')[0]?.trim().toLowerCase()
+      return prop && !DOC_LEVEL_STYLE_PROPS.has(prop)
+    })
+    .join('; ')
+}
+
+function stripDocumentChromeFromElement(el: Element): void {
+  el.removeAttribute('bgcolor')
+  el.removeAttribute('background')
+  el.removeAttribute('text')
+  if (el.hasAttribute('style')) {
+    const cleaned = cleanDocumentLevelStyles(el.getAttribute('style') ?? '')
+    if (cleaned) el.setAttribute('style', cleaned)
+    else el.removeAttribute('style')
+  }
+}
+
+function canUnwrapDraftWrapper(el: Element): boolean {
+  if (!DRAFT_WRAPPER_TAGS.has(el.tagName)) return false
+  stripDocumentChromeFromElement(el)
+  const keepAttrs = new Set(['dir', 'lang', 'align', 'class', 'id'])
+  for (const attr of el.attributes) {
+    if (!keepAttrs.has(attr.name.toLowerCase())) return false
+  }
+  return true
+}
+
+/**
+ * Strip full email document chrome from provider-synced draft HTML so display
+ * and TipTap editing use content fragments instead of Gmail/Outlook wrappers.
+ */
+export function prepareDraftHtmlForDisplay(rawHtml: string): string {
+  const trimmed = rawHtml?.trim()
+  if (!trimmed) return rawHtml ?? ''
+
+  const doc = new DOMParser().parseFromString(trimmed, 'text/html')
+
+  doc.querySelectorAll('style').forEach((el) => el.remove())
+  doc.querySelectorAll('link[rel="stylesheet"]').forEach((el) => el.remove())
+  doc.querySelectorAll('meta').forEach((el) => el.remove())
+
+  const node = doc.body
+  stripDocumentChromeFromElement(node)
+
+  while (node.children.length === 1 && canUnwrapDraftWrapper(node.children[0])) {
+    const wrapper = node.children[0]
+    const parent = wrapper.parentElement!
+    while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper)
+    parent.removeChild(wrapper)
+  }
+
+  for (const child of [...node.children]) {
+    if (DRAFT_WRAPPER_TAGS.has(child.tagName)) {
+      stripDocumentChromeFromElement(child)
+    }
+  }
+
+  const result = node.innerHTML.trim()
+  return result || trimmed
+}
+
 /**
  * Build the full srcDoc for the email iframe.
  * - Rich HTML with own styling → white background, preserve email's CSS
  * - Plain/simple HTML → dark background with light text (matches app theme)
+ * - forceDark → always use dark app theme (draft bubbles)
  */
-export function buildEmailSrcDoc(sanitizedHtml: string): { srcDoc: string; isDark: boolean } {
-  const rich = hasOwnStyling(sanitizedHtml)
+export function buildEmailSrcDoc(
+  sanitizedHtml: string,
+  options?: { forceDark?: boolean },
+): { srcDoc: string; isDark: boolean } {
+  const rich = !options?.forceDark && hasOwnStyling(sanitizedHtml)
 
   if (rich) {
     return {
