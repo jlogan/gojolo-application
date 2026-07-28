@@ -23,6 +23,8 @@ type InboxThread = {
   inbox_thread_assignments?: ThreadAssignment[] | null
   /** Message count (from mergeInboxMessageCounts / inbox_message_counts_by_thread RPC) */
   inbox_messages?: { count: number }[] | null
+  /** True when thread has at least one is_draft inbox_messages row (from search_inbox_threads). */
+  has_draft?: boolean
 }
 type InboxMessage = {
   id: string; thread_id: string; channel: string; direction: string
@@ -47,6 +49,7 @@ type ReadStatus = { thread_id: string; last_read_at: string }
 type SearchInboxThreadRow = Omit<InboxThread, 'inbox_thread_assignments' | 'inbox_messages'> & {
   inbox_thread_assignments: ThreadAssignment[] | null
   message_count: number | string | null
+  has_draft?: boolean | null
 }
 
 /** PostgREST list select without embedded inbox_messages(count) — counts come from inbox_message_counts_by_thread RPC. */
@@ -388,6 +391,7 @@ export default function Inbox() {
     mailbox_address: row.mailbox_address,
     inbox_thread_assignments: Array.isArray(row.inbox_thread_assignments) ? row.inbox_thread_assignments : [],
     inbox_messages: [{ count: Number(row.message_count ?? 0) }],
+    has_draft: !!row.has_draft,
   }))
 
   const initialLoadDone = useRef(false)
@@ -968,7 +972,7 @@ export default function Inbox() {
   const threadMatchesFilter = (t: InboxThread) => {
     if (mailboxFilterId && t.imap_account_id !== mailboxFilterId) return false
     if (filter === 'trash') return t.status === 'archived'
-    if (filter === 'all') return t.status !== 'archived'
+    if (filter === 'all') return t.status !== 'archived' || !!t.has_draft
     if (filter === 'closed') return t.status === 'closed'
     if (filter === 'inbox') return t.status === 'open'
     if (filter === 'assigned') return t.status === 'open'

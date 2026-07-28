@@ -11,8 +11,11 @@ import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
   DraftsEnvelopeCache,
   handleGmailDraftRevision,
+  healEmptyThreadFromDrafts,
   healExistingUidPhantomIfNeeded,
+  healRecentEmptyThreadsFromDrafts,
   normalizeDraftHtml,
+  shouldSkipArchiveForDrafts,
 } from '../_shared/inboxGmailDraftIngest.ts'
 import {
   buildRefThreadMap,
@@ -466,6 +469,31 @@ serve(async (req) => {
                 }
               } else {
                 console.log('[imap-sync] backfill found no matching messages in range', backfillRange)
+                const draftsCacheForBackfill = new DraftsEnvelopeCache(client, acc.host)
+                try {
+                  const healResult = await healEmptyThreadFromDrafts(
+                    service,
+                    client,
+                    acc.host,
+                    acc.id,
+                    acc.org_id,
+                    {
+                      id: backfillThreadId,
+                      subject: bt.subject,
+                      from_address: bt.from_address,
+                      status: null,
+                      mailbox_address: bt.mailbox_address,
+                    },
+                    draftsCacheForBackfill,
+                    `[imap-sync] account ${acc.id}`,
+                  )
+                  if (healResult.healed) {
+                    totalMessages += 1
+                    console.log('[imap-sync] backfill healed empty thread from Drafts', backfillThreadId, healResult.messageId)
+                  }
+                } finally {
+                  await draftsCacheForBackfill.release()
+                }
               }
             } catch (backfillErr) {
               const msg = backfillErr instanceof Error ? backfillErr.message : String(backfillErr)
@@ -574,7 +602,22 @@ serve(async (req) => {
 
       if (newMsgs.length === 0) {
         console.log('[imap-sync] account', acc.id, 'no new messages — updating last_fetch_at only')
-        // Nothing new — skip all processing
+        try {
+          const healed = await healRecentEmptyThreadsFromDrafts(
+            service,
+            client,
+            acc.host,
+            acc.id,
+            acc.org_id,
+            `[imap-sync] account ${acc.id}`,
+          )
+          if (healed > 0) {
+            totalMessages += healed
+            console.log('[imap-sync] account', acc.id, 'healed', healed, 'empty thread(s) from Drafts')
+          }
+        } catch (healErr) {
+          console.log('[imap-sync] account', acc.id, 'empty-thread draft heal error:', (healErr as Error).message)
+        }
         await service.from('imap_accounts').update({ last_fetch_at: new Date().toISOString(), last_error: null }).eq('id', acc.id)
         if (lock) await lock.release()
         lock = null
@@ -808,8 +851,6 @@ serve(async (req) => {
         })
       }
 
-      await draftsCache.release()
-
       // Last-line defense: same external_uid twice in insertRows would violate idx_inbox_messages_imap_dedup
       const seenInsertUid = new Set<number>()
       const rowsToInsert = insertRows.filter((r) => {
@@ -946,17 +987,21 @@ serve(async (req) => {
       // Check recent open threads — if their UIDs no longer exist, mark as archived
       if (highestUid > 0) {
         const { data: recentOpenThreads } = await service.from('inbox_threads')
-          .select('id, user_restored_at, status').eq('org_id', acc.org_id).eq('imap_account_id', acc.id)
+          .select('id, user_restored_at, status, subject, from_address').eq('org_id', acc.org_id).eq('imap_account_id', acc.id)
           .eq('status', 'open').order('last_message_at', { ascending: false }).limit(20)
 
-        for (const t of (recentOpenThreads ?? []) as { id: string; user_restored_at: string | null; status: string }[]) {
+        for (const t of (recentOpenThreads ?? []) as { id: string; user_restored_at: string | null; status: string; subject: string | null; from_address: string | null }[]) {
           if (t.user_restored_at && t.status !== 'archived') {
             console.log('[imap-sync] account', acc.id, 'skip uid-missing archive: user_restored_at set', { threadId: t.id })
             continue
           }
+          if (await shouldSkipArchiveForDrafts(service, draftsCache, acc.host, t.id, acc.id, t.subject, t.from_address)) {
+            console.log('[imap-sync] account', acc.id, 'skip uid-missing archive: draft row or Drafts match', { threadId: t.id })
+            continue
+          }
           const { data: threadMsgs } = await service.from('inbox_messages')
-            .select('external_uid').eq('thread_id', t.id).eq('imap_account_id', acc.id)
-            .not('external_uid', 'is', null).limit(1)
+            .select('external_uid, is_draft').eq('thread_id', t.id).eq('imap_account_id', acc.id)
+            .not('external_uid', 'is', null).eq('is_draft', false).limit(1)
           const uid = (threadMsgs?.[0] as { external_uid: number } | undefined)?.external_uid
           if (uid) {
             try {
@@ -983,6 +1028,25 @@ serve(async (req) => {
           }
         }
       }
+
+      try {
+        const healed = await healRecentEmptyThreadsFromDrafts(
+          service,
+          client,
+          acc.host,
+          acc.id,
+          acc.org_id,
+          `[imap-sync] account ${acc.id}`,
+        )
+        if (healed > 0) {
+          totalMessages += healed
+          console.log('[imap-sync] account', acc.id, 'healed', healed, 'empty thread(s) from Drafts after sync')
+        }
+      } catch (healErr) {
+        console.log('[imap-sync] account', acc.id, 'empty-thread draft heal error:', (healErr as Error).message)
+      }
+
+      await draftsCache.release()
 
       if (lock) await lock.release()
       lock = null

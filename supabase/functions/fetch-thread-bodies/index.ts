@@ -4,7 +4,8 @@
  * - If body/html empty (non-draft): fetches from IMAP All Mail/INBOX (by external_uid), parses, stores body + attachments
  * - For is_draft rows: verifies each still exists in the provider Drafts mailbox; tries external_uid first,
  *   then searches recent Drafts messages by subject/recipients/body snippet; refreshes body and external_uid
- *   when matched, or deletes the DB row only when no matching Drafts message exists
+ *   when matched, or deletes the DB row only when Drafts was checked successfully and no likely match exists
+ * - Empty threads: attempts self-heal from Gmail Drafts before returning
  *
  * POST { threadId } — returns { messages: [{ id, body, htmlBody, attachments, from_identifier?, to_identifier?, cc? }], deletedMessageIds?, hasMore? }
  * Requires: ENCRYPTION_KEY, SUPABASE_SERVICE_ROLE_KEY. Auth: user must have access to thread's org.
@@ -22,6 +23,7 @@ import { normalizeEmail, normalizeSubject } from '../_shared/inboxThreadResolve.
 import {
   DraftsEnvelopeCache,
   getDraftsMailboxPath,
+  healEmptyThreadFromDrafts,
   healPhantomOutboundAsDraft,
   normalizeDraftHtml,
   scoreDraftEnvelopeMatch,
@@ -132,21 +134,24 @@ function bodySnippetsMatch(
 async function fetchRecentDraftEnvelopes(
   client: ImapFlow,
   draftsPath: string,
-): Promise<Array<{ uid: number; envelope: ImapEnvelope }>> {
+): Promise<{ envelopes: Array<{ uid: number; envelope: ImapEnvelope }>; verified: boolean }> {
   try {
     const status = await client.status(draftsPath, { uidNext: true, messages: true })
     const uidNext = (status?.uidNext as number) ?? 1
     const msgCount = (status?.messages as number) ?? 0
-    if (msgCount === 0) return []
+    if (msgCount === 0) return { envelopes: [], verified: true }
     const start = Math.max(1, uidNext - RECENT_DRAFTS_LIMIT)
     const envelopes = await client.fetchAll(`${start}:*`, { envelope: true, uid: true }, { uid: true })
-    return envelopes.map((e) => ({
-      uid: e.uid as number,
-      envelope: (e.envelope ?? {}) as ImapEnvelope,
-    }))
+    return {
+      envelopes: envelopes.map((e) => ({
+        uid: e.uid as number,
+        envelope: (e.envelope ?? {}) as ImapEnvelope,
+      })),
+      verified: true,
+    }
   } catch (err) {
     console.log('[fetch-thread-bodies] recent drafts envelope fetch failed', { error: (err as Error).message })
-    return []
+    return { envelopes: [], verified: false }
   }
 }
 
@@ -178,7 +183,7 @@ Deno.serve(async (req: Request) => {
   // Get thread and verify user has access
   const { data: thread, error: threadErr } = await service
     .from('inbox_threads')
-    .select('id, org_id, subject')
+    .select('id, org_id, subject, from_address, status, imap_account_id, mailbox_address')
     .eq('id', threadId)
     .single()
   if (threadErr || !thread) {
@@ -206,11 +211,79 @@ Deno.serve(async (req: Request) => {
   }
 
   // Get all messages for thread (ordered by received_at)
-  const { data: messages, error: msgErr } = await service
+  let { data: messages, error: msgErr } = await service
     .from('inbox_messages')
     .select('id, external_uid, imap_account_id, thread_id, body, html_body, direction, is_draft, from_identifier, to_identifier, cc')
     .eq('thread_id', threadId)
     .order('received_at', { ascending: true })
+
+  // Self-heal empty thread from Gmail Drafts when draft reconcile deleted the last row.
+  if (!msgErr && (!messages || messages.length === 0) && encryptionKeyHex && encryptionKeyHex.length >= 64) {
+    const threadRow = thread as {
+      org_id: string
+      subject: string | null
+      from_address: string | null
+      status: string | null
+      imap_account_id: string | null
+      mailbox_address: string | null
+    }
+    let healAccountId = threadRow.imap_account_id
+    if (!healAccountId) {
+      const { data: accPick } = await service.from('imap_accounts')
+        .select('id').eq('org_id', threadRow.org_id).eq('is_active', true).limit(1)
+      healAccountId = (accPick as { id: string }[] | null)?.[0]?.id ?? null
+    }
+    if (healAccountId) {
+      const { data: acc } = await service
+        .from('imap_accounts')
+        .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted')
+        .eq('id', healAccountId)
+        .single()
+      if (acc) {
+        try {
+          const password = await decrypt(acc.credentials_encrypted as string, encryptionKeyHex.slice(0, 64))
+          const secure = (acc.imap_encryption as string) === 'ssl' || (acc.imap_encryption as string) === 'tls'
+          const healClient = new ImapFlow({
+            host: acc.host as string,
+            port: Number(acc.port) || 993,
+            secure,
+            auth: { user: acc.imap_username as string, pass: password },
+            logger: false,
+          })
+          await healClient.connect()
+          const healResult = await healEmptyThreadFromDrafts(
+            service,
+            healClient,
+            acc.host as string,
+            healAccountId,
+            threadRow.org_id,
+            {
+              id: threadId,
+              subject: threadRow.subject,
+              from_address: threadRow.from_address,
+              status: threadRow.status,
+              mailbox_address: threadRow.mailbox_address,
+            },
+            undefined,
+            '[fetch-thread-bodies]',
+          )
+          await healClient.logout().catch(() => { try { healClient.close() } catch { /* ignore */ } })
+          if (healResult.healed) {
+            const reloaded = await service
+              .from('inbox_messages')
+              .select('id, external_uid, imap_account_id, thread_id, body, html_body, direction, is_draft, from_identifier, to_identifier, cc')
+              .eq('thread_id', threadId)
+              .order('received_at', { ascending: true })
+            messages = reloaded.data
+            msgErr = reloaded.error
+            console.log('[fetch-thread-bodies] empty thread healed from Drafts', { threadId, messageId: healResult.messageId })
+          }
+        } catch (healErr) {
+          console.log('[fetch-thread-bodies] empty thread heal failed', { threadId, error: (healErr as Error).message })
+        }
+      }
+    }
+  }
 
   if (msgErr || !messages?.length) {
     console.log('[fetch-thread-bodies] no messages', { threadId, error: msgErr?.message })
@@ -649,6 +722,7 @@ Deno.serve(async (req: Request) => {
         console.log('[fetch-thread-bodies] drafts mailbox lock acquired', { accId, mailbox: draftsPath, lockMs: Math.round(performance.now() - tDraftLock) })
         const claimedDraftUids = new Set<number>()
         let recentDraftEnvelopes: Array<{ uid: number; envelope: ImapEnvelope }> | null = null
+        let draftsMailboxVerified = false
         try {
           for (const msg of draftMsgs) {
             const tDraftMsg = performance.now()
@@ -659,12 +733,15 @@ Deno.serve(async (req: Request) => {
             source = fetched[0]?.source as Uint8Array | undefined
             if (source) {
               resolvedUid = msg.external_uid
+              draftsMailboxVerified = true
               console.log('[fetch-thread-bodies] draft reconcile fetch by uid', { threadId, msgId: msg.id, uid: msg.external_uid, sourceBytes: source.byteLength, fetchMs: Math.round(performance.now() - tDraftMsg) })
             } else {
               console.log('[fetch-thread-bodies] draft uid not in Drafts mailbox — searching recent drafts', { threadId, msgId: msg.id, staleUid: msg.external_uid })
               if (!recentDraftEnvelopes) {
-                recentDraftEnvelopes = await fetchRecentDraftEnvelopes(client, draftsPath)
-                console.log('[fetch-thread-bodies] recent drafts loaded for fallback search', { accId, count: recentDraftEnvelopes.length })
+                const recent = await fetchRecentDraftEnvelopes(client, draftsPath)
+                recentDraftEnvelopes = recent.envelopes
+                draftsMailboxVerified = recent.verified
+                console.log('[fetch-thread-bodies] recent drafts loaded for fallback search', { accId, count: recentDraftEnvelopes.length, verified: recent.verified })
               }
               const scored = recentDraftEnvelopes
                 .filter((c) => !claimedDraftUids.has(c.uid))
@@ -692,12 +769,38 @@ Deno.serve(async (req: Request) => {
                 console.log('[fetch-thread-bodies] draft matched in Drafts fallback search', { threadId, msgId: msg.id, staleUid: msg.external_uid, matchedUid: candidate.uid, score: candidate.score })
                 break
               }
+
+              // Likely server draft exists (envelope match) — rematch even when body snippet differs.
+              if (resolvedUid == null && scored.length > 0) {
+                const likely = scored[0]
+                const likelyFetched = await client.fetchAll(String(likely.uid), { source: true, uid: true }, { uid: true })
+                const likelySource = likelyFetched[0]?.source as Uint8Array | undefined
+                if (likelySource) {
+                  resolvedUid = likely.uid
+                  source = likelySource
+                  console.log('[fetch-thread-bodies] draft rematched by envelope score (no body confirm)', { threadId, msgId: msg.id, staleUid: msg.external_uid, matchedUid: likely.uid, score: likely.score })
+                }
+              }
             }
 
             if (resolvedUid != null && source) {
               const ok = await applyDraftReconcile(msg, source, resolvedUid)
               if (ok) claimedDraftUids.add(resolvedUid)
               console.log('[fetch-thread-bodies] draft reconciled', { threadId, msgId: msg.id, uid: resolvedUid, totalMs: Math.round(performance.now() - tDraftMsg) })
+              continue
+            }
+
+            const hasLikelyDraft = (recentDraftEnvelopes ?? [])
+              .some((c) => scoreDraftForRow(msg, c.envelope, threadSubjectNorm) >= DRAFT_MATCH_MIN_SCORE)
+
+            if (!draftsMailboxVerified || hasLikelyDraft) {
+              console.log('[fetch-thread-bodies] keeping DB draft row — Drafts not verified or likely match exists', {
+                msgId: msg.id,
+                uid: msg.external_uid,
+                draftsMailboxVerified,
+                hasLikelyDraft,
+              })
+              pushExistingDraftResult(msg)
               continue
             }
 

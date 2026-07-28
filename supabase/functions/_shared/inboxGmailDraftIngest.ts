@@ -124,11 +124,19 @@ export function scoreDraftEnvelopeMatch(
 export class DraftsEnvelopeCache {
   private envelopes: Array<{ uid: number; envelope: ImapEnvelope }> | null = null
   private lock: { release: () => Promise<void> } | null = null
+  /** True after Drafts mailbox was opened and enumerated (including empty). False on IMAP failure. */
+  private verified = false
 
   constructor(
     private client: ImapFlow,
     private host: string,
   ) {}
+
+  /** Whether the provider Drafts mailbox was checked successfully this session. */
+  async wasVerified(): Promise<boolean> {
+    await this.ensureLoaded()
+    return this.verified
+  }
 
   async findMatchingDraft(
     fromAddr: string,
@@ -160,6 +168,7 @@ export class DraftsEnvelopeCache {
       const msgCount = (status?.messages as number) ?? 0
       if (msgCount === 0) {
         this.envelopes = []
+        this.verified = true
         return
       }
       const start = Math.max(1, uidNext - RECENT_DRAFTS_LIMIT)
@@ -168,9 +177,11 @@ export class DraftsEnvelopeCache {
         uid: e.uid as number,
         envelope: (e.envelope ?? {}) as ImapEnvelope,
       }))
+      this.verified = true
     } catch (err) {
       console.log('[inboxGmailDraftIngest] recent drafts envelope fetch failed', { error: (err as Error).message })
       this.envelopes = []
+      this.verified = false
     }
   }
 
@@ -542,4 +553,193 @@ export async function healPhantomOutboundAsDraft(
     body: (bodyPayload?.body ?? row.body) as string | null,
     htmlBody: (bodyPayload?.htmlBody ?? row.html_body) as string | null,
   }
+}
+
+/** True when thread still has a local is_draft row (optional account scope). */
+export async function threadHasDraftRow(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  service: { from: (table: string) => any },
+  threadId: string,
+  imapAccountId?: string,
+): Promise<boolean> {
+  let q = service.from('inbox_messages').select('id').eq('thread_id', threadId).eq('is_draft', true).limit(1)
+  if (imapAccountId) q = q.eq('imap_account_id', imapAccountId)
+  const { data } = await q
+  return !!data?.length
+}
+
+/**
+ * Skip archive / stale-UID cleanup when drafts exist locally or a likely Drafts mailbox match exists.
+ */
+export async function shouldSkipArchiveForDrafts(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  service: { from: (table: string) => any },
+  draftsCache: DraftsEnvelopeCache,
+  host: string,
+  threadId: string,
+  imapAccountId: string,
+  threadSubject: string | null,
+  fromAddress: string | null,
+): Promise<boolean> {
+  if (await threadHasDraftRow(service, threadId, imapAccountId)) return true
+  if (!isGmailHost(host)) return false
+  const threadSubjectNorm = normalizeSubject(threadSubject ?? '')
+  const match = await draftsCache.findMatchingDraft(
+    fromAddress ?? '',
+    '',
+    threadSubject ?? '',
+    threadSubjectNorm,
+  )
+  return match != null
+}
+
+export type EmptyThreadDraftHealRow = {
+  id: string
+  subject: string | null
+  from_address: string | null
+  status?: string | null
+  mailbox_address?: string | null
+}
+
+/**
+ * Self-heal: empty thread with a matching Gmail Drafts message → insert is_draft row and reopen thread.
+ */
+export async function healEmptyThreadFromDrafts(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  service: { from: (table: string) => any },
+  client: ImapFlow,
+  host: string,
+  imapAccountId: string,
+  orgId: string,
+  thread: EmptyThreadDraftHealRow,
+  draftsCache?: DraftsEnvelopeCache,
+  logPrefix = '[inboxGmailDraftIngest]',
+): Promise<{ healed: boolean; messageId?: string }> {
+  if (!isGmailHost(host)) return { healed: false }
+
+  const { count } = await service.from('inbox_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('thread_id', thread.id)
+  if ((count ?? 0) > 0) return { healed: false }
+
+  const ownCache = draftsCache ?? new DraftsEnvelopeCache(client, host)
+  const threadSubjectNorm = normalizeSubject(thread.subject ?? '')
+  const fromAddr = (thread.from_address ?? '').trim()
+  const match = await ownCache.findMatchingDraft(fromAddr, '', thread.subject ?? '', threadSubjectNorm)
+  if (!match) {
+    if (!draftsCache) await ownCache.release()
+    return { healed: false }
+  }
+
+  const bodyPayload = await fetchParsedBodyFromMailbox(client, getDraftsMailboxPath(host), match.uid)
+  const draftsPath = getDraftsMailboxPath(host)
+  let toAddr = ''
+  const receivedAt = new Date().toISOString()
+  try {
+    const lock = await client.getMailboxLock(draftsPath)
+    try {
+      const fetched = await client.fetchAll(String(match.uid), { envelope: true, uid: true }, { uid: true })
+      const env = fetched[0]?.envelope as ImapEnvelope | undefined
+      if (env?.to?.length) {
+        toAddr = env.to.map((a) => a.address ?? '').filter(Boolean).join(', ')
+      }
+    } finally {
+      try { await lock.release() } catch { /* ignore */ }
+    }
+  } catch (err) {
+    console.log(logPrefix, 'empty-thread draft heal envelope fetch failed', { threadId: thread.id, error: (err as Error).message })
+  }
+
+  const { data: inserted, error: insErr } = await service.from('inbox_messages')
+    .insert({
+      thread_id: thread.id,
+      channel: 'email',
+      direction: 'outbound',
+      from_identifier: fromAddr || thread.mailbox_address || '',
+      to_identifier: toAddr || null,
+      cc: null,
+      bcc: null,
+      body: bodyPayload?.body ?? null,
+      html_body: bodyPayload?.htmlBody ?? null,
+      external_id: `draft-heal-${imapAccountId}-${match.uid}`,
+      external_uid: match.uid,
+      imap_account_id: imapAccountId,
+      received_at: receivedAt,
+      is_draft: true,
+    })
+    .select('id')
+    .single()
+
+  if (!draftsCache) await ownCache.release()
+
+  if (insErr || !inserted) {
+    console.log(logPrefix, 'empty-thread draft heal insert failed', { threadId: thread.id, error: insErr?.message })
+    return { healed: false }
+  }
+
+  const msgId = (inserted as { id: string }).id
+  const touchPayload: Record<string, unknown> = {
+    last_message_at: receivedAt,
+    updated_at: new Date().toISOString(),
+  }
+  if (thread.status === 'archived' || thread.status === 'closed') {
+    touchPayload.status = 'open'
+  }
+  await service.from('inbox_threads').update(touchPayload).eq('id', thread.id)
+
+  console.log(logPrefix, 'healed empty thread from Gmail Drafts', {
+    threadId: thread.id,
+    messageId: msgId,
+    draftsUid: match.uid,
+    score: match.score,
+    orgId,
+  })
+  return { healed: true, messageId: msgId }
+}
+
+/** Heal recent empty threads for an account (sync-time, no UI required). */
+export async function healRecentEmptyThreadsFromDrafts(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  service: { from: (table: string) => any },
+  client: ImapFlow,
+  host: string,
+  imapAccountId: string,
+  orgId: string,
+  logPrefix: string,
+  limit = 5,
+): Promise<number> {
+  if (!isGmailHost(host)) return 0
+
+  const { data: candidates } = await service.from('inbox_threads')
+    .select('id, subject, from_address, status, mailbox_address')
+    .eq('imap_account_id', imapAccountId)
+    .eq('org_id', orgId)
+    .eq('channel', 'email')
+    .gte('last_message_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    .order('last_message_at', { ascending: false })
+    .limit(Math.min(limit * 3, 15))
+
+  if (!candidates?.length) return 0
+
+  const draftsCache = new DraftsEnvelopeCache(client, host)
+  let healedCount = 0
+  try {
+    for (const row of candidates as EmptyThreadDraftHealRow[]) {
+      if (healedCount >= limit) break
+      const result = await healEmptyThreadFromDrafts(
+        service,
+        client,
+        host,
+        imapAccountId,
+        orgId,
+        row,
+        draftsCache,
+        logPrefix,
+      )
+      if (result.healed) healedCount++
+    }
+  } finally {
+    await draftsCache.release()
+  }
+  return healedCount
 }
