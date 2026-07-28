@@ -9,6 +9,12 @@ import PostalMime from 'npm:postal-mime'
 import { logThreadArchiveDebug } from '../_shared/inboxThreadArchiveLog.ts'
 import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
+  DraftsEnvelopeCache,
+  handleGmailDraftRevision,
+  healExistingUidPhantomIfNeeded,
+  normalizeDraftHtml,
+} from '../_shared/inboxGmailDraftIngest.ts'
+import {
   buildRefThreadMap,
   buildSubjectThreadMap,
   deriveMailboxAddress,
@@ -646,75 +652,43 @@ serve(async (req) => {
       const insertRows: Record<string, unknown>[] = []
       // Track thread IDs created fresh in this batch so we can delete them if insert fails
       const newlyCreatedThreadIds = new Set<string>()
+      const draftsCache = new DraftsEnvelopeCache(client, acc.host)
+      const draftIngestCtx = {
+        service,
+        client,
+        imapAccountId: acc.id,
+        orgId: acc.org_id,
+        host: acc.host,
+        accountEmail: acc.email ?? '',
+        ourAddressesSet,
+        refMap,
+        subjectThreadMap,
+        logPrefix: `[imap-sync] account ${acc.id}`,
+      }
 
       for (const p of parsed) {
         if (p.uid > highestUid) highestUid = p.uid
 
         if (uidsAlreadyInDb.has(p.uid)) {
+          const directionEarly = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+          if (directionEarly === 'outbound' && !p.isDraft) {
+            await healExistingUidPhantomIfNeeded(draftIngestCtx, p, draftsCache)
+          }
           console.log('[imap-sync] account', acc.id, 'skip envelope: UID already in DB (cursor catch-up)', p.uid)
           continue
         }
 
-        // Skip Gmail draft autosaves — each draft revision is a separate UID/Message-ID in All Mail
-        // and would otherwise be ingested as duplicate outbound messages. The real sent copy has no \Draft flag.
-        // However: if there is an app-inserted row with no external_uid that matches this draft UID
-        // (same thread, same direction, within a 5-min window), mark it is_draft=true so the UI can surface it.
-        if (p.isDraft) {
-          console.log('[imap-sync] account', acc.id, 'draft envelope uid=', p.uid, '— checking for matching app row to flag')
-          const draftCutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
-          const draftWindowEnd = new Date(p.date.getTime() + 5 * 60 * 1000).toISOString()
-          // Find the thread this draft belongs to (same matching logic as normal messages)
-          let draftThreadId: string | undefined
-          const draftDirection = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
-          const draftMailbox = deriveMailboxAddress(draftDirection, p.toAddr, p.fromAddr, acc.email)
-          for (const refId of [p.inReplyTo, ...p.refsList]) {
-            if (refId && refMap.has(refMapKey(refId, draftMailbox))) { draftThreadId = refMap.get(refMapKey(refId, draftMailbox)); break }
-            if (!draftMailbox && refId && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
-          }
-          if (!draftThreadId) {
-            const normSubject = normalizeSubject(p.subject)
-            if (normSubject) {
-              draftThreadId = draftMailbox
-                ? subjectThreadMap.get(subjectMapKey(normSubject, draftMailbox))
-                : subjectThreadMap.get(normSubject)
-            }
-          }
-          if (draftThreadId) {
-            // Stale Gmail draft UIDs linger in All Mail after send; don't re-flag a sent copy.
-            const { data: sentOutbound } = await service.from('inbox_messages')
-              .select('id')
-              .eq('thread_id', draftThreadId)
-              .eq('imap_account_id', acc.id)
-              .eq('direction', 'outbound')
-              .eq('is_draft', false)
-              .gte('received_at', draftCutoff)
-              .limit(1)
-            if (sentOutbound?.length) {
-              console.log('[imap-sync] account', acc.id, 'skip stale draft uid=', p.uid, '— thread already has sent outbound')
-            } else {
-              const { data: draftRows } = await service.from('inbox_messages')
-                .select('id')
-                .eq('thread_id', draftThreadId)
-                .eq('imap_account_id', acc.id)
-                .eq('direction', 'outbound')
-                .eq('is_draft', true)
-                .is('external_uid', null)
-                .gte('received_at', draftCutoff)
-                .lte('received_at', draftWindowEnd)
-                .limit(1)
-              if (draftRows?.length) {
-                const draftRowId = (draftRows[0] as { id: string }).id
-                console.log('[imap-sync] account', acc.id, 'marking app row', draftRowId, 'as is_draft=true (uid=', p.uid, ')')
-                await service.from('inbox_messages')
-                  .update({ external_uid: p.uid, is_draft: true })
-                  .eq('id', draftRowId)
-              }
-            }
-          }
-          continue
-        }
-
         const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+
+        // Gmail draft revisions (\Draft or draftless All Mail copies) — never touch thread as sent.
+        if (direction === 'outbound' && p.isDraft) {
+          const handled = await handleGmailDraftRevision(draftIngestCtx, p, draftsCache, { hasDraftFlag: true })
+          if (handled) continue
+        }
+        if (direction === 'outbound' && !p.isDraft) {
+          const handled = await handleGmailDraftRevision(draftIngestCtx, p, draftsCache, { hasDraftFlag: false })
+          if (handled) continue
+        }
         const mailboxAddress = deriveMailboxAddress(direction, p.toAddr, p.fromAddr, acc.email)
 
         // Thread matching: references + mailbox → subject + mailbox → app outbound dedup → new thread
@@ -755,13 +729,6 @@ serve(async (req) => {
           const norm = normalizeSubject(p.subject)
           if (norm && mailboxAddress) subjectThreadMap.set(subjectMapKey(norm, mailboxAddress), threadId)
           else if (norm) subjectThreadMap.set(norm, threadId)
-        } else {
-          const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
-            p_thread_id: threadId,
-            p_last_message_at: p.date.toISOString(),
-            p_is_inbound: direction === 'inbound',
-          })
-          if (touchErr) console.log('[imap-sync] touch_inbox_thread_on_new_message', threadId, touchErr.message)
         }
 
         // Track for future reference lookups within this batch
@@ -821,6 +788,16 @@ serve(async (req) => {
             }
           }
         }
+
+        if (threadId && !newlyCreatedThreadIds.has(threadId)) {
+          const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+            p_thread_id: threadId,
+            p_last_message_at: p.date.toISOString(),
+            p_is_inbound: direction === 'inbound',
+          })
+          if (touchErr) console.log('[imap-sync] touch_inbox_thread_on_new_message', threadId, touchErr.message)
+        }
+
         insertRows.push({
           thread_id: threadId, channel: 'email', direction,
           from_identifier: p.fromAddr, to_identifier: p.toAddr,
@@ -830,6 +807,8 @@ serve(async (req) => {
           imap_account_id: acc.id, received_at: p.date.toISOString(),
         })
       }
+
+      await draftsCache.release()
 
       // Last-line defense: same external_uid twice in insertRows would violate idx_inbox_messages_imap_dedup
       const seenInsertUid = new Set<number>()
@@ -876,6 +855,13 @@ serve(async (req) => {
                 const parsed = await parseBodyFromSource(source)
                 let bodyText = parsed.body.slice(0, MAX_BODY_LENGTH)
                 let htmlBody = parsed.htmlBody?.slice(0, MAX_BODY_LENGTH) ?? null
+                const { data: rowMeta } = await service.from('inbox_messages')
+                  .select('is_draft')
+                  .eq('id', row.id)
+                  .single()
+                if ((rowMeta as { is_draft?: boolean | null } | null)?.is_draft && htmlBody) {
+                  htmlBody = normalizeDraftHtml(htmlBody)?.slice(0, MAX_BODY_LENGTH) ?? htmlBody
+                }
 
                 // Inline images (CID)
                 if (htmlBody && parsed.attachments.length > 0) {

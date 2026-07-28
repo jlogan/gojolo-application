@@ -10,6 +10,11 @@ import { ImapFlow } from 'npm:imapflow'
 import { corsHeaders } from '../_shared/cors.ts'
 import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
+  DraftsEnvelopeCache,
+  handleGmailDraftRevision,
+  healExistingUidPhantomIfNeeded,
+} from '../_shared/inboxGmailDraftIngest.ts'
+import {
   buildRefThreadMap,
   buildSubjectThreadMap,
   deriveMailboxAddress,
@@ -397,72 +402,43 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
     let highestUid = lastUid
     const insertRows: Record<string, unknown>[] = []
+    const newlyCreatedThreadIds = new Set<string>()
+    const draftsCache = new DraftsEnvelopeCache(client, acc.host)
+    const draftIngestCtx = {
+      service,
+      client,
+      imapAccountId: acc.id,
+      orgId: acc.org_id,
+      host: acc.host,
+      accountEmail: acc.email ?? '',
+      ourAddressesSet,
+      refMap,
+      subjectThreadMap,
+      logPrefix: '[refresh-email]',
+    }
 
     for (const p of parsed) {
       if (p.uid > highestUid) highestUid = p.uid
 
       if (uidsAlreadyInDb.has(p.uid)) {
+        const directionEarly = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+        if (directionEarly === 'outbound' && !p.isDraft) {
+          await healExistingUidPhantomIfNeeded(draftIngestCtx, p, draftsCache)
+        }
         console.log('[refresh-email] skip envelope: UID already in DB', p.uid)
         continue
       }
 
-      // Skip Gmail draft autosaves — they would be ingested as duplicate outbound messages.
-      // However: if there is an app-inserted row with no external_uid that matches this draft UID
-      // (same thread, within a 5-min window), mark it is_draft=true so the UI can surface it.
-      if (p.isDraft) {
-        console.log('[refresh-email] draft envelope uid=', p.uid, '— checking for matching app row to flag')
-        const draftCutoff = new Date(p.date.getTime() - 5 * 60 * 1000).toISOString()
-        const draftWindowEnd = new Date(p.date.getTime() + 5 * 60 * 1000).toISOString()
-        const draftDirection = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
-        const draftMailbox = deriveMailboxAddress(draftDirection, p.toAddr, p.fromAddr, acc.email)
-        let draftThreadId: string | undefined
-        for (const refId of [p.inReplyTo, ...p.refsList]) {
-          if (refId && draftMailbox && refMap.has(refMapKey(refId, draftMailbox))) { draftThreadId = refMap.get(refMapKey(refId, draftMailbox)); break }
-          if (refId && !draftMailbox && refMap.has(refId)) { draftThreadId = refMap.get(refId); break }
-        }
-        if (!draftThreadId) {
-          const normSubject = normalizeSubject(p.subject)
-          if (normSubject) {
-            draftThreadId = draftMailbox
-              ? subjectThreadMap.get(subjectMapKey(normSubject, draftMailbox))
-              : subjectThreadMap.get(normSubject)
-          }
-        }
-        if (draftThreadId) {
-          const { data: sentOutbound } = await service.from('inbox_messages')
-            .select('id')
-            .eq('thread_id', draftThreadId)
-            .eq('imap_account_id', acc.id)
-            .eq('direction', 'outbound')
-            .eq('is_draft', false)
-            .gte('received_at', draftCutoff)
-            .limit(1)
-          if (sentOutbound?.length) {
-            console.log('[refresh-email] skip stale draft uid=', p.uid, '— thread already has sent outbound')
-          } else {
-            const { data: draftRows } = await service.from('inbox_messages')
-              .select('id')
-              .eq('thread_id', draftThreadId)
-              .eq('imap_account_id', acc.id)
-              .eq('direction', 'outbound')
-              .eq('is_draft', true)
-              .is('external_uid', null)
-              .gte('received_at', draftCutoff)
-              .lte('received_at', draftWindowEnd)
-              .limit(1)
-            if (draftRows?.length) {
-              const draftRowId = (draftRows[0] as { id: string }).id
-              console.log('[refresh-email] marking app row', draftRowId, 'as is_draft=true (uid=', p.uid, ')')
-              await service.from('inbox_messages')
-                .update({ external_uid: p.uid, is_draft: true })
-                .eq('id', draftRowId)
-            }
-          }
-        }
-        continue
-      }
-
       const direction = ourAddressesSet.has(normalizeEmail(p.fromAddr)) ? 'outbound' : 'inbound'
+
+      if (direction === 'outbound' && p.isDraft) {
+        const handled = await handleGmailDraftRevision(draftIngestCtx, p, draftsCache, { hasDraftFlag: true })
+        if (handled) continue
+      }
+      if (direction === 'outbound' && !p.isDraft) {
+        const handled = await handleGmailDraftRevision(draftIngestCtx, p, draftsCache, { hasDraftFlag: false })
+        if (handled) continue
+      }
       const mailboxAddress = deriveMailboxAddress(direction, p.toAddr, p.fromAddr, acc.email)
 
       let threadId = resolveThreadIdFromMaps({
@@ -508,16 +484,10 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         }
         threadId = newThread.id
         threadsCreated++
+        newlyCreatedThreadIds.add(threadId)
         const norm = normalizeSubject(p.subject)
         if (norm && mailboxAddress) subjectThreadMap.set(subjectMapKey(norm, mailboxAddress), threadId)
         else if (norm) subjectThreadMap.set(norm, threadId)
-      } else {
-        const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
-          p_thread_id: threadId!,
-          p_last_message_at: p.date.toISOString(),
-          p_is_inbound: direction === 'inbound',
-        })
-        if (touchErr) console.log('[refresh-email] touch_inbox_thread_on_new_message', threadId, touchErr.message)
       }
 
       if (!threadId) continue
@@ -581,6 +551,16 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
           }
         }
       }
+
+      if (!newlyCreatedThreadIds.has(tid)) {
+        const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+          p_thread_id: tid,
+          p_last_message_at: p.date.toISOString(),
+          p_is_inbound: direction === 'inbound',
+        })
+        if (touchErr) console.log('[refresh-email] touch_inbox_thread_on_new_message', tid, touchErr.message)
+      }
+
       insertRows.push({
         thread_id: tid,
         channel: 'email',
@@ -597,6 +577,8 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         received_at: p.date.toISOString(),
       })
     }
+
+    await draftsCache.release()
 
     const seenInsertUid = new Set<number>()
     const rowsToInsert = insertRows.filter((r) => {

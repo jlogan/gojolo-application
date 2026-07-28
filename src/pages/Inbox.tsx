@@ -323,6 +323,8 @@ export default function Inbox() {
   const outboundEmptyWarnedKeyRef = useRef<string | null>(null)
   /** Per-thread guard: draft reconciliation via fetch-thread-bodies runs once per thread load unless bodies are empty. */
   const draftReconcileDoneForThreadRef = useRef<string | null>(null)
+  /** Per-thread guard: phantom outbound (misclassified Gmail draft) heal via fetch-thread-bodies. */
+  const phantomHealDoneForThreadRef = useRef<string | null>(null)
   /** When set (from /inbox?compose=1&leadId=...), a successful send logs a lead_attempt for that lead. */
   const leadComposeContextRef = useRef<{ leadId: string; contactId: string | null } | null>(null)
 
@@ -567,13 +569,16 @@ export default function Inbox() {
     if (msgs.length > 0) {
       const emptyBeforeBodies = msgs.filter(m => !m.body?.trim() && !m.html_body?.trim())
       const hasDraftRows = msgs.some(m => m.is_draft)
+      const mayHavePhantomOutbound = !hasDraftRows && msgs.some(m => m.direction === 'outbound' && !m.is_draft && m.external_uid != null)
       const needsBodyFetch = emptyBeforeBodies.length > 0
       const needsDraftReconcile = hasDraftRows && draftReconcileDoneForThreadRef.current !== tid
-      if (!needsBodyFetch && !needsDraftReconcile) {
-        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: hasDraftRows ? 'draft_reconcile_already_done' : 'all_bodies_in_db_no_drafts', messageCount: msgs.length }, tid)
+      const needsPhantomHeal = mayHavePhantomOutbound && phantomHealDoneForThreadRef.current !== tid
+      if (!needsBodyFetch && !needsDraftReconcile && !needsPhantomHeal) {
+        debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: hasDraftRows ? 'draft_reconcile_already_done' : needsPhantomHeal ? 'phantom_heal_done' : 'all_bodies_in_db_no_drafts', messageCount: msgs.length }, tid)
       } else {
         if (hasDraftRows) draftReconcileDoneForThreadRef.current = tid
-        debugLog('fetchMessages', { event: needsBodyFetch ? 'empty_bodies_before_fetch' : 'draft_reconcile_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), draftCount: msgs.filter(m => m.is_draft).length, count: emptyBeforeBodies.length }, tid)
+        if (needsPhantomHeal) phantomHealDoneForThreadRef.current = tid
+        debugLog('fetchMessages', { event: needsBodyFetch ? 'empty_bodies_before_fetch' : needsPhantomHeal ? 'phantom_heal_before_fetch' : 'draft_reconcile_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), draftCount: msgs.filter(m => m.is_draft).length, count: emptyBeforeBodies.length }, tid)
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.access_token) {
           try {
@@ -603,13 +608,15 @@ export default function Inbox() {
                 from_identifier?: string | null
                 to_identifier?: string | null
                 cc?: string | null
+                is_draft?: boolean | null
               }
-              const bodyMap = new Map<string, BodyEntry>((result.messages ?? []).map((r: { id: string; body: string | null; htmlBody: string | null; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null }) => [r.id, {
+              const bodyMap = new Map<string, BodyEntry>((result.messages ?? []).map((r: { id: string; body: string | null; htmlBody: string | null; isDraft?: boolean; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null }) => [r.id, {
                 body: r.body,
                 html_body: r.htmlBody,
                 from_identifier: r.from_identifier,
                 to_identifier: r.to_identifier,
                 cc: r.cc,
+                is_draft: r.isDraft ?? undefined,
               }]))
               const stillEmptyAfter = msgs.filter((pm) => {
                 if (deletedIds.has(pm.id)) return false
@@ -641,6 +648,7 @@ export default function Inbox() {
                       from_identifier: b.from_identifier ?? pm.from_identifier,
                       to_identifier: b.to_identifier ?? pm.to_identifier,
                       cc: b.cc ?? pm.cc,
+                      is_draft: b.is_draft != null ? b.is_draft : pm.is_draft,
                     }
                   })
                 return merged.sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
@@ -896,11 +904,12 @@ export default function Inbox() {
 
   useEffect(() => {
     if (!selectedThreadId) {
-      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setDraftMessageId(null); setExpandedMsgs(new Set()); draftReconcileDoneForThreadRef.current = null; return
+      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setDraftMessageId(null); setExpandedMsgs(new Set()); draftReconcileDoneForThreadRef.current = null; phantomHealDoneForThreadRef.current = null; return
     }
     debugLog('selectThread', { selectedThreadId, filter }, selectedThreadId ?? undefined)
     setExpandedMsgs(new Set()) // Reset accordion on thread change
     draftReconcileDoneForThreadRef.current = null
+    phantomHealDoneForThreadRef.current = null
     // Use ref so this effect does not re-run when fetchMessages identity changes (e.g. debugLog after auth/org hydrate) — avoids duplicate fetch-thread-bodies
     fetchMessagesRef.current(selectedThreadId)
     fetchComments(selectedThreadId)

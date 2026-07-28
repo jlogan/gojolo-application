@@ -13,14 +13,22 @@
  * Client can call again; already-fetched messages will be returned from DB.
  */
 const MAX_FETCH_PER_REQUEST = 15
-const RECENT_DRAFTS_LIMIT = 100
-const DRAFT_MATCH_MIN_SCORE = 2
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { corsHeaders } from '../_shared/cors.ts'
 import { normalizeEmail, normalizeSubject } from '../_shared/inboxThreadResolve.ts'
+import {
+  DraftsEnvelopeCache,
+  getDraftsMailboxPath,
+  healPhantomOutboundAsDraft,
+  normalizeDraftHtml,
+  scoreDraftEnvelopeMatch,
+  RECENT_DRAFTS_LIMIT,
+  DRAFT_MATCH_MIN_SCORE,
+  type ImapEnvelope,
+} from '../_shared/inboxGmailDraftIngest.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -51,9 +59,6 @@ function jsonRes(data: unknown, status: number) {
  * Make a filename safe for a Supabase Storage object key. Spaces / special chars
  * silently break uploads. Original name kept in inbox_attachments.file_name.
  */
-function getDraftsPath(host: string): string {
-  return host.toLowerCase().includes('gmail.com') ? '[Gmail]/Drafts' : 'Drafts'
-}
 
 type PostalAddress = { address?: string; name?: string }
 
@@ -100,34 +105,18 @@ function bodySnippet(text: string | null | undefined, html: string | null | unde
   return raw.slice(0, maxLen).toLowerCase()
 }
 
-type ImapEnvelope = {
-  subject?: string
-  from?: PostalAddress[]
-  to?: PostalAddress[]
-}
-
-function scoreDraftEnvelopeMatch(
-  dbDraft: { from_identifier: string; to_identifier: string | null },
+function scoreDraftForRow(
+  dbDraft: { from_identifier: string; to_identifier: string | null; subject?: string },
   envelope: ImapEnvelope,
   threadSubjectNorm: string,
 ): number {
-  let score = 0
-  const envSubject = normalizeSubject(envelope.subject ?? '')
-  if (threadSubjectNorm && envSubject) {
-    if (envSubject === threadSubjectNorm) score += 4
-    else if (envSubject.includes(threadSubjectNorm) || threadSubjectNorm.includes(envSubject)) score += 2
-  }
-  const dbFrom = normalizeEmail(dbDraft.from_identifier ?? '')
-  const envFrom = normalizeEmail(envelope.from?.[0]?.address ?? '')
-  if (dbFrom && envFrom && dbFrom === envFrom) score += 2
-  const dbToParts = (dbDraft.to_identifier ?? '').split(',').map((s) => normalizeEmail(s)).filter(Boolean)
-  const envToParts = (envelope.to ?? []).map((a) => normalizeEmail(a.address ?? '')).filter(Boolean)
-  if (dbToParts.length && envToParts.length) {
-    const overlap = dbToParts.filter((t) => envToParts.includes(t)).length
-    if (overlap === dbToParts.length || overlap === envToParts.length) score += 2
-    else if (overlap > 0) score += 1
-  }
-  return score
+  return scoreDraftEnvelopeMatch(
+    dbDraft.from_identifier,
+    dbDraft.to_identifier ?? '',
+    dbDraft.subject ?? threadSubjectNorm,
+    envelope,
+    threadSubjectNorm,
+  )
 }
 
 function bodySnippetsMatch(
@@ -251,6 +240,7 @@ Deno.serve(async (req: Request) => {
     from_identifier?: string | null
     to_identifier?: string | null
     cc?: string | null
+    isDraft?: boolean
   }
   const result: MessageResult[] = []
   const deletedMessageIds: string[] = []
@@ -366,7 +356,7 @@ Deno.serve(async (req: Request) => {
   ): Promise<boolean> => {
     const parsed = await PostalMime.parse(source)
     let bodyText = parsed.text ?? ''
-    let htmlBody = parsed.html ?? null
+    let htmlBody = normalizeDraftHtml(parsed.html ?? null)
     const fromIdentifier = formatAddress(parsed.from) || msg.from_identifier
     const toIdentifier = formatAddressList(parsed.to) ?? msg.to_identifier
     const cc = formatAddressList(parsed.cc) ?? msg.cc
@@ -489,6 +479,26 @@ Deno.serve(async (req: Request) => {
     cc: string | null
   }[]
 
+  // Self-heal: thread has no is_draft row but an outbound non-draft matches provider Drafts.
+  const hasDraftRow = messages.some((m) => isDraftRow(m))
+  const phantomHealCandidates = !hasDraftRow
+    ? messages.filter((m) =>
+      m.direction === 'outbound'
+      && !isDraftRow(m)
+      && !!m.imap_account_id
+      && m.external_uid != null
+    ) as {
+      id: string
+      external_uid: number
+      imap_account_id: string
+      thread_id: string
+      body: string | null
+      html_body: string | null
+      from_identifier: string
+      to_identifier: string | null
+    }[]
+    : []
+
   const outboundNeed = needFetchRaw.filter((m) => m.direction === 'outbound').length
   const stillNoAccount = messages.filter((m) => isBodyEmpty(m) && !m.imap_account_id && m.external_uid != null)
   console.log('[fetch-thread-bodies] split', {
@@ -499,6 +509,7 @@ Deno.serve(async (req: Request) => {
     inboundNeed: needFetchRaw.length - outboundNeed,
     stillNoAccount: stillNoAccount.length,
     needDraftReconcile: needDraftReconcile.length,
+    phantomHealCandidates: phantomHealCandidates.length,
     needFetchIds: needFetch.map((m) => m.id),
     needFetchDirections: needFetch.map((m) => m.direction),
     draftReconcileIds: needDraftReconcile.map((m) => m.id),
@@ -507,6 +518,7 @@ Deno.serve(async (req: Request) => {
   const pendingImapIds = new Set([
     ...needFetch.map((m) => m.id),
     ...needDraftReconcile.map((m) => m.id),
+    ...phantomHealCandidates.map((m) => m.id),
   ])
 
   // Add messages that already have body and do not need draft reconciliation
@@ -520,7 +532,7 @@ Deno.serve(async (req: Request) => {
     })
   }
 
-  if (needFetch.length === 0 && needDraftReconcile.length === 0) {
+  if (needFetch.length === 0 && needDraftReconcile.length === 0 && phantomHealCandidates.length === 0) {
     console.log('[fetch-thread-bodies] all from DB, returning', { threadId, messageCount: result.length, elapsedMs: Math.round(performance.now() - tStart) })
     return jsonRes({ messages: result, deletedMessageIds }, 200)
   }
@@ -543,13 +555,20 @@ Deno.serve(async (req: Request) => {
     list.push(m)
     draftsByAccount.set(m.imap_account_id, list)
   }
-  const accountIds = [...new Set([...byAccount.keys(), ...draftsByAccount.keys()])]
+  const phantomsByAccount = new Map<string, typeof phantomHealCandidates>()
+  for (const m of phantomHealCandidates) {
+    const list = phantomsByAccount.get(m.imap_account_id) ?? []
+    list.push(m)
+    phantomsByAccount.set(m.imap_account_id, list)
+  }
+  const accountIds = [...new Set([...byAccount.keys(), ...draftsByAccount.keys(), ...phantomsByAccount.keys()])]
 
   for (const accId of accountIds) {
     const msgs = byAccount.get(accId) ?? []
     const draftMsgs = draftsByAccount.get(accId) ?? []
+    const phantomMsgs = phantomsByAccount.get(accId) ?? []
     const tAcc = performance.now()
-    console.log('[fetch-thread-bodies] IMAP account start', { threadId, accId, messageCount: msgs.length, draftCount: draftMsgs.length, uids: msgs.map((m) => m.external_uid), draftUids: draftMsgs.map((m) => m.external_uid), elapsedMs: Math.round(tAcc - tStart) })
+    console.log('[fetch-thread-bodies] IMAP account start', { threadId, accId, messageCount: msgs.length, draftCount: draftMsgs.length, phantomCount: phantomMsgs.length, uids: msgs.map((m) => m.external_uid), draftUids: draftMsgs.map((m) => m.external_uid), elapsedMs: Math.round(tAcc - tStart) })
     const { data: acc } = await service
       .from('imap_accounts')
       .select('id, org_id, host, port, imap_encryption, imap_username, credentials_encrypted')
@@ -575,7 +594,7 @@ Deno.serve(async (req: Request) => {
     const host = acc.host as string
     const isGmail = host.toLowerCase().includes('gmail.com')
     const mailboxPath = isGmail ? '[Gmail]/All Mail' : 'INBOX'
-    const draftsPath = getDraftsPath(host)
+    const draftsPath = getDraftsMailboxPath(host)
     const client = new ImapFlow({
       host: acc.host as string,
       port: Number(acc.port) || 993,
@@ -591,6 +610,38 @@ Deno.serve(async (req: Request) => {
       const tConn = performance.now()
       await client.connect()
       console.log('[fetch-thread-bodies] IMAP connected', { accId, host: acc.host, mailbox: mailboxPath, draftsPath, connectMs: Math.round(performance.now() - tConn), elapsedMs: Math.round(performance.now() - tStart) })
+
+      const draftsCache = new DraftsEnvelopeCache(client, host)
+
+      if (phantomMsgs.length > 0) {
+        for (const phantom of phantomMsgs) {
+          const healed = await healPhantomOutboundAsDraft(
+            service,
+            client,
+            host,
+            threadId,
+            phantom,
+            threadSubjectNorm,
+            draftsCache,
+          )
+          const msgRow = messages.find((m) => m.id === phantom.id)
+          if (healed.healed && msgRow) {
+            (msgRow as { is_draft?: boolean | null }).is_draft = true
+            if (healed.body) (msgRow as { body: string | null }).body = healed.body
+            if (healed.htmlBody) (msgRow as { html_body: string | null }).html_body = healed.htmlBody
+          }
+          result.push({
+            id: phantom.id,
+            body: healed.body,
+            htmlBody: healed.htmlBody,
+            attachments: attsByMsg.get(phantom.id) ?? [],
+            from_identifier: phantom.from_identifier,
+            to_identifier: phantom.to_identifier,
+            isDraft: healed.healed ? true : undefined,
+          })
+          console.log('[fetch-thread-bodies] phantom heal result', { threadId, msgId: phantom.id, healed: healed.healed })
+        }
+      }
 
       if (draftMsgs.length > 0) {
         const tDraftLock = performance.now()
@@ -617,7 +668,7 @@ Deno.serve(async (req: Request) => {
               }
               const scored = recentDraftEnvelopes
                 .filter((c) => !claimedDraftUids.has(c.uid))
-                .map((c) => ({ ...c, score: scoreDraftEnvelopeMatch(msg, c.envelope, threadSubjectNorm) }))
+                .map((c) => ({ ...c, score: scoreDraftForRow(msg, c.envelope, threadSubjectNorm) }))
                 .filter((c) => c.score >= DRAFT_MATCH_MIN_SCORE)
                 .sort((a, b) => b.score - a.score || b.uid - a.uid)
 
@@ -665,7 +716,9 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      if (msgs.length === 0) {
+      await draftsCache.release()
+
+      if (msgs.length === 0 && draftMsgs.length === 0) {
         const tLogoutOnly = performance.now()
         await client.logout().catch(() => { try { client.close() } catch { /* ignore */ } })
         console.log('[fetch-thread-bodies] IMAP logout (drafts only)', { accId, logoutMs: Math.round(performance.now() - tLogoutOnly), accTotalMs: Math.round(performance.now() - tAcc) })
@@ -814,6 +867,17 @@ Deno.serve(async (req: Request) => {
           cc: msg.cc,
         })
       }
+      for (const msg of phantomMsgs) {
+        if (result.some((r) => r.id === msg.id)) continue
+        result.push({
+          id: msg.id,
+          body: msg.body,
+          htmlBody: msg.html_body,
+          attachments: attsByMsg.get(msg.id) ?? [],
+          from_identifier: msg.from_identifier,
+          to_identifier: msg.to_identifier,
+        })
+      }
     }
   }
 
@@ -821,11 +885,26 @@ Deno.serve(async (req: Request) => {
   // Sort by original message order (received_at); omit server-deleted drafts
   const ordered = messages
     .filter((m) => !deletedSet.has(m.id))
-    .map((m) => result.find((r) => r.id === m.id) ?? {
-      id: m.id,
-      body: m.body as string | null,
-      htmlBody: m.html_body as string | null,
-      attachments: attsByMsg.get(m.id) ?? [],
+    .map((m) => {
+      const r = result.find((x) => x.id === m.id)
+      if (r) {
+        return {
+          id: r.id,
+          body: r.body,
+          htmlBody: r.htmlBody,
+          attachments: r.attachments,
+          ...(r.from_identifier != null ? { from_identifier: r.from_identifier } : {}),
+          ...(r.to_identifier != null ? { to_identifier: r.to_identifier } : {}),
+          ...(r.cc != null ? { cc: r.cc } : {}),
+          ...(r.isDraft != null ? { isDraft: r.isDraft } : {}),
+        }
+      }
+      return {
+        id: m.id,
+        body: m.body as string | null,
+        htmlBody: m.html_body as string | null,
+        attachments: attsByMsg.get(m.id) ?? [],
+      }
     })
   const hasMore = needFetchRaw.length > MAX_FETCH_PER_REQUEST
   console.log('[fetch-thread-bodies] done', { threadId, messageCount: ordered.length, deletedMessageIds, hasMore, totalElapsedMs: Math.round(performance.now() - tStart) })
