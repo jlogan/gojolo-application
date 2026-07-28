@@ -62,6 +62,8 @@ interface SyncBody {
   resync?: boolean
   /** When set, fetch older messages from IMAP to backfill a thread that has 0 messages. Use with orgId + accountId or ensure accountId matches the thread's account. */
   backfillForThread?: string
+  /** Maintenance mode: run only the requested backfill/draft-heal path, then return before full mailbox sync. */
+  backfillOnly?: boolean
 }
 
 interface ImapAccountRow {
@@ -212,7 +214,7 @@ serve(async (req) => {
   } catch {
     // empty body for cron is ok
   }
-  console.log('[imap-sync]', syncId, 'body:', { orgId: body.orgId ?? null, accountId: body.accountId ?? null, resync: body.resync ?? false, backfillForThread: body.backfillForThread ?? null }, 'isCron:', isCron)
+  console.log('[imap-sync]', syncId, 'body:', { orgId: body.orgId ?? null, accountId: body.accountId ?? null, resync: body.resync ?? false, backfillForThread: body.backfillForThread ?? null, backfillOnly: body.backfillOnly ?? false }, 'isCron:', isCron)
 
   const service = createClient(supabaseUrl, serviceKey)
 
@@ -252,7 +254,11 @@ serve(async (req) => {
 
   if (body.orgId) {
     accountsQuery = accountsQuery.eq('org_id', body.orgId)
-    if (body.accountId) accountsQuery = accountsQuery.eq('id', body.accountId)
+  }
+  // Allow targeted maintenance/backfill calls with accountId only. Org access is still checked
+  // when orgId is provided; cron/no-org syncs should not have to scan every account.
+  if (body.accountId) {
+    accountsQuery = accountsQuery.eq('id', body.accountId)
   }
 
   const { data: accounts, error: accountsError } = await accountsQuery
@@ -359,10 +365,10 @@ serve(async (req) => {
       const backfillThreadId = body.backfillForThread
       if (backfillThreadId) {
         const { data: threadRow } = await service.from('inbox_threads')
-          .select('id, subject, from_address, imap_account_id, mailbox_address')
+          .select('id, subject, from_address, imap_account_id, mailbox_address, status')
           .eq('id', backfillThreadId)
           .single()
-        const bt = threadRow as { id: string; subject: string | null; from_address: string | null; imap_account_id: string | null; mailbox_address: string | null } | null
+        const bt = threadRow as { id: string; subject: string | null; from_address: string | null; imap_account_id: string | null; mailbox_address: string | null; status: string | null } | null
         const backfillForThisAccount =
           bt &&
           (bt.imap_account_id === acc.id ||
@@ -370,6 +376,38 @@ serve(async (req) => {
         if (backfillForThisAccount) {
           const { count } = await service.from('inbox_messages').select('id', { count: 'exact', head: true }).eq('thread_id', backfillThreadId)
           if ((count ?? 0) === 0) {
+            if (body.backfillOnly) {
+              if (lock) await lock.release()
+              lock = null
+              const draftsCacheForBackfill = new DraftsEnvelopeCache(client, acc.host)
+              try {
+                const healResult = await healEmptyThreadFromDrafts(
+                  service,
+                  client,
+                  acc.host,
+                  acc.id,
+                  acc.org_id,
+                  {
+                    id: backfillThreadId,
+                    subject: bt.subject,
+                    from_address: bt.from_address,
+                    status: bt.status,
+                    mailbox_address: bt.mailbox_address,
+                  },
+                  draftsCacheForBackfill,
+                  `[imap-sync] account ${acc.id}`,
+                )
+                if (healResult.healed) {
+                  totalMessages += 1
+                  console.log('[imap-sync] backfillOnly healed empty thread from Drafts', backfillThreadId, healResult.messageId)
+                }
+              } finally {
+                await draftsCacheForBackfill.release()
+              }
+              await service.from('imap_accounts').update({ last_fetch_at: new Date().toISOString(), last_error: null }).eq('id', acc.id)
+              await client.logout().catch(() => client.close())
+              break
+            }
             const threadSubjectNorm = normalizeSubject(bt.subject ?? '')
             const threadFromNorm = (bt.from_address ?? '').trim().toLowerCase()
             const threadMailboxNorm = normalizeEmail(bt.mailbox_address ?? '')
@@ -502,6 +540,15 @@ serve(async (req) => {
             }
           }
         }
+      }
+
+      if (body.backfillOnly) {
+        console.log('[imap-sync] account', acc.id, 'backfillOnly complete — skipping full mailbox sync')
+        await service.from('imap_accounts').update({ last_fetch_at: new Date().toISOString(), last_error: null }).eq('id', acc.id)
+        if (lock) await lock.release()
+        lock = null
+        await client.logout().catch(() => client.close())
+        continue
       }
 
       // Resync: re-fetch recent messages and update bodies with proper MIME parsing (PostalMime).
