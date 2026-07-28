@@ -45,6 +45,10 @@ verify_jwt = false
 [functions.imap-flag-sync]
 verify_jwt = false
 
+# imap-save-draft: app-authenticated users save/delete IMAP Drafts; function verifies membership internally.
+[functions.imap-save-draft]
+verify_jwt = false
+
 # imap-idle: near-real-time IMAP IDLE sync. Called by cron every 2 minutes.
 [functions.imap-idle]
 verify_jwt = false
