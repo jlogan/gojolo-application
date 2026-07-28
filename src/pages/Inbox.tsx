@@ -781,7 +781,29 @@ export default function Inbox() {
       }, (payload) => {
         const tid = (payload.new as { thread_id: string }).thread_id
         debugLogRef.current('realtime', { event: 'inbox_messages_INSERT', threadId: tid, payload }, tid)
+        fetchThreadsRef.current()
         if (tid === selectedThreadIdRef.current) {
+          fetchMessagesRef.current(selectedThreadIdRef.current)
+        }
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE', schema: 'public', table: 'inbox_messages',
+      }, (payload) => {
+        const tid = ((payload.new as { thread_id?: string })?.thread_id
+          ?? (payload.old as { thread_id?: string })?.thread_id) as string | undefined
+        debugLogRef.current('realtime', { event: 'inbox_messages_UPDATE', threadId: tid, payload }, tid)
+        fetchThreadsRef.current()
+        if (tid && tid === selectedThreadIdRef.current) {
+          fetchMessagesRef.current(selectedThreadIdRef.current)
+        }
+      })
+      .on('postgres_changes', {
+        event: 'DELETE', schema: 'public', table: 'inbox_messages',
+      }, (payload) => {
+        const tid = (payload.old as { thread_id?: string }).thread_id
+        debugLogRef.current('realtime', { event: 'inbox_messages_DELETE', threadId: tid, payload }, tid)
+        fetchThreadsRef.current()
+        if (tid && tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current)
         }
       })
@@ -1346,10 +1368,26 @@ export default function Inbox() {
     setSendingReply(false)
     if (data?.error) { toast(data.error); return }
 
+    const sentThreadId = selectedThreadId
+    const draftMsg = draftIdToRemove ? messages.find((msg) => msg.id === draftIdToRemove) : undefined
+    const draftExternalUid = draftMsg?.external_uid ?? null
+    const draftImapAccountId = draftMsg?.imap_account_id ?? null
+
     if (draftIdToRemove) {
       const { error: delErr } = await supabase.from('inbox_messages').delete().eq('id', draftIdToRemove)
       if (delErr) console.warn('[Inbox] failed to delete draft after send:', delErr.message)
       else setMessages(prev => prev.filter(msg => msg.id !== draftIdToRemove))
+      if (draftExternalUid != null && draftImapAccountId) {
+        void syncDraftOnServer(draftIdToRemove, 'delete', {
+          externalUid: draftExternalUid,
+          imapAccountId: draftImapAccountId,
+        })
+      }
+    }
+    if (sentThreadId) {
+      const { error: ghostErr } = await supabase.from('inbox_messages').delete().eq('thread_id', sentThreadId).eq('is_draft', true)
+      if (ghostErr) console.warn('[Inbox] failed to clear ghost drafts after send:', ghostErr.message)
+      else setMessages(prev => prev.filter(msg => !msg.is_draft))
     }
 
     const leadCtx = leadComposeContextRef.current
@@ -1378,15 +1416,15 @@ export default function Inbox() {
         .eq('org_id', currentOrg.id)
     }
 
-    const sentThreadId = selectedThreadId
-    const shouldAdvanceSelection = !!sentThreadId && replyMode !== 'compose' && (filter === 'inbox' || filter === 'assigned')
-    if (sentThreadId && replyMode !== 'compose') {
-      setThreads(prev => prev.map(t => t.id === sentThreadId ? { ...t, status: 'closed' } : t))
+    const sentThreadIdForAdvance = sentThreadId
+    const shouldAdvanceSelection = !!sentThreadIdForAdvance && replyMode !== 'compose' && (filter === 'inbox' || filter === 'assigned')
+    if (sentThreadIdForAdvance && replyMode !== 'compose') {
+      setThreads(prev => prev.map(t => t.id === sentThreadIdForAdvance ? { ...t, status: 'closed' } : t))
     }
 
-    if (shouldAdvanceSelection && sentThreadId) {
+    if (shouldAdvanceSelection && sentThreadIdForAdvance) {
       const visible = threads
-      const idx = visible.findIndex(t => t.id === sentThreadId)
+      const idx = visible.findIndex(t => t.id === sentThreadIdForAdvance)
       const next = idx >= 0
         ? (visible[idx + 1] ?? visible[idx - 1] ?? null)
         : null
@@ -1397,13 +1435,17 @@ export default function Inbox() {
     console.log('[Inbox] handleSendReply:', sendId, 'success, refreshing thread list')
     toast('Sent')
     await fetchThreads()
-    if (sentThreadId && !shouldAdvanceSelection) {
-      fetchMessages(sentThreadId)
-      fetchAttachments(sentThreadId)
+    if (sentThreadIdForAdvance && !shouldAdvanceSelection) {
+      fetchMessages(sentThreadIdForAdvance)
+      fetchAttachments(sentThreadIdForAdvance)
     }
   }
 
-  const syncDraftOnServer = async (messageId: string, action: 'save' | 'delete' = 'save') => {
+  const syncDraftOnServer = async (
+    messageId: string,
+    action: 'save' | 'delete' = 'save',
+    opts?: { externalUid?: number | null; imapAccountId?: string | null },
+  ) => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) return null
     try {
@@ -1414,12 +1456,48 @@ export default function Inbox() {
           'Authorization': `Bearer ${session.access_token}`,
           'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify({ messageId, action }),
+        body: JSON.stringify({
+          messageId,
+          action,
+          ...(opts?.externalUid != null ? { externalUid: opts.externalUid } : {}),
+          ...(opts?.imapAccountId ? { imapAccountId: opts.imapAccountId } : {}),
+        }),
       })
       return await res.json().catch(() => ({}))
     } catch (err) {
       console.warn('[Inbox] imap-save-draft failed:', err)
       return null
+    }
+  }
+
+  const handleDeleteDraft = async (m: InboxMessage) => {
+    if (!confirm('Delete this draft message?')) return
+    const wasOnlyMessage = messages.length === 1 && messages[0].id === m.id
+    const externalUid = m.external_uid ?? null
+    const imapAccountId = m.imap_account_id ?? null
+    const messageId = m.id
+
+    const { error: delErr } = await supabase.from('inbox_messages').delete().eq('id', messageId)
+    if (delErr) {
+      alert('Failed to delete draft: ' + delErr.message)
+      return
+    }
+
+    setMessages(prev => prev.filter(msg => msg.id !== messageId))
+    if (draftMessageId === messageId) {
+      setDraftMessageId(null)
+      setReplyMode(null)
+      setReplyAnchorMsgId(null)
+      setReplyHtml('')
+      setReplyAttachments([])
+    }
+    if (wasOnlyMessage) {
+      setSelectedThreadId(null)
+    }
+    void fetchThreads()
+
+    if (externalUid != null && imapAccountId) {
+      void syncDraftOnServer(messageId, 'delete', { externalUid, imapAccountId })
     }
   }
 
@@ -2431,15 +2509,7 @@ export default function Inbox() {
                                 }} className="p-1 rounded text-yellow-500/70 hover:text-yellow-400 hover:bg-surface-muted">
                                   <Pencil className="w-3.5 h-3.5" />
                                 </button>
-                                <button type="button" title="Delete draft" onClick={async (e) => { e.stopPropagation()
-                                  if (!confirm('Delete this draft message?')) return
-                                  if (m.external_uid != null && m.imap_account_id) {
-                                    await syncDraftOnServer(m.id, 'delete').catch(() => {})
-                                  }
-                                  const { error: delErr } = await supabase.from('inbox_messages').delete().eq('id', m.id)
-                                  if (delErr) { alert('Failed to delete draft: ' + delErr.message); return }
-                                  setMessages(prev => prev.filter(msg => msg.id !== m.id))
-                                }} className="p-1 rounded text-red-500/70 hover:text-red-400 hover:bg-surface-muted">
+                                <button type="button" title="Delete draft" onClick={(e) => { e.stopPropagation(); void handleDeleteDraft(m) }} className="p-1 rounded text-red-500/70 hover:text-red-400 hover:bg-surface-muted">
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </>)}

@@ -687,7 +687,6 @@ serve(async (req) => {
               .eq('imap_account_id', acc.id)
               .eq('direction', 'outbound')
               .eq('is_draft', false)
-              .not('external_uid', 'is', null)
               .gte('received_at', draftCutoff)
               .limit(1)
             if (sentOutbound?.length) {

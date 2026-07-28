@@ -1,8 +1,8 @@
 /**
  * Best-effort IMAP Drafts folder persistence for app-saved drafts.
- * POST { messageId: string, action?: 'save' | 'delete' }
+ * POST { messageId: string, action?: 'save' | 'delete', externalUid?: number, imapAccountId?: string }
  * - save (default): APPEND RFC822 MIME to Drafts, update external_uid/is_draft
- * - delete: remove server draft when external_uid exists
+ * - delete: remove server draft when external_uid exists (or externalUid/imapAccountId if row already deleted)
  * DB draft save/delete in the app proceeds regardless of IMAP outcome.
  */
 
@@ -116,7 +116,13 @@ Deno.serve(async (req: Request) => {
   const auth = req.headers.get('Authorization')
   if (!auth) return json({ error: 'Unauthorized' }, 401)
 
-  const body = await req.json().catch(() => ({})) as { messageId?: string; action?: 'save' | 'delete' }
+  const body = await req.json().catch(() => ({})) as {
+    messageId?: string
+    action?: 'save' | 'delete'
+    /** Optional when the DB row was already deleted (best-effort server cleanup). */
+    externalUid?: number
+    imapAccountId?: string
+  }
   const messageId = body.messageId?.trim()
   const action = body.action ?? 'save'
   if (!messageId) return json({ error: 'messageId required' }, 400)
@@ -134,21 +140,38 @@ Deno.serve(async (req: Request) => {
     .from('inbox_messages')
     .select('id, thread_id, imap_account_id, external_uid, from_identifier, to_identifier, cc, html_body, body, is_draft')
     .eq('id', messageId)
-    .single()
-  if (msgErr || !msg) return json({ error: 'Message not found' }, 404)
+    .maybeSingle()
 
-  const { data: thread } = await service.from('inbox_threads').select('org_id, subject').eq('id', msg.thread_id).single()
-  if (!thread?.org_id) return json({ error: 'Thread not found' }, 404)
+  let accountId = (msg?.imap_account_id as string | null) ?? body.imapAccountId?.trim() ?? null
+  let previousUid = (msg?.external_uid as number | null) ?? (typeof body.externalUid === 'number' ? body.externalUid : null)
+  let orgId: string | null = null
+  let threadSubject = '(No subject)'
+
+  if (msg?.thread_id) {
+    const { data: thread } = await service.from('inbox_threads').select('org_id, subject').eq('id', msg.thread_id).single()
+    orgId = thread?.org_id ?? null
+    threadSubject = (thread?.subject as string | null) ?? threadSubject
+  } else if (action === 'delete' && accountId) {
+    const { data: accOrg } = await service.from('imap_accounts').select('org_id').eq('id', accountId).single()
+    orgId = (accOrg?.org_id as string | null) ?? null
+  }
+
+  if (msgErr && action !== 'delete') return json({ error: 'Message not found' }, 404)
+  if (!msg && action === 'delete' && (previousUid == null || !accountId)) {
+    return json({ ok: true, skipped: true, reason: 'No external_uid or account for delete' })
+  }
+  if (!msg && action !== 'delete') return json({ error: 'Message not found' }, 404)
+
+  if (!orgId) return json({ error: 'Thread not found' }, 404)
 
   const { data: membership } = await service
     .from('organization_users')
     .select('org_id')
-    .eq('org_id', thread.org_id)
+    .eq('org_id', orgId)
     .eq('user_id', user.id)
     .maybeSingle()
   if (!membership) return json({ error: 'Access denied' }, 403)
 
-  const accountId = msg.imap_account_id as string | null
   if (!accountId) return json({ ok: true, skipped: true, reason: 'No IMAP account on message' })
 
   const { data: acc } = await service
@@ -156,7 +179,7 @@ Deno.serve(async (req: Request) => {
     .select('id, host, port, imap_encryption, imap_username, credentials_encrypted, org_id')
     .eq('id', accountId)
     .single()
-  if (!acc || acc.org_id !== thread.org_id) return json({ error: 'Account not found' }, 404)
+  if (!acc || acc.org_id !== orgId) return json({ error: 'Account not found' }, 404)
 
   let password: string
   try {
@@ -174,7 +197,6 @@ Deno.serve(async (req: Request) => {
   })
 
   const draftsPath = getDraftsPath(acc.host as string)
-  const previousUid = msg.external_uid as number | null
 
   try {
     await client.connect()
@@ -189,9 +211,11 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true, deleted: true })
     }
 
+    if (!msg) return json({ error: 'Message not found' }, 404)
+
     const htmlBody = (msg.html_body as string | null) ?? ''
     const textBody = (msg.body as string | null) ?? stripHtmlToText(htmlBody)
-    const subject = (thread.subject as string | null) ?? '(No subject)'
+    const subject = threadSubject
     const mime = buildRfc822Mime({
       from: msg.from_identifier as string,
       to: msg.to_identifier as string | null,
