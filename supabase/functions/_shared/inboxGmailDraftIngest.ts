@@ -175,6 +175,24 @@ export type ParsedMailboxBody = {
   bcc: string | null
 }
 
+/** Resolve Cc/Bcc from IMAP fetch parts (header buffer, ENVELOPE, and/or parsed MIME source). */
+export function resolveCcBccFromImapSources(options: {
+  rawHdrs?: string | null
+  envelope?: ImapEnvelope | null
+  parsedBody?: Pick<ParsedMailboxBody, 'cc' | 'bcc'> | null
+}): { cc: string | null; bcc: string | null } {
+  const rawHdrs = options.rawHdrs ?? ''
+  const { cc: hdrCc, bcc: hdrBcc } = rawHdrs ? parseCcBccHeaders(rawHdrs) : { cc: null, bcc: null }
+  return {
+    cc: hdrCc || options.parsedBody?.cc || formatEnvelopeAddressList(options.envelope?.cc) || null,
+    bcc: hdrBcc || options.parsedBody?.bcc || formatEnvelopeAddressList(options.envelope?.bcc) || null,
+  }
+}
+
+export function resolveToFromEnvelope(envelope?: ImapEnvelope | null): string {
+  return formatEnvelopeAddressList(envelope?.to) || ''
+}
+
 export type ParsedEnvelopeMeta = {
   uid: number
   messageId: string | null
@@ -601,7 +619,7 @@ export async function handleGmailDraftRevision(
   const draftsUid = draftsMatch?.uid ?? null
   const storeUid = draftsUid ?? p.uid
 
-  let bodyPayload: { body: string | null; htmlBody: string | null } | null = null
+  let bodyPayload: ParsedMailboxBody | null = null
   if (draftsUid != null) {
     bodyPayload = await fetchParsedBodyFromMailbox(
       ctx.client,
@@ -614,6 +632,10 @@ export async function handleGmailDraftRevision(
     bodyPayload = await fetchParsedBodyFromMailbox(ctx.client, allMailPath, p.uid)
   }
 
+  const { cc: resolvedCc, bcc: resolvedBcc } = resolveCcBccFromImapSources({ parsedBody: bodyPayload })
+  const ccAddr = resolvedCc || p.ccAddr || null
+  const bccAddr = resolvedBcc || p.bccAddr || null
+
   const updateFields: Record<string, unknown> = {
     external_id: p.externalId,
     external_uid: storeUid,
@@ -621,6 +643,8 @@ export async function handleGmailDraftRevision(
   }
   if (bodyPayload?.body) updateFields.body = bodyPayload.body
   if (bodyPayload?.htmlBody) updateFields.html_body = bodyPayload.htmlBody
+  if (ccAddr) updateFields.cc = ccAddr
+  if (bccAddr) updateFields.bcc = bccAddr
 
   if (draftRow) {
     console.log(ctx.logPrefix, 'update existing draft row for Gmail revision', {
@@ -670,8 +694,8 @@ export async function handleGmailDraftRevision(
     direction: 'outbound',
     from_identifier: p.fromAddr,
     to_identifier: p.toAddr,
-    cc: p.ccAddr ?? null,
-    bcc: p.bccAddr ?? null,
+    cc: ccAddr,
+    bcc: bccAddr,
     body: bodyPayload?.body ?? null,
     html_body: bodyPayload?.htmlBody ?? null,
     external_id: p.externalId,
@@ -920,8 +944,8 @@ export async function healEmptyThreadFromDrafts(
       direction: 'outbound',
       from_identifier: fromAddr || thread.mailbox_address || '',
       to_identifier: toAddr || null,
-      cc: null,
-      bcc: null,
+      cc: bodyPayload?.cc ?? null,
+      bcc: bodyPayload?.bcc ?? null,
       body: bodyPayload?.body ?? null,
       html_body: bodyPayload?.htmlBody ?? null,
       external_id: `draft-heal-${imapAccountId}-${match.uid}`,
@@ -1101,9 +1125,9 @@ export async function healEmptyThreadFromSentMail(
       const messageId = normalizeMessageIdHeader(msgIdMatch?.[1] ?? null)
       if (messageId) externalId = messageId
 
-      const { cc: limitedCc, bcc: limitedBcc } = parseCcBccHeaders(rawHdrs)
-      ccIdentifier = limitedCc || bodyPayload?.cc || formatEnvelopeAddressList(env?.cc) || null
-      bccIdentifier = limitedBcc || bodyPayload?.bcc || formatEnvelopeAddressList(env?.bcc) || null
+      const resolved = resolveCcBccFromImapSources({ rawHdrs, envelope: env, parsedBody: bodyPayload })
+      ccIdentifier = resolved.cc
+      bccIdentifier = resolved.bcc
     } finally {
       try { await lock.release() } catch { /* ignore */ }
     }
@@ -1116,8 +1140,18 @@ export async function healEmptyThreadFromSentMail(
       const envFrom = formatEnvelopeAddressList(match.envelope.from)
       if (envFrom) fromIdentifier = envFrom
     }
-    ccIdentifier = bodyPayload?.cc || formatEnvelopeAddressList(match.envelope.cc) || null
-    bccIdentifier = bodyPayload?.bcc || formatEnvelopeAddressList(match.envelope.bcc) || null
+    const resolved = resolveCcBccFromImapSources({ envelope: match.envelope, parsedBody: bodyPayload })
+    ccIdentifier = resolved.cc
+    bccIdentifier = resolved.bcc
+  }
+
+  if (!ccIdentifier) {
+    const draftCc = existingRows.find((m) => m.is_draft && m.cc?.trim())?.cc?.trim()
+    if (draftCc) ccIdentifier = draftCc
+  }
+  if (!bccIdentifier) {
+    const draftBcc = existingRows.find((m) => m.is_draft && m.bcc?.trim())?.bcc?.trim()
+    if (draftBcc) bccIdentifier = draftBcc
   }
 
   if (!fromIdentifier) fromIdentifier = fromAddr || accountEmail

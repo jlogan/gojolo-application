@@ -13,6 +13,9 @@ import {
   DraftsEnvelopeCache,
   handleGmailDraftRevision,
   healExistingUidPhantomIfNeeded,
+  resolveCcBccFromImapSources,
+  resolveToFromEnvelope,
+  type ImapEnvelope,
 } from '../_shared/inboxGmailDraftIngest.ts'
 import {
   buildRefThreadMap,
@@ -334,7 +337,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       const uid = msg.uid as number
       const flags = msg.flags as Set<string> | undefined
       const isDraft = flags instanceof Set ? flags.has('\\Draft') : false
-      const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
+      const envelope = msg.envelope as ImapEnvelope & { date?: Date }
       const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
       const getHdr = (name: string): string | null => {
         const re = new RegExp(`^${name}:\\s*(.+)`, 'im')
@@ -345,8 +348,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       const inReplyTo = normalizeMessageId(getHdr('in-reply-to'))
       const refsRaw = getHdr('references')
       const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map((r) => normalizeMessageId(r)).filter(Boolean) as string[]) : []
-      const ccRaw = getHdr('cc') ?? getHdr('Cc')
-      const bccRaw = getHdr('bcc') ?? getHdr('Bcc')
+      const { cc: ccAddr, bcc: bccAddr } = resolveCcBccFromImapSources({ rawHdrs, envelope })
       const fromHeader = (getHdr('from') ?? getHdr('From') ?? '').trim()
       const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
       return {
@@ -355,9 +357,9 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         inReplyTo,
         refsList,
         fromAddr,
-        toAddr: (envelope?.to?.[0]?.address as string) ?? '',
-        ccAddr: ccRaw?.trim() || null,
-        bccAddr: bccRaw?.trim() || null,
+        toAddr: resolveToFromEnvelope(envelope),
+        ccAddr,
+        bccAddr,
         subject: envelope?.subject ?? '',
         date: envelope?.date ? new Date(envelope.date) : new Date(),
         externalId: messageId ?? `uid-${acc.id}-${uid}`,
@@ -515,9 +517,17 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
             continue
           }
           console.log('[refresh-email] outbound dedup: updating existing msg', existingRow.id, 'threadId=', tid, 'uid=', p.uid)
+          const dedupUpdate: Record<string, unknown> = {
+            external_id: p.externalId,
+            external_uid: p.uid,
+            is_draft: false,
+          }
+          if (p.ccAddr) dedupUpdate.cc = p.ccAddr
+          if (p.bccAddr) dedupUpdate.bcc = p.bccAddr
+          if (p.toAddr) dedupUpdate.to_identifier = p.toAddr
           await service
             .from('inbox_messages')
-            .update({ external_id: p.externalId, external_uid: p.uid, is_draft: false })
+            .update(dedupUpdate)
             .eq('id', existingRow.id)
           const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
             p_thread_id: tid,

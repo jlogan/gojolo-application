@@ -18,7 +18,9 @@ import {
   healExistingUidPhantomIfNeeded,
   healRecentEmptyThreadsFromDrafts,
   normalizeDraftHtml,
-  parseCcBccHeaders,
+  resolveCcBccFromImapSources,
+  resolveToFromEnvelope,
+  extractRawHeaderBlock,
   shouldSkipArchiveForDrafts,
   type ImapEnvelope,
 } from '../_shared/inboxGmailDraftIngest.ts'
@@ -494,9 +496,7 @@ serve(async (req) => {
                 const fromNorm = fromAddr.trim().toLowerCase()
                 const toAddr = formatEnvelopeAddressList(envelope?.to) || ''
                 const rawHdrs = envMsg.headers ? new TextDecoder().decode(envMsg.headers as Uint8Array) : ''
-                const { cc: ccHdr, bcc: bccHdr } = parseCcBccHeaders(rawHdrs)
-                const ccAddr = ccHdr || formatEnvelopeAddressList(envelope?.cc) || null
-                const bccAddr = bccHdr || formatEnvelopeAddressList(envelope?.bcc) || null
+                const { cc: ccAddr, bcc: bccAddr } = resolveCcBccFromImapSources({ rawHdrs, envelope })
                 const msgSubject = envelope?.subject ?? ''
                 const msgSubjectNorm = normalizeSubject(msgSubject)
                 const msgText = (msgSubjectNorm + ' ' + fromNorm).toLowerCase()
@@ -609,24 +609,24 @@ serve(async (req) => {
             const msg = fullMsgs[0]
             if (!msg) continue
             const uid = msg.uid as number
-            const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; date?: Date }
+            const envelope = msg.envelope as ImapEnvelope & { date?: Date }
             const source = msg.source as Uint8Array | Buffer | undefined
             const fromHeader = source ? getHeader(source, 'From')?.trim() : null
             const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
-            const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
+            const toAddr = resolveToFromEnvelope(envelope)
             const date = envelope?.date ? new Date(envelope.date) : new Date()
             const parsed = source ? await parseBodyFromSource(source) : { body: '', htmlBody: null, attachments: [] }
             const bodyText = parsed.body
-            const ccStr = source ? getHeader(source, 'Cc') : null
-            const bccStr = source ? getHeader(source, 'Bcc') : null
+            const rawHeaderBlock = source ? extractRawHeaderBlock(source) : ''
+            const { cc: ccAddr, bcc: bccAddr } = resolveCcBccFromImapSources({ rawHdrs: rawHeaderBlock, envelope })
             const { error: updateErr } = await service
               .from('inbox_messages')
               .update({
                 body: bodyText,
                 from_identifier: fromAddr,
                 to_identifier: toAddr,
-                cc: ccStr?.trim() || null,
-                bcc: bccStr?.trim() || null,
+                cc: ccAddr,
+                bcc: bccAddr,
                 received_at: date.toISOString(),
               })
               .eq('imap_account_id', acc.id)
@@ -722,7 +722,7 @@ serve(async (req) => {
         const uid = msg.uid as number
         const flags = msg.flags as Set<string> | undefined
         const isDraft = flags instanceof Set ? flags.has('\\Draft') : false
-        const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
+        const envelope = msg.envelope as ImapEnvelope & { date?: Date }
         // ImapFlow returns headers as a Buffer of raw header lines
         const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
         const getHdr = (name: string): string | null => {
@@ -734,17 +734,16 @@ serve(async (req) => {
         const inReplyTo = normalizeMessageId(getHdr('in-reply-to'))
         const refsRaw = getHdr('references')
         const refsList: string[] = refsRaw ? (refsRaw.split(/\s+/).map(r => normalizeMessageId(r)).filter(Boolean) as string[]) : []
-        const ccRaw = getHdr('cc') ?? getHdr('Cc')
-        const bccRaw = getHdr('bcc') ?? getHdr('Bcc')
+        const { cc: ccAddr, bcc: bccAddr } = resolveCcBccFromImapSources({ rawHdrs, envelope })
         const fromHeader = (getHdr('from') ?? getHdr('From') ?? '').trim()
         const fromAddr = fromHeader || (envelope?.from?.[0]?.address ?? '')
         return {
           uid, messageId, inReplyTo, refsList,
           fromAddr,
           isDraft,
-          toAddr: envelope?.to?.[0]?.address ?? '',
-          ccAddr: ccRaw?.trim() || null,
-          bccAddr: bccRaw?.trim() || null,
+          toAddr: resolveToFromEnvelope(envelope),
+          ccAddr,
+          bccAddr,
           subject: envelope?.subject ?? '',
           date: envelope?.date ? new Date(envelope.date) : new Date(),
           externalId: messageId ?? `uid-${acc.id}-${uid}`,
@@ -888,8 +887,16 @@ serve(async (req) => {
               continue
             }
             console.log('[imap-sync] account', acc.id, 'outbound dedup: updating existing msg', existingRow.id, 'threadId=', threadId, 'uid=', p.uid, 'from=', p.fromAddr?.slice(0, 40), 'to=', p.toAddr?.slice(0, 40))
+            const dedupUpdate: Record<string, unknown> = {
+              external_id: p.externalId,
+              external_uid: p.uid,
+              is_draft: false,
+            }
+            if (p.ccAddr) dedupUpdate.cc = p.ccAddr
+            if (p.bccAddr) dedupUpdate.bcc = p.bccAddr
+            if (p.toAddr) dedupUpdate.to_identifier = p.toAddr
             await service.from('inbox_messages')
-              .update({ external_id: p.externalId, external_uid: p.uid, is_draft: false })
+              .update(dedupUpdate)
               .eq('id', existingRow.id)
             const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
               p_thread_id: threadId,
