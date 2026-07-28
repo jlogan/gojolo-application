@@ -542,7 +542,7 @@ export default function Inbox() {
                 Authorization: `Bearer ${session.access_token}`,
                 apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
               },
-              body: JSON.stringify({ orgId: thread.org_id, accountId, backfillForThread: tid }),
+              body: JSON.stringify({ orgId: thread.org_id, accountId, backfillForThread: tid, backfillOnly: true, backfillSentForThread: true }),
             })
             if (res.ok) {
               const { data: dataAfter } = await supabase.from('inbox_messages')

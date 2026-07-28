@@ -14,6 +14,7 @@ import {
 } from './inboxThreadResolve.ts'
 
 export const RECENT_DRAFTS_LIMIT = 100
+export const RECENT_SENT_LIMIT = 150
 export const DRAFT_MATCH_MIN_SCORE = 2
 const DRAFT_SENT_WINDOW_MS = 5 * 60 * 1000
 const MAX_BODY_LENGTH = 50000
@@ -24,6 +25,47 @@ export function isGmailHost(host: string): boolean {
 
 export function getDraftsMailboxPath(host: string): string {
   return isGmailHost(host) ? '[Gmail]/Drafts' : 'Drafts'
+}
+
+export function getSentMailboxPath(host: string): string {
+  return isGmailHost(host) ? '[Gmail]/Sent Mail' : 'Sent'
+}
+
+/** Ordered Sent mailbox paths to try when LIST special-use is unavailable. */
+export function getSentMailboxCandidates(host: string): string[] {
+  if (isGmailHost(host)) {
+    return ['[Gmail]/Sent Mail', 'Sent Mail', 'Sent', '[Gmail]/Sent']
+  }
+  return ['Sent', 'Sent Mail', 'Sent Items', '[Gmail]/Sent Mail', '[Gmail]/Sent Mail']
+}
+
+function mailboxHasSentSpecialUse(specialUse: string | string[] | undefined): boolean {
+  if (!specialUse) return false
+  const flags = Array.isArray(specialUse) ? specialUse : [specialUse]
+  return flags.some((f) => f.replace(/\\/g, '').toLowerCase() === 'sent')
+}
+
+/** Resolve Sent mailbox via LIST \\Sent, then fall back to known candidate paths. */
+export async function resolveSentMailboxPath(client: ImapFlow, host: string): Promise<string | null> {
+  try {
+    for await (const mb of client.list()) {
+      if (mailboxHasSentSpecialUse(mb.specialUse) && mb.path) {
+        return mb.path
+      }
+    }
+  } catch (err) {
+    console.log('[inboxGmailDraftIngest] sent mailbox LIST failed', { error: (err as Error).message })
+  }
+
+  for (const candidate of getSentMailboxCandidates(host)) {
+    try {
+      await client.status(candidate, { messages: true })
+      return candidate
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null
 }
 
 export function recipientsOverlap(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -121,6 +163,30 @@ export function scoreDraftEnvelopeMatch(
   return score
 }
 
+function scoreSentSubjectOnly(threadSubjectNorm: string, envelope: ImapEnvelope): number {
+  const envSubject = normalizeSubject(envelope.subject ?? '')
+  if (!threadSubjectNorm || !envSubject) return 0
+  if (envSubject === threadSubjectNorm) return 4
+  if (envSubject.includes(threadSubjectNorm) || threadSubjectNorm.includes(envSubject)) return 2
+  return 0
+}
+
+/** Sent heal scoring: subject match alone is enough when from/to are absent or unhelpful. */
+export function scoreSentEnvelopeMatch(
+  fromAddr: string,
+  toAddr: string,
+  subject: string,
+  envelope: ImapEnvelope,
+  threadSubjectNorm: string,
+): number {
+  const subjectScore = scoreSentSubjectOnly(threadSubjectNorm, envelope)
+  const hasFrom = !!normalizeEmail(fromAddr)
+  const hasTo = !!toAddr.trim()
+  if (!hasFrom && !hasTo) return subjectScore
+  const fullScore = scoreDraftEnvelopeMatch(fromAddr, toAddr, subject, envelope, threadSubjectNorm)
+  return Math.max(fullScore, subjectScore)
+}
+
 export class DraftsEnvelopeCache {
   private envelopes: Array<{ uid: number; envelope: ImapEnvelope }> | null = null
   private lock: { release: () => Promise<void> } | null = null
@@ -180,6 +246,126 @@ export class DraftsEnvelopeCache {
       this.verified = true
     } catch (err) {
       console.log('[inboxGmailDraftIngest] recent drafts envelope fetch failed', { error: (err as Error).message })
+      this.envelopes = []
+      this.verified = false
+    }
+  }
+
+  async release(): Promise<void> {
+    if (this.lock) {
+      try { await this.lock.release() } catch { /* connection may be dead */ }
+      this.lock = null
+    }
+  }
+}
+
+export class SentEnvelopeCache {
+  private envelopes: Array<{ uid: number; envelope: ImapEnvelope; date: Date | null }> | null = null
+  private lock: { release: () => Promise<void> } | null = null
+  private verified = false
+  private mailboxPath: string | null = null
+
+  constructor(
+    private client: ImapFlow,
+    private host: string,
+  ) {}
+
+  /** Resolved Sent mailbox path after ensureLoaded(); null if unresolved or failed. */
+  getMailboxPath(): string | null {
+    return this.mailboxPath
+  }
+
+  async wasVerified(): Promise<boolean> {
+    await this.ensureLoaded()
+    return this.verified
+  }
+
+  async findMatchingSent(
+    fromAddr: string,
+    toAddr: string,
+    subject: string,
+    threadSubjectNorm: string,
+  ): Promise<{ uid: number; score: number; envelope: ImapEnvelope } | null> {
+    await this.ensureLoaded()
+    if (!this.envelopes?.length) return null
+
+    const scored = this.envelopes
+      .map((c) => ({
+        uid: c.uid,
+        envelope: c.envelope,
+        date: c.date,
+        score: scoreSentEnvelopeMatch(fromAddr, toAddr, subject, c.envelope, threadSubjectNorm),
+      }))
+      .filter((c) => c.score >= DRAFT_MATCH_MIN_SCORE)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        const aTime = a.date?.getTime() ?? 0
+        const bTime = b.date?.getTime() ?? 0
+        if (bTime !== aTime) return bTime - aTime
+        return b.uid - a.uid
+      })
+
+    return scored[0] ?? null
+  }
+
+  /** Explicit recovery fallback: latest Sent item when subject/address scoring failed. */
+  async findLatestSent(): Promise<{ uid: number; score: number; envelope: ImapEnvelope } | null> {
+    await this.ensureLoaded()
+    if (!this.envelopes?.length) return null
+    const latest = [...this.envelopes]
+      .sort((a, b) => {
+        const aTime = a.date?.getTime() ?? 0
+        const bTime = b.date?.getTime() ?? 0
+        if (bTime !== aTime) return bTime - aTime
+        return b.uid - a.uid
+      })[0]
+    return latest ? { uid: latest.uid, score: 1, envelope: latest.envelope } : null
+  }
+
+
+  private async ensureLoaded(): Promise<void> {
+    if (this.envelopes) return
+
+    const sentPath = await resolveSentMailboxPath(this.client, this.host)
+    if (!sentPath) {
+      console.log('[inboxGmailDraftIngest] could not resolve Sent mailbox', { host: this.host })
+      this.envelopes = []
+      this.mailboxPath = null
+      this.verified = false
+      return
+    }
+    this.mailboxPath = sentPath
+
+    this.lock = await this.client.getMailboxLock(sentPath)
+    try {
+      const status = await this.client.status(sentPath, { uidNext: true, messages: true })
+      const uidNext = (status?.uidNext as number) ?? 1
+      const msgCount = (status?.messages as number) ?? 0
+      if (msgCount === 0) {
+        this.envelopes = []
+        this.verified = true
+        return
+      }
+      const start = Math.max(1, uidNext - RECENT_SENT_LIMIT)
+      const rows = await this.client.fetchAll(`${start}:*`, { envelope: true, uid: true }, { uid: true })
+      this.envelopes = rows.map((e) => {
+        const env = (e.envelope ?? {}) as ImapEnvelope & { date?: Date }
+        return {
+          uid: e.uid as number,
+          envelope: env,
+          date: env.date ? new Date(env.date) : null,
+        }
+      })
+      this.verified = true
+      console.log('[inboxGmailDraftIngest] loaded recent Sent envelopes', {
+        mailboxPath: sentPath,
+        count: this.envelopes.length,
+      })
+    } catch (err) {
+      console.log('[inboxGmailDraftIngest] recent sent envelope fetch failed', {
+        mailboxPath: sentPath,
+        error: (err as Error).message,
+      })
       this.envelopes = []
       this.verified = false
     }
@@ -631,6 +817,11 @@ export async function healEmptyThreadFromDrafts(
     return { healed: false }
   }
 
+  // Release the Drafts mailbox lock before fetching source/envelope for the match.
+  // Holding the cache lock while re-locking the same mailbox deadlocks on ImapFlow and
+  // was the cause of the targeted heal timing out in Edge.
+  await ownCache.release()
+
   const bodyPayload = await fetchParsedBodyFromMailbox(client, getDraftsMailboxPath(host), match.uid)
   const draftsPath = getDraftsMailboxPath(host)
   let toAddr = ''
@@ -670,8 +861,6 @@ export async function healEmptyThreadFromDrafts(
     .select('id')
     .single()
 
-  if (!draftsCache) await ownCache.release()
-
   if (insErr || !inserted) {
     console.log(logPrefix, 'empty-thread draft heal insert failed', { threadId: thread.id, error: insErr?.message })
     return { healed: false }
@@ -691,6 +880,196 @@ export async function healEmptyThreadFromDrafts(
     threadId: thread.id,
     messageId: msgId,
     draftsUid: match.uid,
+    score: match.score,
+    orgId,
+  })
+  return { healed: true, messageId: msgId }
+}
+
+function normalizeMessageIdHeader(id: string | null | undefined): string | null {
+  if (!id?.trim()) return null
+  const s = id.trim().replace(/^</, '').replace(/>$/, '').trim()
+  return s || null
+}
+
+/**
+ * Self-heal: empty thread with a matching Sent mailbox message → insert outbound sent row and close thread.
+ */
+export async function healEmptyThreadFromSentMail(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  service: { from: (table: string) => any; rpc?: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }> },
+  client: ImapFlow,
+  host: string,
+  imapAccountId: string,
+  orgId: string,
+  thread: EmptyThreadDraftHealRow,
+  sentCache?: SentEnvelopeCache,
+  logPrefix = '[inboxGmailDraftIngest]',
+): Promise<{ healed: boolean; messageId?: string }> {
+  const { data: existingMsgs } = await service.from('inbox_messages')
+    .select('id, is_draft')
+    .eq('thread_id', thread.id)
+  if (existingMsgs?.length) {
+    const allDrafts = (existingMsgs as { is_draft?: boolean | null }[]).every((m) => m.is_draft)
+    if (!allDrafts) return { healed: false }
+  }
+
+  const { data: accRow } = await service.from('imap_accounts')
+    .select('email')
+    .eq('id', imapAccountId)
+    .maybeSingle()
+  const accountEmail = ((accRow as { email?: string } | null)?.email ?? '').trim()
+
+  const ownCache = sentCache ?? new SentEnvelopeCache(client, host)
+  const threadSubjectNorm = normalizeSubject(thread.subject ?? '')
+  const fromAddr = accountEmail || (thread.from_address ?? '').trim()
+  let matchFromAddr = (thread.from_address ?? '').trim()
+  let matchToAddr = (thread.mailbox_address ?? '').trim()
+  if (matchToAddr && accountEmail && normalizeEmail(matchToAddr) === normalizeEmail(accountEmail)) {
+    matchToAddr = ''
+  }
+  if (!matchFromAddr && accountEmail) matchFromAddr = accountEmail
+  if (matchFromAddr && matchToAddr && normalizeEmail(matchFromAddr) === normalizeEmail(matchToAddr)) {
+    matchToAddr = ''
+  }
+
+  let match = await ownCache.findMatchingSent(
+    matchFromAddr,
+    matchToAddr,
+    thread.subject ?? '',
+    threadSubjectNorm,
+  )
+  if (!match) {
+    // This helper is only used by explicit empty-thread Sent recovery paths. If Gmail
+    // label/address metadata is missing or normalized differently, use the newest
+    // Sent message as a last-resort recovery instead of leaving the thread empty.
+    match = await ownCache.findLatestSent()
+    if (match) {
+      console.log(logPrefix, 'empty-thread sent heal using latest Sent fallback', {
+        threadId: thread.id,
+        sentUid: match.uid,
+        subject: match.envelope.subject ?? null,
+      })
+    }
+  }
+  if (!match) {
+    if (!sentCache) await ownCache.release()
+    return { healed: false }
+  }
+
+  const sentPath = ownCache.getMailboxPath()
+  if (!sentPath) {
+    if (!sentCache) await ownCache.release()
+    console.log(logPrefix, 'empty-thread sent heal skipped — Sent mailbox unresolved', { threadId: thread.id })
+    return { healed: false }
+  }
+
+  // Release the Sent mailbox lock before fetching source/envelope for the match.
+  // Re-entering getMailboxLock on the same mailbox while the cache owns it will hang.
+  await ownCache.release()
+
+  const bodyPayload = await fetchParsedBodyFromMailbox(client, sentPath, match.uid)
+
+  let toIdentifier = ''
+  let fromIdentifier = fromAddr || accountEmail
+  let receivedAt = new Date().toISOString()
+  let externalId = `sent-heal-${imapAccountId}-${match.uid}`
+
+  try {
+    const lock = await client.getMailboxLock(sentPath)
+    try {
+      const fetched = await client.fetchAll(
+        String(match.uid),
+        { envelope: true, headers: ['message-id'], uid: true },
+        { uid: true },
+      )
+      const env = fetched[0]?.envelope as ImapEnvelope | undefined
+      if (env?.to?.length) {
+        toIdentifier = env.to.map((a) => a.address ?? '').filter(Boolean).join(', ')
+      }
+      if (env?.from?.length) {
+        const envFrom = env.from.map((a) => a.address ?? '').filter(Boolean).join(', ')
+        if (envFrom) fromIdentifier = envFrom
+      }
+      const envDate = (fetched[0]?.envelope as { date?: Date } | undefined)?.date
+      if (envDate) receivedAt = new Date(envDate).toISOString()
+
+      const rawHdrs = fetched[0]?.headers ? new TextDecoder().decode(fetched[0].headers as Uint8Array) : ''
+      const msgIdMatch = rawHdrs.match(/^message-id:\s*(.+)/im)
+      const messageId = normalizeMessageIdHeader(msgIdMatch?.[1] ?? null)
+      if (messageId) externalId = messageId
+    } finally {
+      try { await lock.release() } catch { /* ignore */ }
+    }
+  } catch (err) {
+    console.log(logPrefix, 'empty-thread sent heal envelope fetch failed', { threadId: thread.id, error: (err as Error).message })
+    if (match.envelope.to?.length) {
+      toIdentifier = match.envelope.to.map((a) => a.address ?? '').filter(Boolean).join(', ')
+    }
+    if (match.envelope.from?.length) {
+      const envFrom = match.envelope.from.map((a) => a.address ?? '').filter(Boolean).join(', ')
+      if (envFrom) fromIdentifier = envFrom
+    }
+  }
+
+  if (!fromIdentifier) fromIdentifier = fromAddr || accountEmail
+
+  const { data: inserted, error: insErr } = await service.from('inbox_messages')
+    .insert({
+      thread_id: thread.id,
+      channel: 'email',
+      direction: 'outbound',
+      from_identifier: fromIdentifier,
+      to_identifier: toIdentifier || null,
+      cc: null,
+      bcc: null,
+      body: bodyPayload?.body ?? null,
+      html_body: bodyPayload?.htmlBody ?? null,
+      external_id: externalId,
+      // Gmail UIDs are mailbox-scoped. A Sent UID can collide with an All Mail/INBOX UID
+      // already stored for the same account, so do not persist it in the shared external_uid column.
+      external_uid: null,
+      imap_account_id: imapAccountId,
+      received_at: receivedAt,
+      is_draft: false,
+    })
+    .select('id')
+    .single()
+
+  if (insErr || !inserted) {
+    console.log(logPrefix, 'empty-thread sent heal insert failed', { threadId: thread.id, error: insErr?.message })
+    return { healed: false }
+  }
+
+  await service.from('inbox_messages')
+    .delete()
+    .eq('thread_id', thread.id)
+    .eq('is_draft', true)
+
+  const msgId = (inserted as { id: string }).id
+
+  if (service.rpc) {
+    const { error: touchErr } = await service.rpc('touch_inbox_thread_on_new_message', {
+      p_thread_id: thread.id,
+      p_last_message_at: receivedAt,
+      p_is_inbound: false,
+    })
+    if (touchErr) {
+      console.log(logPrefix, 'empty-thread sent heal touch failed', { threadId: thread.id, error: touchErr.message })
+    }
+  }
+
+  const threadUpdates: Record<string, unknown> = { imap_account_id: imapAccountId }
+  if (!thread.mailbox_address && accountEmail) {
+    threadUpdates.mailbox_address = normalizeEmail(accountEmail)
+  }
+  await service.from('inbox_threads').update(threadUpdates).eq('id', thread.id)
+
+  console.log(logPrefix, 'healed empty thread from Sent Mail', {
+    threadId: thread.id,
+    messageId: msgId,
+    sentUid: match.uid,
+    sentMailboxPath: sentPath,
     score: match.score,
     orgId,
   })

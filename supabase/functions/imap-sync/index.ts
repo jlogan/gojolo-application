@@ -10,8 +10,10 @@ import { logThreadArchiveDebug } from '../_shared/inboxThreadArchiveLog.ts'
 import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
   DraftsEnvelopeCache,
+  SentEnvelopeCache,
   handleGmailDraftRevision,
   healEmptyThreadFromDrafts,
+  healEmptyThreadFromSentMail,
   healExistingUidPhantomIfNeeded,
   healRecentEmptyThreadsFromDrafts,
   normalizeDraftHtml,
@@ -64,6 +66,8 @@ interface SyncBody {
   backfillForThread?: string
   /** Maintenance mode: run only the requested backfill/draft-heal path, then return before full mailbox sync. */
   backfillOnly?: boolean
+  /** When true with backfillOnly, scan Sent Mail for empty-thread recovery before Drafts. */
+  backfillSentForThread?: boolean
 }
 
 interface ImapAccountRow {
@@ -214,7 +218,7 @@ serve(async (req) => {
   } catch {
     // empty body for cron is ok
   }
-  console.log('[imap-sync]', syncId, 'body:', { orgId: body.orgId ?? null, accountId: body.accountId ?? null, resync: body.resync ?? false, backfillForThread: body.backfillForThread ?? null, backfillOnly: body.backfillOnly ?? false }, 'isCron:', isCron)
+  console.log('[imap-sync]', syncId, 'body:', { orgId: body.orgId ?? null, accountId: body.accountId ?? null, resync: body.resync ?? false, backfillForThread: body.backfillForThread ?? null, backfillOnly: body.backfillOnly ?? false, backfillSentForThread: body.backfillSentForThread ?? false }, 'isCron:', isCron)
 
   const service = createClient(supabaseUrl, serviceKey)
 
@@ -379,30 +383,64 @@ serve(async (req) => {
             if (body.backfillOnly) {
               if (lock) await lock.release()
               lock = null
-              const draftsCacheForBackfill = new DraftsEnvelopeCache(client, acc.host)
-              try {
-                const healResult = await healEmptyThreadFromDrafts(
-                  service,
-                  client,
-                  acc.host,
-                  acc.id,
-                  acc.org_id,
-                  {
-                    id: backfillThreadId,
-                    subject: bt.subject,
-                    from_address: bt.from_address,
-                    status: bt.status,
-                    mailbox_address: bt.mailbox_address,
-                  },
-                  draftsCacheForBackfill,
-                  `[imap-sync] account ${acc.id}`,
-                )
-                if (healResult.healed) {
-                  totalMessages += 1
-                  console.log('[imap-sync] backfillOnly healed empty thread from Drafts', backfillThreadId, healResult.messageId)
+              const logPrefix = `[imap-sync] account ${acc.id}`
+              let healed = false
+
+              if (body.backfillSentForThread) {
+                const sentCacheForBackfill = new SentEnvelopeCache(client, acc.host)
+                try {
+                  const sentHealResult = await healEmptyThreadFromSentMail(
+                    service,
+                    client,
+                    acc.host,
+                    acc.id,
+                    acc.org_id,
+                    {
+                      id: backfillThreadId,
+                      subject: bt.subject,
+                      from_address: bt.from_address,
+                      status: bt.status,
+                      mailbox_address: bt.mailbox_address,
+                    },
+                    sentCacheForBackfill,
+                    logPrefix,
+                  )
+                  if (sentHealResult.healed) {
+                    totalMessages += 1
+                    healed = true
+                    console.log('[imap-sync] backfillOnly healed empty thread from Sent Mail', backfillThreadId, sentHealResult.messageId)
+                  }
+                } finally {
+                  await sentCacheForBackfill.release()
                 }
-              } finally {
-                await draftsCacheForBackfill.release()
+              }
+
+              if (!healed) {
+                const draftsCacheForBackfill = new DraftsEnvelopeCache(client, acc.host)
+                try {
+                  const healResult = await healEmptyThreadFromDrafts(
+                    service,
+                    client,
+                    acc.host,
+                    acc.id,
+                    acc.org_id,
+                    {
+                      id: backfillThreadId,
+                      subject: bt.subject,
+                      from_address: bt.from_address,
+                      status: bt.status,
+                      mailbox_address: bt.mailbox_address,
+                    },
+                    draftsCacheForBackfill,
+                    logPrefix,
+                  )
+                  if (healResult.healed) {
+                    totalMessages += 1
+                    console.log('[imap-sync] backfillOnly healed empty thread from Drafts', backfillThreadId, healResult.messageId)
+                  }
+                } finally {
+                  await draftsCacheForBackfill.release()
+                }
               }
               await service.from('imap_accounts').update({ last_fetch_at: new Date().toISOString(), last_error: null }).eq('id', acc.id)
               await client.logout().catch(() => client.close())
@@ -451,6 +489,7 @@ serve(async (req) => {
                 const envelope = envMsg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
                 const fromAddr = envelope?.from?.[0]?.address ?? ''
                 const fromNorm = fromAddr.trim().toLowerCase()
+                const toAddr = envelope?.to?.[0]?.address ?? ''
                 const msgSubject = envelope?.subject ?? ''
                 const msgSubjectNorm = normalizeSubject(msgSubject)
                 const msgText = (msgSubjectNorm + ' ' + fromNorm).toLowerCase()
@@ -468,7 +507,6 @@ serve(async (req) => {
 
                 if (!matchesFrom) continue
 
-                const toAddr = envelope?.to?.[0]?.address ?? ''
                 const date = envelope?.date ? new Date(envelope.date) : new Date()
                 const backfillDirection = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
                 insertRows.push({

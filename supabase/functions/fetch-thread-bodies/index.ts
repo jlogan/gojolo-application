@@ -5,7 +5,7 @@
  * - For is_draft rows: verifies each still exists in the provider Drafts mailbox; tries external_uid first,
  *   then searches recent Drafts messages by subject/recipients/body snippet; refreshes body and external_uid
  *   when matched, or deletes the DB row only when Drafts was checked successfully and no likely match exists
- * - Empty threads: attempts self-heal from Gmail Drafts before returning
+ * - Empty threads: attempts self-heal from Gmail Drafts, then Sent Mail, before returning
  *
  * POST { threadId } — returns { messages: [{ id, body, htmlBody, attachments, from_identifier?, to_identifier?, cc? }], deletedMessageIds?, hasMore? }
  * Requires: ENCRYPTION_KEY, SUPABASE_SERVICE_ROLE_KEY. Auth: user must have access to thread's org.
@@ -24,6 +24,7 @@ import {
   DraftsEnvelopeCache,
   getDraftsMailboxPath,
   healEmptyThreadFromDrafts,
+  healEmptyThreadFromSentMail,
   healPhantomOutboundAsDraft,
   normalizeDraftHtml,
   scoreDraftEnvelopeMatch,
@@ -251,22 +252,35 @@ Deno.serve(async (req: Request) => {
             logger: false,
           })
           await healClient.connect()
-          const healResult = await healEmptyThreadFromDrafts(
+          const healThreadRow = {
+            id: threadId,
+            subject: threadRow.subject,
+            from_address: threadRow.from_address,
+            status: threadRow.status,
+            mailbox_address: threadRow.mailbox_address,
+          }
+          let healResult = await healEmptyThreadFromDrafts(
             service,
             healClient,
             acc.host as string,
             healAccountId,
             threadRow.org_id,
-            {
-              id: threadId,
-              subject: threadRow.subject,
-              from_address: threadRow.from_address,
-              status: threadRow.status,
-              mailbox_address: threadRow.mailbox_address,
-            },
+            healThreadRow,
             undefined,
             '[fetch-thread-bodies]',
           )
+          if (!healResult.healed) {
+            healResult = await healEmptyThreadFromSentMail(
+              service,
+              healClient,
+              acc.host as string,
+              healAccountId,
+              threadRow.org_id,
+              healThreadRow,
+              undefined,
+              '[fetch-thread-bodies]',
+            )
+          }
           await healClient.logout().catch(() => { try { healClient.close() } catch { /* ignore */ } })
           if (healResult.healed) {
             const reloaded = await service
@@ -276,7 +290,7 @@ Deno.serve(async (req: Request) => {
               .order('received_at', { ascending: true })
             messages = reloaded.data
             msgErr = reloaded.error
-            console.log('[fetch-thread-bodies] empty thread healed from Drafts', { threadId, messageId: healResult.messageId })
+            console.log('[fetch-thread-bodies] empty thread healed from Drafts or Sent', { threadId, messageId: healResult.messageId })
           }
         } catch (healErr) {
           console.log('[fetch-thread-bodies] empty thread heal failed', { threadId, error: (healErr as Error).message })
@@ -802,6 +816,60 @@ Deno.serve(async (req: Request) => {
               })
               pushExistingDraftResult(msg)
               continue
+            }
+
+            const remainingAfterDelete = messages.filter(
+              (m) => m.id !== msg.id && !deletedMessageIds.includes(m.id),
+            )
+            if (remainingAfterDelete.length === 0) {
+              const sentHeal = await healEmptyThreadFromSentMail(
+                service,
+                client,
+                host,
+                accId,
+                acc.org_id as string,
+                {
+                  id: threadId,
+                  subject: (thread as { subject?: string | null }).subject ?? null,
+                  from_address: (thread as { from_address?: string | null }).from_address ?? null,
+                  status: (thread as { status?: string | null }).status ?? null,
+                  mailbox_address: (thread as { mailbox_address?: string | null }).mailbox_address ?? null,
+                },
+                undefined,
+                '[fetch-thread-bodies]',
+              )
+              if (sentHeal.healed) {
+                console.log('[fetch-thread-bodies] last draft replaced by Sent Mail heal', { threadId, draftId: msg.id, messageId: sentHeal.messageId })
+                deletedMessageIds.push(msg.id)
+                const reloaded = await service
+                  .from('inbox_messages')
+                  .select('id, body, html_body, from_identifier, to_identifier, cc, is_draft')
+                  .eq('thread_id', threadId)
+                  .order('received_at', { ascending: true })
+                const healedMsgs = (reloaded.data ?? []) as {
+                  id: string
+                  body: string | null
+                  html_body: string | null
+                  from_identifier: string | null
+                  to_identifier: string | null
+                  cc: string | null
+                  is_draft?: boolean | null
+                }[]
+                const healedResult = healedMsgs.map((m) => ({
+                  id: m.id,
+                  body: m.body,
+                  htmlBody: m.html_body,
+                  attachments: attsByMsg.get(m.id) ?? [],
+                  from_identifier: m.from_identifier,
+                  to_identifier: m.to_identifier,
+                  cc: m.cc,
+                  isDraft: m.is_draft ?? false,
+                }))
+                try { await draftLock.release() } catch { /* ignore */ }
+                await draftsCache.release()
+                await client.logout().catch(() => { try { client.close() } catch { /* ignore */ } })
+                return jsonRes({ messages: healedResult, deletedMessageIds }, 200)
+              }
             }
 
             console.log('[fetch-thread-bodies] no matching draft in provider Drafts mailbox — deleting DB row', { msgId: msg.id, uid: msg.external_uid })
