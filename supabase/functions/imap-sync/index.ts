@@ -11,13 +11,16 @@ import { findOutboundAppThreadId } from '../_shared/inboxOutboundDedup.ts'
 import {
   DraftsEnvelopeCache,
   SentEnvelopeCache,
+  formatEnvelopeAddressList,
   handleGmailDraftRevision,
   healEmptyThreadFromDrafts,
   healEmptyThreadFromSentMail,
   healExistingUidPhantomIfNeeded,
   healRecentEmptyThreadsFromDrafts,
   normalizeDraftHtml,
+  parseCcBccHeaders,
   shouldSkipArchiveForDrafts,
+  type ImapEnvelope,
 } from '../_shared/inboxGmailDraftIngest.ts'
 import {
   buildRefThreadMap,
@@ -475,7 +478,7 @@ serve(async (req) => {
             const backfillRange = `${backfillStart}:${backfillEnd}`
             console.log('[imap-sync] backfill for thread', backfillThreadId, 'subject:', threadSubjectNorm || '(empty)', 'from:', threadFromNorm || '(empty)', 'tokens:', uniqueTokens.slice(0, 5), 'range', backfillRange)
             try {
-              const backfillEnvelopes = await client.fetchAll(backfillRange, { envelope: true, headers: ['message-id', 'in-reply-to', 'references'], uid: true }, { uid: true })
+              const backfillEnvelopes = await client.fetchAll(backfillRange, { envelope: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc'], uid: true }, { uid: true })
               const existingUids = new Set<number>()
               const { data: existingRows } = await service.from('inbox_messages').select('external_uid').eq('imap_account_id', acc.id).in('external_uid', backfillEnvelopes.map((e) => e.uid as number))
               for (const r of (existingRows ?? []) as { external_uid: number }[]) existingUids.add(r.external_uid)
@@ -486,15 +489,19 @@ serve(async (req) => {
               for (const envMsg of backfillEnvelopes) {
                 const uid = envMsg.uid as number
                 if (existingUids.has(uid)) continue
-                const envelope = envMsg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
+                const envelope = envMsg.envelope as ImapEnvelope & { date?: Date }
                 const fromAddr = envelope?.from?.[0]?.address ?? ''
                 const fromNorm = fromAddr.trim().toLowerCase()
-                const toAddr = envelope?.to?.[0]?.address ?? ''
+                const toAddr = formatEnvelopeAddressList(envelope?.to) || ''
+                const rawHdrs = envMsg.headers ? new TextDecoder().decode(envMsg.headers as Uint8Array) : ''
+                const { cc: ccHdr, bcc: bccHdr } = parseCcBccHeaders(rawHdrs)
+                const ccAddr = ccHdr || formatEnvelopeAddressList(envelope?.cc) || null
+                const bccAddr = bccHdr || formatEnvelopeAddressList(envelope?.bcc) || null
                 const msgSubject = envelope?.subject ?? ''
                 const msgSubjectNorm = normalizeSubject(msgSubject)
                 const msgText = (msgSubjectNorm + ' ' + fromNorm).toLowerCase()
-                const toNorm = normalizeEmail(toAddr)
-                const matchesMailbox = !threadMailboxNorm || !toNorm || toNorm === threadMailboxNorm
+                const toParts = toAddr.split(',').map((s) => normalizeEmail(s)).filter(Boolean)
+                const matchesMailbox = !threadMailboxNorm || !toParts.length || toParts.includes(threadMailboxNorm)
 
                 const matchesSubject = hasSubject && msgSubjectNorm && matchesMailbox && (msgSubjectNorm === threadSubjectNorm || msgSubjectNorm.includes(threadSubjectNorm) || threadSubjectNorm.includes(msgSubjectNorm))
                 const matchesFromExact = hasFrom && fromNorm === threadFromNorm
@@ -511,7 +518,7 @@ serve(async (req) => {
                 const backfillDirection = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
                 insertRows.push({
                   thread_id: backfillThreadId, channel: 'email', direction: backfillDirection,
-                  from_identifier: fromAddr, to_identifier: toAddr, cc: null, bcc: null,
+                  from_identifier: fromAddr, to_identifier: toAddr, cc: ccAddr, bcc: bccAddr,
                   body: null, html_body: null, external_id: `uid-${acc.id}-${uid}`, external_uid: uid,
                   imap_account_id: acc.id, received_at: date.toISOString(),
                 })

@@ -77,6 +77,25 @@ export function recipientsOverlap(a: string | null | undefined, b: string | null
   return overlap > 0 && (overlap === aParts.length || overlap === bParts.length)
 }
 
+function normalizeIdentifierList(value: string | null | undefined): string {
+  return (value ?? '')
+    .split(',')
+    .map((s) => normalizeEmail(s))
+    .filter(Boolean)
+    .sort()
+    .join(',')
+}
+
+/** True when incoming is non-empty and differs from existing (order-insensitive). */
+function envelopeIdentifierDiffers(
+  existing: string | null | undefined,
+  incoming: string,
+): boolean {
+  const inc = incoming.trim()
+  if (!inc) return false
+  return normalizeIdentifierList(existing) !== normalizeIdentifierList(inc)
+}
+
 /** Strip Gmail/full-document HTML chrome so stored drafts don't reload with white/Times wrappers. */
 export function normalizeDraftHtml(html: string | null | undefined): string | null {
   if (html == null) return null
@@ -102,6 +121,58 @@ export type ImapEnvelope = {
   subject?: string
   from?: PostalAddress[]
   to?: PostalAddress[]
+  cc?: PostalAddress[]
+  bcc?: PostalAddress[]
+}
+
+export function formatEnvelopeAddressList(addrs: PostalAddress[] | undefined): string {
+  if (!addrs?.length) return ''
+  return addrs.map((a) => a.address ?? '').filter(Boolean).join(', ')
+}
+
+/** Header block from raw RFC 822 source (before the blank line that separates body). */
+export function extractRawHeaderBlock(source: Uint8Array | string): string {
+  const text = typeof source === 'string' ? source : new TextDecoder().decode(source)
+  const end = text.search(/\r?\n\r?\n/)
+  return end === -1 ? text : text.slice(0, end)
+}
+
+/** Parse one header field from a raw header block, unfolding RFC 5322 continuations. */
+export function parseRawHeaderValue(headerBlock: string, name: string): string | null {
+  const target = name.toLowerCase()
+  const lines = headerBlock.split(/\r?\n/)
+  let value: string | null = null
+
+  for (const line of lines) {
+    if (/^[\t ]/.test(line)) {
+      if (value !== null) value += ' ' + line.trim()
+      continue
+    }
+
+    if (value !== null) break
+
+    const colonIdx = line.indexOf(':')
+    if (colonIdx === -1) continue
+    const hdrName = line.slice(0, colonIdx).trim().toLowerCase()
+    if (hdrName !== target) continue
+    value = line.slice(colonIdx + 1).trim()
+  }
+
+  return value?.trim() || null
+}
+
+export function parseCcBccHeaders(rawHdrs: string): { cc: string | null; bcc: string | null } {
+  return {
+    cc: parseRawHeaderValue(rawHdrs, 'cc'),
+    bcc: parseRawHeaderValue(rawHdrs, 'bcc'),
+  }
+}
+
+export type ParsedMailboxBody = {
+  body: string | null
+  htmlBody: string | null
+  cc: string | null
+  bcc: string | null
 }
 
 export type ParsedEnvelopeMeta = {
@@ -420,13 +491,14 @@ async function fetchParsedBodyFromMailbox(
   client: ImapFlow,
   mailboxPath: string,
   uid: number,
-): Promise<{ body: string | null; htmlBody: string | null } | null> {
+): Promise<ParsedMailboxBody | null> {
   let lock: { release: () => Promise<void> } | null = null
   try {
     lock = await client.getMailboxLock(mailboxPath)
     const fetched = await client.fetchAll(String(uid), { source: true, uid: true }, { uid: true })
     const source = fetched[0]?.source as Uint8Array | undefined
     if (!source) return null
+    const { cc, bcc } = parseCcBccHeaders(extractRawHeaderBlock(source))
     const parsed = await PostalMime.parse(source)
     let bodyText = (parsed.text ?? '').trim() || null
     let htmlBody = normalizeDraftHtml(parsed.html ?? null)
@@ -435,7 +507,7 @@ async function fetchParsedBodyFromMailbox(
     if (!bodyText && htmlBody) {
       bodyText = htmlBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_BODY_LENGTH) || null
     }
-    return { body: bodyText, htmlBody }
+    return { body: bodyText, htmlBody, cc, bcc }
   } catch (err) {
     console.log('[inboxGmailDraftIngest] body fetch failed', { uid, mailboxPath, error: (err as Error).message })
     return null
@@ -892,8 +964,29 @@ function normalizeMessageIdHeader(id: string | null | undefined): string | null 
   return s || null
 }
 
+type SentHealRepairRow = {
+  id: string
+  is_draft?: boolean | null
+  direction?: string | null
+  cc?: string | null
+  bcc?: string | null
+  from_identifier?: string | null
+  to_identifier?: string | null
+  external_uid?: number | null
+}
+
+function pickSentHealRepairTarget(rows: SentHealRepairRow[]): SentHealRepairRow | null {
+  const nonDrafts = rows.filter((m) => !m.is_draft)
+  if (nonDrafts.length !== 1) return null
+  const row = nonDrafts[0]
+  if (row.direction !== 'outbound') return null
+  if (row.cc?.trim()) return null
+  return row
+}
+
 /**
- * Self-heal: empty thread with a matching Sent mailbox message → insert outbound sent row and close thread.
+ * Self-heal: empty thread (or lone Sent-heal row missing cc/bcc) with a matching Sent mailbox message
+ * → insert outbound sent row or repair cc/bcc on an existing Sent recovery row.
  */
 export async function healEmptyThreadFromSentMail(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -907,11 +1000,18 @@ export async function healEmptyThreadFromSentMail(
   logPrefix = '[inboxGmailDraftIngest]',
 ): Promise<{ healed: boolean; messageId?: string }> {
   const { data: existingMsgs } = await service.from('inbox_messages')
-    .select('id, is_draft')
+    .select('id, is_draft, direction, cc, bcc, from_identifier, to_identifier, external_uid')
     .eq('thread_id', thread.id)
-  if (existingMsgs?.length) {
-    const allDrafts = (existingMsgs as { is_draft?: boolean | null }[]).every((m) => m.is_draft)
-    if (!allDrafts) return { healed: false }
+
+  const existingRows = (existingMsgs ?? []) as SentHealRepairRow[]
+  let repairTarget: SentHealRepairRow | null = null
+  if (existingRows.length) {
+    const nonDrafts = existingRows.filter((m) => !m.is_draft)
+    if (nonDrafts.length > 1) return { healed: false }
+    if (nonDrafts.length === 1) {
+      repairTarget = pickSentHealRepairTarget(existingRows)
+      if (!repairTarget) return { healed: false }
+    }
   }
 
   const { data: accRow } = await service.from('imap_accounts')
@@ -971,6 +1071,8 @@ export async function healEmptyThreadFromSentMail(
   const bodyPayload = await fetchParsedBodyFromMailbox(client, sentPath, match.uid)
 
   let toIdentifier = ''
+  let ccIdentifier: string | null = null
+  let bccIdentifier: string | null = null
   let fromIdentifier = fromAddr || accountEmail
   let receivedAt = new Date().toISOString()
   let externalId = `sent-heal-${imapAccountId}-${match.uid}`
@@ -980,15 +1082,15 @@ export async function healEmptyThreadFromSentMail(
     try {
       const fetched = await client.fetchAll(
         String(match.uid),
-        { envelope: true, headers: ['message-id'], uid: true },
+        { envelope: true, headers: ['message-id', 'cc', 'bcc'], uid: true },
         { uid: true },
       )
       const env = fetched[0]?.envelope as ImapEnvelope | undefined
       if (env?.to?.length) {
-        toIdentifier = env.to.map((a) => a.address ?? '').filter(Boolean).join(', ')
+        toIdentifier = formatEnvelopeAddressList(env.to)
       }
       if (env?.from?.length) {
-        const envFrom = env.from.map((a) => a.address ?? '').filter(Boolean).join(', ')
+        const envFrom = formatEnvelopeAddressList(env.from)
         if (envFrom) fromIdentifier = envFrom
       }
       const envDate = (fetched[0]?.envelope as { date?: Date } | undefined)?.date
@@ -998,21 +1100,71 @@ export async function healEmptyThreadFromSentMail(
       const msgIdMatch = rawHdrs.match(/^message-id:\s*(.+)/im)
       const messageId = normalizeMessageIdHeader(msgIdMatch?.[1] ?? null)
       if (messageId) externalId = messageId
+
+      const { cc: limitedCc, bcc: limitedBcc } = parseCcBccHeaders(rawHdrs)
+      ccIdentifier = limitedCc || bodyPayload?.cc || formatEnvelopeAddressList(env?.cc) || null
+      bccIdentifier = limitedBcc || bodyPayload?.bcc || formatEnvelopeAddressList(env?.bcc) || null
     } finally {
       try { await lock.release() } catch { /* ignore */ }
     }
   } catch (err) {
     console.log(logPrefix, 'empty-thread sent heal envelope fetch failed', { threadId: thread.id, error: (err as Error).message })
     if (match.envelope.to?.length) {
-      toIdentifier = match.envelope.to.map((a) => a.address ?? '').filter(Boolean).join(', ')
+      toIdentifier = formatEnvelopeAddressList(match.envelope.to)
     }
     if (match.envelope.from?.length) {
-      const envFrom = match.envelope.from.map((a) => a.address ?? '').filter(Boolean).join(', ')
+      const envFrom = formatEnvelopeAddressList(match.envelope.from)
       if (envFrom) fromIdentifier = envFrom
     }
+    ccIdentifier = bodyPayload?.cc || formatEnvelopeAddressList(match.envelope.cc) || null
+    bccIdentifier = bodyPayload?.bcc || formatEnvelopeAddressList(match.envelope.bcc) || null
   }
 
   if (!fromIdentifier) fromIdentifier = fromAddr || accountEmail
+
+  if (repairTarget) {
+    const updateFields: Record<string, unknown> = {}
+    if (ccIdentifier) updateFields.cc = ccIdentifier
+    if (bccIdentifier) updateFields.bcc = bccIdentifier
+    if (envelopeIdentifierDiffers(repairTarget.to_identifier, toIdentifier)) {
+      updateFields.to_identifier = toIdentifier
+    }
+    if (envelopeIdentifierDiffers(repairTarget.from_identifier, fromIdentifier)) {
+      updateFields.from_identifier = fromIdentifier
+    }
+
+    if (!Object.keys(updateFields).length) {
+      console.log(logPrefix, 'sent heal repair skipped — no Sent mailbox fields to update', {
+        threadId: thread.id,
+        messageId: repairTarget.id,
+      })
+      return { healed: false }
+    }
+
+    const { error: updErr } = await service.from('inbox_messages')
+      .update(updateFields)
+      .eq('id', repairTarget.id)
+
+    if (updErr) {
+      console.log(logPrefix, 'sent heal repair update failed', {
+        threadId: thread.id,
+        messageId: repairTarget.id,
+        error: updErr.message,
+      })
+      return { healed: false }
+    }
+
+    console.log(logPrefix, 'repaired Sent recovery row from Sent Mail', {
+      threadId: thread.id,
+      messageId: repairTarget.id,
+      sentUid: match.uid,
+      sentMailboxPath: sentPath,
+      score: match.score,
+      orgId,
+      externalUid: repairTarget.external_uid ?? null,
+    })
+    return { healed: true, messageId: repairTarget.id }
+  }
 
   const { data: inserted, error: insErr } = await service.from('inbox_messages')
     .insert({
@@ -1021,8 +1173,8 @@ export async function healEmptyThreadFromSentMail(
       direction: 'outbound',
       from_identifier: fromIdentifier,
       to_identifier: toIdentifier || null,
-      cc: null,
-      bcc: null,
+      cc: ccIdentifier,
+      bcc: bccIdentifier,
       body: bodyPayload?.body ?? null,
       html_body: bodyPayload?.htmlBody ?? null,
       external_id: externalId,
