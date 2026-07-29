@@ -136,14 +136,35 @@ function sanitizeStorageName(name: string): string {
   return safe.length > 180 ? safe.slice(0, 180) : safe
 }
 
+/** Max message headers to fetch per sync. Keeps slow/backlogged mailboxes from exhausting Edge runtime / pg_net timeouts. */
+const MAX_HEADER_FETCH_PER_SYNC = 50
+
+/** Max trash message headers to fetch per sync. Trash scanning is maintenance-only; keep it cheap/stable. */
+const MAX_TRASH_FETCH_PER_SYNC = 50
+
 /** Max message bodies to fetch per sync to stay under Gmail IMAP quota (~2.5GB/day). Only new messages get body fetch. */
 const MAX_BODY_FETCH_PER_SYNC = 25
 
 /** Max messages to process in resync mode (last ~24 UIDs window, capped). */
 const MAX_BATCH = 25
-
 const MAX_SYNC_RETRIES = 2
 const RETRY_DELAY_MS = 3000
+const IMAP_CONNECT_TIMEOUT_MS = 15000
+const IMAP_OPERATION_TIMEOUT_MS = 45000
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 function isRetryableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
@@ -343,13 +364,19 @@ serve(async (req) => {
       port,
       secure,
       auth: { user: acc.imap_username, pass: password },
+      // Keep broken or unreachable accounts from monopolizing the Edge invocation.
+      // ImapFlow supports these timeout knobs; the outer withTimeout calls are a fallback
+      // for individual operations after the socket is established.
+      connectionTimeout: IMAP_CONNECT_TIMEOUT_MS,
+      greetingTimeout: IMAP_CONNECT_TIMEOUT_MS,
+      socketTimeout: IMAP_OPERATION_TIMEOUT_MS,
     })
     client.on('error', (err: Error) => {
       console.log('[imap-sync] account', acc.id, 'IMAP client error (connection/reset):', err?.message ?? String(err))
     })
 
     try {
-      await client.connect()
+      await withTimeout(client.connect(), IMAP_CONNECT_TIMEOUT_MS, 'IMAP connect timeout')
       console.log('[imap-sync] account', acc.id, 'IMAP connected')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -366,7 +393,7 @@ serve(async (req) => {
     let lock: { release: () => Promise<void> } | null = null
 
     try {
-      lock = await client.getMailboxLock(mailboxPath)
+      lock = await withTimeout(client.getMailboxLock(mailboxPath), IMAP_OPERATION_TIMEOUT_MS, `IMAP mailbox lock timeout: ${mailboxPath}`)
       const lastUid = acc.last_fetched_uid ?? 0
       console.log('[imap-sync] account', acc.id, 'lastUid=', lastUid)
 
@@ -472,7 +499,7 @@ serve(async (req) => {
               backfillStart = Math.max(1, lastUid - 2000)
               backfillEnd = lastUid
             } else {
-              const status = await client.status(mailboxPath, { uidNext: true })
+              const status = await withTimeout(client.status(mailboxPath, { uidNext: true }), IMAP_OPERATION_TIMEOUT_MS, `IMAP status timeout: ${mailboxPath}`) as { uidNext?: number }
               const uidNext = (status?.uidNext as number) ?? 1
               backfillStart = 1
               backfillEnd = Math.max(1, Math.min(500, uidNext - 1))
@@ -640,17 +667,20 @@ serve(async (req) => {
         }
       }
 
+      const status = await withTimeout(client.status(mailboxPath, { uidNext: true }), IMAP_OPERATION_TIMEOUT_MS, `IMAP status timeout: ${mailboxPath}`) as { uidNext?: number }
+      const uidNext = (status?.uidNext as number) ?? 1
+      const highestAvailableUid = Math.max(0, uidNext - 1)
       let range: string
       if (lastUid > 0) {
-        // Use lastUid:* (inclusive) so Gmail/IMAP edge cases don't miss messages at the boundary
-        range = `${lastUid}:*`
+        // Use lastUid as an inclusive boundary, but cap the upper UID so a backlogged
+        // mailbox progresses incrementally instead of timing out on a huge lastUid:* fetch.
+        const endUid = Math.min(highestAvailableUid, lastUid + MAX_HEADER_FETCH_PER_SYNC)
+        range = endUid >= lastUid ? `${lastUid}:${endUid}` : `${lastUid}:${lastUid}`
       } else {
-        const status = await client.status(mailboxPath, { uidNext: true })
-        const uidNext = (status?.uidNext as number) ?? 1
-        const start = Math.max(1, uidNext - 199)
-        range = `${start}:*`
+        const start = Math.max(1, highestAvailableUid - MAX_HEADER_FETCH_PER_SYNC + 1)
+        range = highestAvailableUid >= start ? `${start}:${highestAvailableUid}` : `${start}:${start}`
       }
-      console.log('[imap-sync] account', acc.id, 'fetch range:', range)
+      console.log('[imap-sync] account', acc.id, 'fetch range:', range, 'uidNext=', uidNext, 'cap=', MAX_HEADER_FETCH_PER_SYNC)
 
       // Fetch headers only — no body/source download. flags needed to skip Gmail draft autosaves.
       const envelopes = await client.fetchAll(range, { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }, { uid: true })
@@ -1160,7 +1190,12 @@ serve(async (req) => {
       if (trashLock) {
         try {
           const lastUidTrash = (acc as ImapAccountRow).last_fetched_uid_trash ?? 0
-          const trashRange = lastUidTrash > 0 ? `${lastUidTrash + 1}:*` : `${Math.max(1, (client.mailbox?.uidNext ?? 1) - 50)}:*`
+          const trashUidNext = (client.mailbox?.uidNext as number | undefined) ?? 1
+          const highestTrashAvailableUid = Math.max(0, trashUidNext - 1)
+          const trashStart = lastUidTrash > 0 ? lastUidTrash + 1 : Math.max(1, highestTrashAvailableUid - MAX_TRASH_FETCH_PER_SYNC + 1)
+          const trashEnd = Math.min(highestTrashAvailableUid, trashStart + MAX_TRASH_FETCH_PER_SYNC - 1)
+          const trashRange = trashEnd >= trashStart ? `${trashStart}:${trashEnd}` : `${trashStart}:${trashStart}`
+          console.log('[imap-sync] account', acc.id, 'trash fetch range:', trashRange, 'uidNext=', trashUidNext, 'cap=', MAX_TRASH_FETCH_PER_SYNC)
           const trashEnvelopes = await client.fetchAll(trashRange, { envelope: true, headers: ['message-id'], uid: true }, { uid: true })
           const trashBatch = trashEnvelopes.filter(m => (m.uid as number) > lastUidTrash).sort((a, b) => (a.uid as number) - (b.uid as number))
           let highestTrashUid = lastUidTrash
