@@ -1,6 +1,13 @@
 // Sync IMAP accounts: fetch new messages and write to inbox_threads + inbox_messages.
 // Cron: call with no body to sync all orgs' active accounts. Manual: pass orgId and optional accountId.
 // Requires: ENCRYPTION_KEY, SUPABASE_SERVICE_ROLE_KEY. Cron: verify via CRON_SECRET header.
+//
+// Sync modes (see isIncrementalSync below):
+// - Incremental (cron / manual without flags): headers-only fetch, insert rows with null bodies,
+//   advance last_fetched_uid, return quickly. Bodies are lazy-loaded via fetch-thread-bodies when
+//   a thread is opened; resync=true re-parses recent message bodies on demand.
+// - Explicit maintenance: resync, backfillForThread, backfillOnly — run full body fetch / draft heal /
+//   trash scan / archive detection as before (may take longer; not used by cron fan-out).
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -142,8 +149,27 @@ const MAX_HEADER_FETCH_PER_SYNC = 50
 /** Max trash message headers to fetch per sync. Trash scanning is maintenance-only; keep it cheap/stable. */
 const MAX_TRASH_FETCH_PER_SYNC = 50
 
-/** Max message bodies to fetch per sync to stay under Gmail IMAP quota (~2.5GB/day). Only new messages get body fetch. */
+/** Max message bodies to fetch per sync to stay under Gmail IMAP quota (~2.5GB/day). Maintenance/resync only — skipped in incremental sync. */
 const MAX_BODY_FETCH_PER_SYNC = 25
+
+/**
+ * Wall-clock budget for incremental sync. Cron pg_net and manual curl often time out at ~120s;
+ * finish headers + DB writes and return a JSON response well before that.
+ */
+const INCREMENTAL_SYNC_BUDGET_MS = 90_000
+
+/** True when this invocation should only do cheap header ingest (cron fan-out, routine manual sync). */
+function isIncrementalSyncRequest(body: SyncBody): boolean {
+  return body.resync !== true && !body.backfillOnly && !body.backfillForThread
+}
+
+function syncBudgetRemainingMs(startedAt: number): number {
+  return INCREMENTAL_SYNC_BUDGET_MS - (Date.now() - startedAt)
+}
+
+function isSyncBudgetExhausted(startedAt: number): boolean {
+  return syncBudgetRemainingMs(startedAt) <= 0
+}
 
 /** Max messages to process in resync mode (last ~24 UIDs window, capped). */
 const MAX_BATCH = 25
@@ -335,7 +361,12 @@ serve(async (req) => {
   let totalMessagesUpdated = 0
   const errors: string[] = []
 
+  // Incremental = headers-first cron/manual path. Explicit flags opt into slower maintenance.
+  const isIncrementalSync = isIncrementalSyncRequest(body)
+  console.log('[imap-sync]', syncId, 'mode:', isIncrementalSync ? 'incremental (headers-only)' : 'maintenance/full')
+
   for (const acc of accounts as ImapAccountRow[]) {
+    const accountSyncStartedAt = Date.now()
     console.log('[imap-sync] account', acc.id, 'host=', acc.host, 'last_fetched_uid=', acc.last_fetched_uid)
     let password: string
     try {
@@ -724,21 +755,24 @@ serve(async (req) => {
 
       if (newMsgs.length === 0) {
         console.log('[imap-sync] account', acc.id, 'no new messages — updating last_fetch_at only')
-        try {
-          const healed = await healRecentEmptyThreadsFromDrafts(
-            service,
-            client,
-            acc.host,
-            acc.id,
-            acc.org_id,
-            `[imap-sync] account ${acc.id}`,
-          )
-          if (healed > 0) {
-            totalMessages += healed
-            console.log('[imap-sync] account', acc.id, 'healed', healed, 'empty thread(s) from Drafts')
+        // Draft heal scans Gmail Drafts for empty threads — maintenance-only; too slow for cron fan-out.
+        if (!isIncrementalSync) {
+          try {
+            const healed = await healRecentEmptyThreadsFromDrafts(
+              service,
+              client,
+              acc.host,
+              acc.id,
+              acc.org_id,
+              `[imap-sync] account ${acc.id}`,
+            )
+            if (healed > 0) {
+              totalMessages += healed
+              console.log('[imap-sync] account', acc.id, 'healed', healed, 'empty thread(s) from Drafts')
+            }
+          } catch (healErr) {
+            console.log('[imap-sync] account', acc.id, 'empty-thread draft heal error:', (healErr as Error).message)
           }
-        } catch (healErr) {
-          console.log('[imap-sync] account', acc.id, 'empty-thread draft heal error:', (healErr as Error).message)
         }
         await service.from('imap_accounts').update({ last_fetch_at: new Date().toISOString(), last_error: null }).eq('id', acc.id)
         if (lock) await lock.release()
@@ -831,6 +865,12 @@ serve(async (req) => {
       }
 
       for (const p of parsed) {
+        // Stop ingesting new UIDs if incremental budget is exhausted; cursor still advances below.
+        if (isIncrementalSync && isSyncBudgetExhausted(accountSyncStartedAt)) {
+          console.log('[imap-sync] account', acc.id, 'incremental budget exhausted — stopping message loop early')
+          break
+        }
+
         if (p.uid > highestUid) highestUid = p.uid
 
         if (uidsAlreadyInDb.has(p.uid)) {
@@ -1013,8 +1053,9 @@ serve(async (req) => {
           insertedRows = (insertedData ?? []) as { id: string; external_uid: number; thread_id: string }[]
           console.log('[imap-sync] account', acc.id, 'inserted threads=', threadsCreated, 'messages=', messagesInserted)
 
-          // Fetch bodies for new messages only (headers already confirmed new). Limit to avoid Gmail IMAP quota.
-          const toFetch = insertedRows.slice(0, MAX_BODY_FETCH_PER_SYNC)
+          // Body fetch is expensive (full MIME + attachments). Incremental sync defers to fetch-thread-bodies
+          // when the user opens a thread, or resync=true for explicit body backfill.
+          const toFetch = !isIncrementalSync ? insertedRows.slice(0, MAX_BODY_FETCH_PER_SYNC) : []
           if (toFetch.length > 0) {
             console.log('[imap-sync] account', acc.id, 'fetching bodies for', toFetch.length, 'new messages (limit', MAX_BODY_FETCH_PER_SYNC, ')')
             for (const row of toFetch) {
@@ -1095,6 +1136,8 @@ serve(async (req) => {
                 console.log('[imap-sync] account', acc.id, 'body fetch failed for', row.id, (bodyErr as Error).message)
               }
             }
+          } else if (isIncrementalSync && insertedRows.length > 0) {
+            console.log('[imap-sync] account', acc.id, 'incremental: deferred body fetch for', insertedRows.length, 'message(s) — use fetch-thread-bodies or resync')
           }
         }
       }
@@ -1112,9 +1155,8 @@ serve(async (req) => {
       totalThreads += threadsCreated
       totalMessages += messagesInserted
 
-      // Detect messages moved to trash on the server (UIDs gone from inbox)
-      // Check recent open threads — if their UIDs no longer exist, mark as archived
-      if (highestUid > 0) {
+      // Maintenance-only: probe IMAP for each recent open thread's UID — many round-trips, can hang cron.
+      if (!isIncrementalSync && highestUid > 0) {
         const { data: recentOpenThreads } = await service.from('inbox_threads')
           .select('id, user_restored_at, status, subject, from_address').eq('org_id', acc.org_id).eq('imap_account_id', acc.id)
           .eq('status', 'open').order('last_message_at', { ascending: false }).limit(20)
@@ -1158,21 +1200,23 @@ serve(async (req) => {
         }
       }
 
-      try {
-        const healed = await healRecentEmptyThreadsFromDrafts(
-          service,
-          client,
-          acc.host,
-          acc.id,
-          acc.org_id,
-          `[imap-sync] account ${acc.id}`,
-        )
-        if (healed > 0) {
-          totalMessages += healed
-          console.log('[imap-sync] account', acc.id, 'healed', healed, 'empty thread(s) from Drafts after sync')
+      if (!isIncrementalSync) {
+        try {
+          const healed = await healRecentEmptyThreadsFromDrafts(
+            service,
+            client,
+            acc.host,
+            acc.id,
+            acc.org_id,
+            `[imap-sync] account ${acc.id}`,
+          )
+          if (healed > 0) {
+            totalMessages += healed
+            console.log('[imap-sync] account', acc.id, 'healed', healed, 'empty thread(s) from Drafts after sync')
+          }
+        } catch (healErr) {
+          console.log('[imap-sync] account', acc.id, 'empty-thread draft heal error:', (healErr as Error).message)
         }
-      } catch (healErr) {
-        console.log('[imap-sync] account', acc.id, 'empty-thread draft heal error:', (healErr as Error).message)
       }
 
       await draftsCache.release()
@@ -1180,149 +1224,156 @@ serve(async (req) => {
       if (lock) await lock.release()
       lock = null
 
-      const trashPath = getTrashMailboxPath(acc.host)
-      let trashLock: { release: () => Promise<void> } | null = null
-      try {
-        trashLock = await client.getMailboxLock(trashPath)
-      } catch {
-        // Trash folder may not exist on this server
-      }
-      if (trashLock) {
+      // Trash folder scan — maintenance-only; opens second mailbox and fetches envelopes.
+      if (!isIncrementalSync) {
+        const trashPath = getTrashMailboxPath(acc.host)
+        let trashLock: { release: () => Promise<void> } | null = null
         try {
-          const lastUidTrash = (acc as ImapAccountRow).last_fetched_uid_trash ?? 0
-          const trashUidNext = (client.mailbox?.uidNext as number | undefined) ?? 1
-          const highestTrashAvailableUid = Math.max(0, trashUidNext - 1)
-          const trashStart = lastUidTrash > 0 ? lastUidTrash + 1 : Math.max(1, highestTrashAvailableUid - MAX_TRASH_FETCH_PER_SYNC + 1)
-          const trashEnd = Math.min(highestTrashAvailableUid, trashStart + MAX_TRASH_FETCH_PER_SYNC - 1)
-          const trashRange = trashEnd >= trashStart ? `${trashStart}:${trashEnd}` : `${trashStart}:${trashStart}`
-          console.log('[imap-sync] account', acc.id, 'trash fetch range:', trashRange, 'uidNext=', trashUidNext, 'cap=', MAX_TRASH_FETCH_PER_SYNC)
-          const trashEnvelopes = await client.fetchAll(trashRange, { envelope: true, headers: ['message-id'], uid: true }, { uid: true })
-          const trashBatch = trashEnvelopes.filter(m => (m.uid as number) > lastUidTrash).sort((a, b) => (a.uid as number) - (b.uid as number))
-          let highestTrashUid = lastUidTrash
-          for (const msg of trashBatch) {
-            const uid = msg.uid as number
-            if (uid > highestTrashUid) highestTrashUid = uid
-            const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
-            const fromAddr = envelope?.from?.[0]?.address ?? ''
-            const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
-            const subject = (envelope?.subject as string) ?? ''
-            const date = envelope?.date ? new Date(envelope.date) : new Date()
-            const rawHdrs2 = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
-            const rawMessageId = (() => { const m = rawHdrs2.match(/^message-id:\s*(.+)/im); return m ? m[1].trim() : null })()
-            const messageId = normalizeMessageId(rawMessageId)
-            const externalId = messageId ?? `trash-${acc.id}-${uid}`
+          trashLock = await client.getMailboxLock(trashPath)
+        } catch {
+          // Trash folder may not exist on this server
+        }
+        if (trashLock) {
+          try {
+            const lastUidTrash = (acc as ImapAccountRow).last_fetched_uid_trash ?? 0
+            const trashUidNext = (client.mailbox?.uidNext as number | undefined) ?? 1
+            const highestTrashAvailableUid = Math.max(0, trashUidNext - 1)
+            const trashStart = lastUidTrash > 0 ? lastUidTrash + 1 : Math.max(1, highestTrashAvailableUid - MAX_TRASH_FETCH_PER_SYNC + 1)
+            const trashEnd = Math.min(highestTrashAvailableUid, trashStart + MAX_TRASH_FETCH_PER_SYNC - 1)
+            const trashRange = trashEnd >= trashStart ? `${trashStart}:${trashEnd}` : `${trashStart}:${trashStart}`
+            console.log('[imap-sync] account', acc.id, 'trash fetch range:', trashRange, 'uidNext=', trashUidNext, 'cap=', MAX_TRASH_FETCH_PER_SYNC)
+            const trashEnvelopes = await client.fetchAll(trashRange, { envelope: true, headers: ['message-id'], uid: true }, { uid: true })
+            const trashBatch = trashEnvelopes.filter(m => (m.uid as number) > lastUidTrash).sort((a, b) => (a.uid as number) - (b.uid as number))
+            let highestTrashUid = lastUidTrash
+            for (const msg of trashBatch) {
+              const uid = msg.uid as number
+              if (uid > highestTrashUid) highestTrashUid = uid
+              const envelope = msg.envelope as { from?: { address?: string }[]; to?: { address?: string }[]; subject?: string; date?: Date }
+              const fromAddr = envelope?.from?.[0]?.address ?? ''
+              const toAddr = (envelope?.to?.[0]?.address as string) ?? ''
+              const subject = (envelope?.subject as string) ?? ''
+              const date = envelope?.date ? new Date(envelope.date) : new Date()
+              const rawHdrs2 = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
+              const rawMessageId = (() => { const m = rawHdrs2.match(/^message-id:\s*(.+)/im); return m ? m[1].trim() : null })()
+              const messageId = normalizeMessageId(rawMessageId)
+              const externalId = messageId ?? `trash-${acc.id}-${uid}`
 
-            const { data: existingByMsgId } = messageId
-              ? await service
-                  .from('inbox_messages')
-                  .select('thread_id, inbox_threads(mailbox_address)')
-                  .eq('imap_account_id', acc.id)
-                  .eq('external_id', messageId)
-              : { data: null }
-            const trashMailbox = normalizeEmail(toAddr)
-            const msgMatch = (existingByMsgId ?? []).find((row) => {
-              const threadMailbox = normalizeEmail((row as { inbox_threads: { mailbox_address: string | null } | null }).inbox_threads?.mailbox_address ?? '')
-              return !trashMailbox || !threadMailbox || trashMailbox === threadMailbox
-            })
-            if (msgMatch?.thread_id) {
-              const tid = msgMatch.thread_id as string
-              const { data: threadRow } = await service
-                .from('inbox_threads')
-                .select('status, user_restored_at')
-                .eq('id', tid)
-                .single()
-              if (threadRow?.user_restored_at && threadRow.status !== 'archived') {
-                console.log('[imap-sync] account', acc.id, 'skip trash archive: user_restored_at set', { threadId: tid, messageId })
+              const { data: existingByMsgId } = messageId
+                ? await service
+                    .from('inbox_messages')
+                    .select('thread_id, inbox_threads(mailbox_address)')
+                    .eq('imap_account_id', acc.id)
+                    .eq('external_id', messageId)
+                : { data: null }
+              const trashMailbox = normalizeEmail(toAddr)
+              const msgMatch = (existingByMsgId ?? []).find((row) => {
+                const threadMailbox = normalizeEmail((row as { inbox_threads: { mailbox_address: string | null } | null }).inbox_threads?.mailbox_address ?? '')
+                return !trashMailbox || !threadMailbox || trashMailbox === threadMailbox
+              })
+              if (msgMatch?.thread_id) {
+                const tid = msgMatch.thread_id as string
+                const { data: threadRow } = await service
+                  .from('inbox_threads')
+                  .select('status, user_restored_at')
+                  .eq('id', tid)
+                  .single()
+                if (threadRow?.user_restored_at && threadRow.status !== 'archived') {
+                  console.log('[imap-sync] account', acc.id, 'skip trash archive: user_restored_at set', { threadId: tid, messageId })
+                  continue
+                }
+                await service
+                  .from('inbox_threads')
+                  .update({ status: 'archived', updated_at: date.toISOString(), last_message_at: date.toISOString() })
+                  .eq('id', tid)
+                await logThreadArchiveDebug(
+                  service,
+                  {
+                    thread_id: tid,
+                    org_id: acc.org_id,
+                    payload: {
+                      source: 'imap_sync',
+                      reason: 'imap_trash_message_id_match',
+                      imap_account_id: acc.id,
+                      trash_mailbox: trashPath,
+                      trash_imap_uid: uid,
+                      message_id: messageId,
+                    },
+                  },
+                  '[imap-sync]',
+                )
                 continue
               }
-              await service
-                .from('inbox_threads')
-                .update({ status: 'archived', updated_at: date.toISOString(), last_message_at: date.toISOString() })
-                .eq('id', tid)
-              await logThreadArchiveDebug(
-                service,
-                {
-                  thread_id: tid,
-                  org_id: acc.org_id,
-                  payload: {
-                    source: 'imap_sync',
-                    reason: 'imap_trash_message_id_match',
-                    imap_account_id: acc.id,
-                    trash_mailbox: trashPath,
-                    trash_imap_uid: uid,
-                    message_id: messageId,
-                  },
-                },
-                '[imap-sync]',
-              )
-              continue
-            }
-            const { data: existingTrash } = await service
-              .from('inbox_messages')
-              .select('id')
-              .eq('imap_account_id', acc.id)
-              .eq('external_uid', uid)
-              .limit(1)
-            if (existingTrash?.length) continue
+              const { data: existingTrash } = await service
+                .from('inbox_messages')
+                .select('id')
+                .eq('imap_account_id', acc.id)
+                .eq('external_uid', uid)
+                .limit(1)
+              if (existingTrash?.length) continue
 
-            const { data: newThread, error: threadErr } = await service
-              .from('inbox_threads')
-              .insert({
-                org_id: acc.org_id,
-                channel: 'email',
-                status: 'archived',
-                subject: subject || '(No subject)',
-                last_message_at: date.toISOString(),
-                imap_account_id: acc.id,
-                from_address: fromAddr,
-                mailbox_address: normalizeEmail(toAddr) || null,
-              })
-              .select('id')
-              .single()
-            if (threadErr || !newThread) continue
-            const trashDirection = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
-            console.log('[imap-sync] account', acc.id, 'trash insert: direction=', trashDirection, 'from=', fromAddr?.slice(0, 30), 'to=', toAddr?.slice(0, 30))
-            const { error: msgErr } = await service.from('inbox_messages').insert({
-              thread_id: newThread.id,
-              channel: 'email',
-              direction: trashDirection,
-              from_identifier: fromAddr,
-              to_identifier: toAddr,
-              body: null,
-              html_body: null,
-              external_id: messageId ?? externalId,
-              external_uid: uid,
-              imap_account_id: acc.id,
-              received_at: date.toISOString(),
-            })
-            if (!msgErr) {
-              totalThreads++
-              totalMessages++
-              await logThreadArchiveDebug(
-                service,
-                {
-                  thread_id: newThread.id,
+              const { data: newThread, error: threadErr } = await service
+                .from('inbox_threads')
+                .insert({
                   org_id: acc.org_id,
-                  payload: {
-                    source: 'imap_sync',
-                    reason: 'new_archived_thread_from_trash_folder',
-                    imap_account_id: acc.id,
-                    trash_mailbox: trashPath,
-                    trash_imap_uid: uid,
-                    external_id: messageId ?? externalId,
+                  channel: 'email',
+                  status: 'archived',
+                  subject: subject || '(No subject)',
+                  last_message_at: date.toISOString(),
+                  imap_account_id: acc.id,
+                  from_address: fromAddr,
+                  mailbox_address: normalizeEmail(toAddr) || null,
+                })
+                .select('id')
+                .single()
+              if (threadErr || !newThread) continue
+              const trashDirection = ourAddressesSet.has(normalizeEmail(fromAddr)) ? 'outbound' : 'inbound'
+              console.log('[imap-sync] account', acc.id, 'trash insert: direction=', trashDirection, 'from=', fromAddr?.slice(0, 30), 'to=', toAddr?.slice(0, 30))
+              const { error: msgErr } = await service.from('inbox_messages').insert({
+                thread_id: newThread.id,
+                channel: 'email',
+                direction: trashDirection,
+                from_identifier: fromAddr,
+                to_identifier: toAddr,
+                body: null,
+                html_body: null,
+                external_id: messageId ?? externalId,
+                external_uid: uid,
+                imap_account_id: acc.id,
+                received_at: date.toISOString(),
+              })
+              if (!msgErr) {
+                totalThreads++
+                totalMessages++
+                await logThreadArchiveDebug(
+                  service,
+                  {
+                    thread_id: newThread.id,
+                    org_id: acc.org_id,
+                    payload: {
+                      source: 'imap_sync',
+                      reason: 'new_archived_thread_from_trash_folder',
+                      imap_account_id: acc.id,
+                      trash_mailbox: trashPath,
+                      trash_imap_uid: uid,
+                      external_id: messageId ?? externalId,
+                    },
                   },
-                },
-                '[imap-sync]',
-              )
+                  '[imap-sync]',
+                )
+              }
             }
+            await service
+              .from('imap_accounts')
+              .update({ last_fetched_uid_trash: highestTrashUid })
+              .eq('id', acc.id)
+          } finally {
+            await trashLock.release()
           }
-          await service
-            .from('imap_accounts')
-            .update({ last_fetched_uid_trash: highestTrashUid })
-            .eq('id', acc.id)
-        } finally {
-          await trashLock.release()
         }
+      }
+
+      if (isIncrementalSync) {
+        console.log('[imap-sync] account', acc.id, 'incremental sync finished in', Date.now() - accountSyncStartedAt, 'ms')
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
