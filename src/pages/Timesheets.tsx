@@ -10,6 +10,7 @@ import {
   getDateRangeForPreset,
   type DateRangePreset,
 } from '@/lib/dateRanges'
+import { fetchOutboundInvoiceLinkedTimeLogIds, isTimeLogBilled } from '@/lib/timeLogBilling'
 import { ChevronDown, ChevronUp, Plus, X, FileText } from 'lucide-react'
 
 type TimeLogRow = {
@@ -113,22 +114,16 @@ export default function Timesheets() {
       }
     })
 
-    // Derive billed status from actual invoice_items linkage (source of truth)
-    // This ensures deleted invoices immediately show logs as unbilled.
-    const allLogIds = mapped.map((t) => t.id)
-    const actuallyBilledIds = new Set<string>()
-    if (allLogIds.length > 0) {
-      const { data: billedItems } = await supabase
-        .from('invoice_items')
-        .select('time_log_ids, invoices!inner(direction)')
-        .eq('invoices.direction', 'outbound')
-        .overlaps('time_log_ids', allLogIds)
-      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach((item) => {
-        ;(item.time_log_ids ?? []).forEach((id) => actuallyBilledIds.add(id))
-      })
-    }
-
-    const mappedWithBilled = mapped.map((t) => ({ ...t, billed: actuallyBilledIds.has(t.id) }))
+    // Outbound invoice linkage is authoritative; fall back to time_logs.billed for manual marks
+    // and when the invoice_items query or DB trigger is the source of truth.
+    const invoiceLinkedIds = await fetchOutboundInvoiceLinkedTimeLogIds(
+      supabase,
+      mapped.map((t) => t.id),
+    )
+    const mappedWithBilled = mapped.map((t) => ({
+      ...t,
+      billed: isTimeLogBilled(t.id, t.billed, invoiceLinkedIds),
+    }))
     setEntries(mappedWithBilled)
 
     // Build unique users list for filter
@@ -207,7 +202,10 @@ export default function Timesheets() {
       .from('time_logs')
       .update({ billed: newBilled })
       .eq('id', entry.id)
-    if (!error) {
+    if (error) {
+      console.error('Failed to update billed status:', error)
+      window.alert('Could not update billed status. Please try again.')
+    } else {
       setEntries((prev) => prev.map((e) => e.id === entry.id ? { ...e, billed: newBilled } : e))
     }
     setTogglingId(null)

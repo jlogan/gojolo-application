@@ -4,6 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import DateInput from '@/components/DateInput'
+import { fetchOutboundInvoiceLinkedTimeLogIds, isTimeLogBilled } from '@/lib/timeLogBilling'
 import { ArrowLeft, Plus, Trash2, Clock, X, Check, GripVertical, ChevronDown, ChevronUp } from 'lucide-react'
 
 /* ─── types ─── */
@@ -553,22 +554,18 @@ export default function InvoiceForm() {
       })
     }
 
-    const timeLogIds = (rows as unknown as { id: string }[]).map((r) => r.id)
-    const actuallyBilledIds = new Set<string>()
-    if (timeLogIds.length > 0) {
-      const { data: billedItems } = await supabase
-        .from('invoice_items')
-        .select('time_log_ids, invoices!inner(direction)')
-        .eq('invoices.direction', 'outbound')
-        .overlaps('time_log_ids', timeLogIds)
-      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach((item) => {
-        ;(item.time_log_ids ?? []).forEach((id) => actuallyBilledIds.add(id))
-      })
-    }
+    const invoiceLinkedIds = await fetchOutboundInvoiceLinkedTimeLogIds(
+      supabase,
+      (rows as unknown as { id: string }[]).map((r) => r.id),
+    )
 
-    // Map rows. Billed status is derived from actual invoice_items linkage, not stale time_logs.billed.
     const mapped: TimeLogRow[] = (rows as unknown[]).map((r) => {
-      const row = r as TimeLogRow & { tasks?: { title?: string } | null; projects?: { hourly_rate?: number | null } | null; user_id?: string }
+      const row = r as TimeLogRow & {
+        tasks?: { title?: string } | null
+        projects?: { hourly_rate?: number | null } | null
+        user_id?: string
+        billed?: boolean
+      }
       return {
         id: row.id,
         task_id: row.task_id,
@@ -578,7 +575,7 @@ export default function InvoiceForm() {
         work_date: row.work_date,
         description: row.description,
         hourly_rate: row.hourly_rate && row.hourly_rate > 0 ? row.hourly_rate : (row.projects?.hourly_rate ?? projects.find((p) => p.id === projectId)?.hourly_rate ?? null),
-        billed: actuallyBilledIds.has(row.id),
+        billed: isTimeLogBilled(row.id, row.billed ?? false, invoiceLinkedIds),
         user_display_name: profileMap.get(row.user_id ?? '') ?? null,
       }
     })

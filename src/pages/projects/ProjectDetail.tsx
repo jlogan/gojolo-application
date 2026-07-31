@@ -25,6 +25,7 @@ import {
   taskStatusLabel,
 } from '@/lib/taskStatus'
 import { buildTaskArtifactPath } from '@/lib/taskArtifactStorage'
+import { fetchOutboundInvoiceLinkedTimeLogIds, isTimeLogBilled } from '@/lib/timeLogBilling'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -295,20 +296,15 @@ export default function ProjectDetail() {
       }
     })
 
-    const allLogIds = mapped.map(t => t.id)
-    const actuallyBilledIds = new Set<string>()
-    if (allLogIds.length > 0) {
-      const { data: billedItems } = await supabase
-        .from('invoice_items')
-        .select('time_log_ids, invoices!inner(direction)')
-        .eq('invoices.direction', 'outbound')
-        .overlaps('time_log_ids', allLogIds)
-      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach(item => {
-        ;(item.time_log_ids ?? []).forEach(logId => actuallyBilledIds.add(logId))
-      })
-    }
+    const invoiceLinkedIds = await fetchOutboundInvoiceLinkedTimeLogIds(
+      supabase,
+      mapped.map((t) => t.id),
+    )
 
-    setTimeLogs(mapped.map(t => ({ ...t, billed: actuallyBilledIds.has(t.id) })))
+    setTimeLogs(mapped.map((t) => ({
+      ...t,
+      billed: isTimeLogBilled(t.id, t.billed, invoiceLinkedIds),
+    })))
     setTimeLogsLoading(false)
   }, [id])
 

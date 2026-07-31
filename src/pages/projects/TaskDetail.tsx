@@ -15,6 +15,7 @@ import { sanitizeEmailHtml, buildEmailSrcDoc } from '@/lib/emailSanitizer'
 import { htmlToPlainText, parseMentionUserIds } from '@/lib/mentionUtils'
 import { TASK_STATUS_FLOW, normalizeTaskStatus, taskStatusLabel } from '@/lib/taskStatus'
 import { buildTaskArtifactPath } from '@/lib/taskArtifactStorage'
+import { fetchOutboundInvoiceLinkedTimeLogIds, isTimeLogBilled } from '@/lib/timeLogBilling'
 
 type Task = {
   id: string; project_id: string; org_id: string; title: string; description: string | null
@@ -532,19 +533,14 @@ export default function TaskDetail() {
     const allUids = new Set<string>()
     const cmtRows = (cmtRes.data ?? []) as TaskComment[]
     let tlRows = (tlRes.data ?? []) as TimeLog[]
-    const timeLogIds = tlRows.map(t => t.id)
-    if (timeLogIds.length > 0) {
-      const { data: billedItems } = await supabase
-        .from('invoice_items')
-        .select('time_log_ids, invoices!inner(direction)')
-        .eq('invoices.direction', 'outbound')
-        .overlaps('time_log_ids', timeLogIds)
-      const actuallyBilledIds = new Set<string>()
-      ;((billedItems ?? []) as { time_log_ids: string[] | null }[]).forEach(item => {
-        ;(item.time_log_ids ?? []).forEach(id => actuallyBilledIds.add(id))
-      })
-      tlRows = tlRows.map(t => ({ ...t, billed: actuallyBilledIds.has(t.id) }))
-    }
+    const invoiceLinkedIds = await fetchOutboundInvoiceLinkedTimeLogIds(
+      supabase,
+      tlRows.map((t) => t.id),
+    )
+    tlRows = tlRows.map((t) => ({
+      ...t,
+      billed: isTimeLogBilled(t.id, t.billed, invoiceLinkedIds),
+    }))
     const shRows = (shRes.data ?? []) as StatusEntry[]
     const taRows = (taRes.data ?? []) as { user_id: string }[]
     cmtRows.forEach(c => allUids.add(c.user_id))
