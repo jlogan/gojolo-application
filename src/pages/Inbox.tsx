@@ -10,7 +10,7 @@ import {
   Search, User, Link2, Pencil, Trash2, FileText, ChevronDown, Mailbox,
 } from 'lucide-react'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
-import { sanitizeEmailHtml, buildEmailSrcDoc, prepareDraftHtmlForDisplay } from '@/lib/emailSanitizer'
+import { sanitizeEmailHtml, buildEmailSrcDoc, prepareDraftHtmlForDisplay, resolveInlineEmailImages } from '@/lib/emailSanitizer'
 import { parseMentionUserIds } from '@/lib/mentionUtils'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -38,7 +38,7 @@ type InboxComment = {
   id: string; thread_id: string; user_id: string; content: string
   mentions: string[] | null; created_at: string; display_name?: string | null; avatar_url?: string | null
 }
-type Attachment = { id: string; message_id: string | null; thread_id: string; file_name: string; file_path: string; file_size: number | null; created_at: string; signedUrl?: string | null }
+type Attachment = { id: string; message_id: string | null; thread_id: string; file_name: string; file_path: string; file_size: number | null; content_type: string | null; created_at: string; signedUrl?: string | null }
 type TimelineItem = { kind: 'message'; data: InboxMessage; ts: string } | { kind: 'comment'; data: InboxComment; ts: string }
 type InboxUser = { user_id: string; display_name: string | null; email: string | null; avatar_url?: string | null }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
@@ -2522,10 +2522,12 @@ export default function Inbox() {
                       const isDraftMsg = !!m.is_draft
                       const isExpanded = m.id === lastMsgId || expandedMsgs.has(m.id)
                       const { html, content } = isExpanded ? cleanMessageBody(m) : { html: false, content: '' }
-                      const displayContent = isDraftMsg && html ? prepareDraftHtmlForDisplay(content) : content
-                      const sanitized = html ? sanitizeEmailHtml(displayContent) : displayContent
-                      const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
+                      const displayContent = isDraftMsg && html ? prepareDraftHtmlForDisplay(content) : content
+                      const sanitized = html
+                        ? sanitizeEmailHtml(resolveInlineEmailImages(displayContent, msgAttachments))
+                        : displayContent
+                      const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       const isEditingThisDraft = draftMessageId === m.id && replyMode !== null && replyMode !== 'compose'
                       if (isEditingThisDraft) {
                         return (

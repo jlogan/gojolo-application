@@ -110,6 +110,156 @@ export function sanitizeEmailHtml(rawHtml: string): string {
   return html
 }
 
+export type InlineEmailAttachment = {
+  file_name: string
+  file_path: string
+  signedUrl?: string | null
+  content_type?: string | null
+}
+
+const INBOX_STORAGE_OBJECT_PATH_RE = /\/inbox-attachments\/([^?"']+)/i
+
+function normalizeContentId(cid: string): string {
+  return cid.replace(/^<|>$/g, '').trim()
+}
+
+function isImageAttachment(att: InlineEmailAttachment): boolean {
+  if (att.content_type?.startsWith('image/')) return true
+  return /\.(jpe?g|png|gif|webp|bmp|svg|ico)$/i.test(att.file_name)
+}
+
+function attachmentSignedUrl(att: InlineEmailAttachment): string | null {
+  const url = att.signedUrl?.trim()
+  return url || null
+}
+
+function extractInboxStoragePath(url: string): string | null {
+  const match = url.match(INBOX_STORAGE_OBJECT_PATH_RE)
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return match[1]
+  }
+}
+
+function findAttachmentForCid(cid: string, attachments: InlineEmailAttachment[]): InlineEmailAttachment | undefined {
+  const norm = normalizeContentId(cid)
+  if (!norm) return undefined
+
+  const candidates = [norm]
+  const atIdx = norm.indexOf('@')
+  if (atIdx > 0) candidates.push(norm.slice(0, atIdx))
+
+  for (const key of candidates) {
+    const exact = attachments.find((a) => a.file_name === `inline-${key}`)
+    if (exact) return exact
+
+    const contains = attachments.find((a) => a.file_name.includes(key))
+    if (contains) return contains
+  }
+
+  return undefined
+}
+
+function buildCidUrlMap(html: string, attachments: InlineEmailAttachment[]): Map<string, string> {
+  const cidMatches = [...html.matchAll(/cid:([^"'\s>)]+)/gi)]
+  const cids = [...new Set(cidMatches.map((m) => normalizeContentId(m[1])))].filter(Boolean)
+  if (cids.length === 0) return new Map()
+
+  const map = new Map<string, string>()
+  const usedAttachmentPaths = new Set<string>()
+
+  for (const cid of cids) {
+    const att = findAttachmentForCid(cid, attachments)
+    const url = att ? attachmentSignedUrl(att) : null
+    if (att && url) {
+      map.set(cid, url)
+      usedAttachmentPaths.add(att.file_path)
+    }
+  }
+
+  const unmatchedCids = cids.filter((cid) => !map.has(cid))
+  const spareImages = attachments.filter(
+    (a) => isImageAttachment(a) && attachmentSignedUrl(a) && !usedAttachmentPaths.has(a.file_path),
+  )
+
+  if (unmatchedCids.length > 0 && unmatchedCids.length === spareImages.length) {
+    for (let i = 0; i < unmatchedCids.length; i++) {
+      const url = attachmentSignedUrl(spareImages[i])
+      if (url) map.set(unmatchedCids[i], url)
+    }
+  }
+
+  return map
+}
+
+function replaceCidToken(value: string, cidToUrl: Map<string, string>): string {
+  return value.replace(/^cid:(.+)$/i, (full, cidPart) => {
+    const norm = normalizeContentId(cidPart)
+    return cidToUrl.get(norm) ?? full
+  })
+}
+
+/**
+ * Rewrite cid: references and inbox-attachments storage URLs to signed URLs so inline
+ * images render inside the sandboxed email iframe (bucket is private; public URLs 403).
+ */
+export function resolveInlineEmailImages(html: string, attachments: InlineEmailAttachment[]): string {
+  if (!html?.trim() || attachments.length === 0) return html
+
+  const cidToUrl = buildCidUrlMap(html, attachments)
+  const pathToUrl = new Map<string, string>()
+  for (const att of attachments) {
+    const url = attachmentSignedUrl(att)
+    if (url) pathToUrl.set(att.file_path, url)
+  }
+
+  let out = html
+
+  if (cidToUrl.size > 0) {
+    out = out.replace(
+      /(\s(?:src|background|background-image)\s*=\s*["'])cid:([^"']+)(["'])/gi,
+      (match, prefix, cidPart, suffix) => {
+        const norm = normalizeContentId(cidPart)
+        const url = cidToUrl.get(norm)
+        return url ? `${prefix}${url}${suffix}` : match
+      },
+    )
+    out = out.replace(/url\s*\(\s*["']?(cid:[^"')]+)["']?\s*\)/gi, (match, cidExpr) => {
+      const url = replaceCidToken(cidExpr, cidToUrl)
+      return url === cidExpr ? match : `url("${url}")`
+    })
+  }
+
+  for (const att of attachments) {
+    const url = attachmentSignedUrl(att)
+    if (!url) continue
+    const escapedPath = att.file_path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    out = out.replace(
+      new RegExp(`((?:src|background|background-image)\\s*=\\s*["'])[^"']*${escapedPath}[^"']*(["'])`, 'gi'),
+      `$1${url}$2`,
+    )
+    out = out.replace(
+      new RegExp(`url\\s*\\(\\s*["']?[^"')]*${escapedPath}[^"')]*["']?\\s*\\)`, 'gi'),
+      `url("${url}")`,
+    )
+  }
+
+  // Fallback: swap any remaining inbox-attachments URL by extracted object path.
+  out = out.replace(
+    /(\s(?:src|background|background-image)\s*=\s*["'])([^"']+)(["'])/gi,
+    (match, prefix, src, suffix) => {
+      const path = extractInboxStoragePath(src)
+      if (!path) return match
+      const url = pathToUrl.get(path)
+      return url ? `${prefix}${url}${suffix}` : match
+    },
+  )
+
+  return out
+}
+
 /**
  * Detect if HTML email has its own background/color styling.
  * If it does, we render on white (preserve original design).
