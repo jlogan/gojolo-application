@@ -238,6 +238,7 @@ export default function InvoiceEmailDraft() {
 
   const invNum = invoiceNumber(invoice)
   const payUrl = invoice?.hash ? `${window.location.origin}/invoice/${invoice.hash}` : ''
+  const isResend = Boolean(invoice?.email_sent_at) || (invoice != null && !['draft', 'paid', 'cancelled'].includes(invoice.status))
 
   const load = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -367,7 +368,6 @@ export default function InvoiceEmailDraft() {
     if (invoice.direction !== 'outbound') { setError('Only outbound invoices can be sent to clients.'); return }
     if (invoice.is_recurring) { setError('Recurring invoice templates cannot be sent to clients.'); return }
     if (['paid', 'cancelled'].includes(invoice.status)) { setError('Paid or cancelled invoices cannot be sent.'); return }
-    if (invoice.email_sent_at) { setError('This invoice has already been sent by email.'); return }
     const recipients = to.split(',').map((email) => email.trim()).filter(Boolean)
     if (recipients.length === 0 || recipients.some((email) => !email.includes('@'))) { setError('Enter at least one valid recipient email.'); return }
     if (!selectedSendable) { setError('No active inbox email account is available for sending.'); return }
@@ -488,10 +488,10 @@ export default function InvoiceEmailDraft() {
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-white flex items-center gap-2">
-            <Mail size={24} className="text-gray-400" /> Send Invoice To Client
+            <Mail size={24} className="text-gray-400" /> {isResend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Compose and send {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
+            Compose and {isResend ? 'resend' : 'send'} {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
           </p>
         </div>
         {successThreadId && (

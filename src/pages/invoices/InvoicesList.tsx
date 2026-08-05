@@ -104,7 +104,10 @@ function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
     && inv.direction === 'outbound'
     && !inv.is_recurring
     && !['paid', 'cancelled'].includes(inv.status)
-    && !inv.email_sent_at
+}
+
+function isInvoiceResend(inv: InvoiceRow): boolean {
+  return Boolean(inv.email_sent_at) || !['draft', 'paid', 'cancelled'].includes(inv.status)
 }
 
 function SortHeader({
@@ -451,7 +454,7 @@ export default function InvoicesList() {
                           onClick={(e) => e.stopPropagation()}
                           className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
                         >
-                          <Send className="w-3.5 h-3.5" /> Send
+                          <Send className="w-3.5 h-3.5" /> {isInvoiceResend(inv) ? 'Resend' : 'Send'}
                         </Link>
                       )}
                     </span>
@@ -505,7 +508,7 @@ export default function InvoicesList() {
                         onClick={(e) => e.stopPropagation()}
                         className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
                       >
-                        <Send className="w-3.5 h-3.5" /> Send Invoice To Client
+                        <Send className="w-3.5 h-3.5" /> {isInvoiceResend(inv) ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
                       </Link>
                     )}
                   </div>

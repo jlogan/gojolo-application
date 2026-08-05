@@ -440,7 +440,8 @@ export default function InvoiceDetail() {
   const canDelete = !isVendor && ['draft'].includes(invoice.status)
   const showStripeButton = isVendor && invoice.direction === 'inbound' && !['paid', 'cancelled'].includes(invoice.status)
   const canRecordPayment = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
-  const canSendInvoice = !isVendor && invoice.direction === 'outbound' && !['paid', 'cancelled'].includes(invoice.status) && !invoice.email_sent_at && !invoice.is_recurring
+  const canSendInvoice = !isVendor && invoice.direction === 'outbound' && !['paid', 'cancelled'].includes(invoice.status) && !invoice.is_recurring
+  const isInvoiceResend = Boolean(invoice.email_sent_at) || !['draft', 'paid', 'cancelled'].includes(invoice.status)
   const canStopRecurrence = !isVendor && Boolean(invoice.is_recurring)
 
   return (
@@ -496,7 +497,7 @@ export default function InvoiceDetail() {
             to={`/invoices/${invoice.id}/send`}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
           >
-            <Send size={14} /> Send Invoice To Client
+            <Send size={14} /> {isInvoiceResend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
           </Link>
         )}
 
