@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { Plus, FileText, Search, Send, Pencil } from 'lucide-react'
+import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
+import { Plus, FileText, Search, Send, Pencil, CircleStop } from 'lucide-react'
 
 type InvoiceRow = {
   id: string
@@ -147,43 +148,65 @@ export default function InvoicesList() {
   const [search, setSearch] = useState('')
   const [sortField, setSortField] = useState<SortField>('created_at')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [stoppingId, setStoppingId] = useState<string | null>(null)
 
   const isPaidView = statusFilter === 'paid' && !recurringOnly
 
-  useEffect(() => {
+  const loadInvoices = useCallback(async (shouldApply: () => boolean = () => true) => {
     if (!currentOrg?.id || !user?.id) return
-    let cancelled = false
+
     setLoading(true)
+    let query = supabase
+      .from('invoices')
+      .select('id, direction, number, prefix, status, issue_date, due_date, paid_date, total, amount_due, email_sent_at, email_sent_thread_id, currency_id, created_at, is_recurring, recurring_interval, next_recurring_date, companies(name), projects(name)')
+      .eq('org_id', currentOrg.id)
+      .eq('direction', directionTab)
+      .order('created_at', { ascending: false })
 
-    const load = async () => {
-      let query = supabase
-        .from('invoices')
-        .select('id, direction, number, prefix, status, issue_date, due_date, paid_date, total, amount_due, email_sent_at, email_sent_thread_id, currency_id, created_at, is_recurring, recurring_interval, next_recurring_date, companies(name), projects(name)')
-        .eq('org_id', currentOrg.id)
-        .eq('direction', directionTab)
-        .order('created_at', { ascending: false })
-
-      if (statusFilter !== 'all') {
-        query = query.eq('status', statusFilter)
-      }
-
-      if (recurringOnly) {
-        query = query.eq('is_recurring', true)
-      } else {
-        // Keep unsent recurring templates out of the normal invoice list,
-        // but still show paid recurring invoices in the regular Paid view.
-        query = query.or('is_recurring.is.null,is_recurring.eq.false,status.eq.paid')
-      }
-
-      const { data, error } = await query
-      if (!cancelled) {
-        setInvoices(error ? [] : (data as InvoiceRow[]) ?? [])
-        setLoading(false)
-      }
+    if (statusFilter !== 'all') {
+      query = query.eq('status', statusFilter)
     }
-    load()
-    return () => { cancelled = true }
+
+    if (recurringOnly) {
+      query = query.eq('is_recurring', true)
+    } else {
+      query = query.or('is_recurring.is.null,is_recurring.eq.false,status.eq.paid')
+    }
+
+    const { data, error } = await query
+    if (!shouldApply()) return
+    setInvoices(error ? [] : (data as InvoiceRow[]) ?? [])
+    setLoading(false)
   }, [currentOrg?.id, user?.id, directionTab, statusFilter, recurringOnly])
+
+  useEffect(() => {
+    let active = true
+    loadInvoices(() => active)
+    return () => { active = false }
+  }, [loadInvoices])
+
+  const handleStopRecurrence = async (inv: InvoiceRow, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!currentOrg?.id || stoppingId) return
+    if (!window.confirm(
+      'Stop this recurring invoice schedule? No future invoices will be auto-generated from this template.',
+    )) return
+
+    setStoppingId(inv.id)
+    const { error } = await stopInvoiceRecurrence({
+      invoiceId: inv.id,
+      orgId: currentOrg.id,
+      direction: inv.direction,
+      existingNumber: inv.number ? Number(inv.number) : null,
+    })
+    if (error) {
+      console.error('Failed to stop recurrence:', error)
+    } else {
+      await loadInvoices()
+    }
+    setStoppingId(null)
+  }
 
   useEffect(() => {
     if (isPaidView) {
@@ -403,15 +426,25 @@ export default function InvoicesList() {
                         <span className="text-xs text-gray-400">{formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
                       </>
                     )}
-                    <span className="flex justify-end">
+                    <span className="flex justify-end gap-1.5">
                       {inv.is_recurring && !isVendor ? (
-                        <Link
-                          to={`/invoices/${inv.id}/edit`}
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
-                        >
-                          <Pencil className="w-3.5 h-3.5" /> Edit
-                        </Link>
+                        <>
+                          <Link
+                            to={`/invoices/${inv.id}/edit`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
+                          >
+                            <Pencil className="w-3.5 h-3.5" /> Edit
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={(e) => handleStopRecurrence(inv, e)}
+                            disabled={stoppingId === inv.id}
+                            className="inline-flex items-center gap-1 rounded-lg border border-purple-500/30 px-2.5 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-500/10 disabled:opacity-50"
+                          >
+                            <CircleStop className="w-3.5 h-3.5" /> Stop
+                          </button>
+                        </>
                       ) : canSendInvoice(inv, isVendor) && (
                         <Link
                           to={`/invoices/${inv.id}/send`}
@@ -449,13 +482,23 @@ export default function InvoicesList() {
                       )}
                     </div>
                     {inv.is_recurring && !isVendor ? (
-                      <Link
-                        to={`/invoices/${inv.id}/edit`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
-                      >
-                        <Pencil className="w-3.5 h-3.5" /> Edit Schedule
-                      </Link>
+                      <div className="flex flex-wrap gap-2">
+                        <Link
+                          to={`/invoices/${inv.id}/edit`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
+                        >
+                          <Pencil className="w-3.5 h-3.5" /> Edit Schedule
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={(e) => handleStopRecurrence(inv, e)}
+                          disabled={stoppingId === inv.id}
+                          className="inline-flex items-center gap-1 rounded-lg border border-purple-500/30 px-2.5 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-500/10 disabled:opacity-50"
+                        >
+                          <CircleStop className="w-3.5 h-3.5" /> Stop Recurrence
+                        </button>
+                      </div>
                     ) : canSendInvoice(inv, isVendor) && (
                       <Link
                         to={`/invoices/${inv.id}/send`}

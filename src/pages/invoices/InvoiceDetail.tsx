@@ -4,11 +4,12 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
+import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
 import DateInput from '@/components/DateInput'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
   Plus, ChevronUp, FileText, DollarSign, Calendar,
-  Building2, User, Hash, Link2, CheckCheck, Mail,
+  Building2, User, Hash, Link2, CheckCheck, Mail, CircleStop,
 } from 'lucide-react'
 
 /* ------------------------------------------------------------------ */
@@ -323,6 +324,28 @@ export default function InvoiceDetail() {
     setActionLoading(false)
   }
 
+  const handleStopRecurrence = async () => {
+    if (!id || !currentOrg?.id || !invoice?.is_recurring || actionLoading || isVendor) return
+    const scheduleLabel = invoice.direction === 'outbound' ? 'invoice schedule' : 'bill schedule'
+    if (!window.confirm(
+      `Stop this recurring ${scheduleLabel}? No future ${invoice.direction === 'outbound' ? 'invoices' : 'bills'} will be auto-generated from this template.`,
+    )) return
+
+    setActionLoading(true)
+    const { error } = await stopInvoiceRecurrence({
+      invoiceId: id,
+      orgId: currentOrg.id,
+      direction: invoice.direction,
+      existingNumber: invoice.number,
+    })
+    if (error) {
+      console.error('Failed to stop recurrence:', error)
+    } else {
+      await fetchInvoice()
+    }
+    setActionLoading(false)
+  }
+
   /* ---------- Delete invoice ---------- */
 
   const handleDelete = async () => {
@@ -417,7 +440,8 @@ export default function InvoiceDetail() {
   const canDelete = !isVendor && ['draft'].includes(invoice.status)
   const showStripeButton = isVendor && invoice.direction === 'inbound' && !['paid', 'cancelled'].includes(invoice.status)
   const canRecordPayment = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
-  const canSendInvoice = !isVendor && invoice.direction === 'outbound' && !['paid', 'cancelled'].includes(invoice.status) && !invoice.email_sent_at
+  const canSendInvoice = !isVendor && invoice.direction === 'outbound' && !['paid', 'cancelled'].includes(invoice.status) && !invoice.email_sent_at && !invoice.is_recurring
+  const canStopRecurrence = !isVendor && Boolean(invoice.is_recurring)
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
@@ -494,6 +518,17 @@ export default function InvoiceDetail() {
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
           >
             <Send size={14} /> Mark as Sent
+          </button>
+        )}
+
+        {canStopRecurrence && (
+          <button
+            type="button"
+            onClick={handleStopRecurrence}
+            disabled={actionLoading}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-sm text-purple-300 hover:bg-purple-500/20 disabled:opacity-50"
+          >
+            <CircleStop size={14} /> Stop Recurrence
           </button>
         )}
 
@@ -681,6 +716,16 @@ export default function InvoiceDetail() {
                       <span className="text-gray-400 w-20">Next:</span>
                       <span className="text-white">{fmtDate(invoice.next_recurring_date)}</span>
                     </div>
+                  )}
+                  {canStopRecurrence && (
+                    <button
+                      type="button"
+                      onClick={handleStopRecurrence}
+                      disabled={actionLoading}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 px-2.5 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-500/20 disabled:opacity-50"
+                    >
+                      <CircleStop size={14} /> Stop recurrence
+                    </button>
                   )}
                 </div>
               )}
