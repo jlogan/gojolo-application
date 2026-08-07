@@ -1108,11 +1108,10 @@ export default function Inbox() {
           body: JSON.stringify({ event_type: 'thread_assigned', user_id: uid, org_id: currentOrg.id, payload: { thread_id: selectedThreadId, subject, assigner_name: assignerName } }),
         }).catch(() => {})
       }
-      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
-        body: JSON.stringify({ threadId: selectedThreadId, action: 'archive' }),
-      }).catch(() => {})
+      // Assignment transfers Jolo ownership/attention only. Do not archive Gmail here:
+      // Jay's inbox-zero rule is that assign-to-user removes the thread from the
+      // assigner's Jolo Inbox via assignment filtering, while the underlying Gmail
+      // Inbox state remains unchanged until someone explicitly replies/closes/trashes it.
     }
     setShowAssignPopover(false)
     setSelectedAssignUserIds(new Set())
@@ -1495,6 +1494,14 @@ export default function Inbox() {
     const shouldAdvanceSelection = !!sentThreadIdForAdvance && replyMode !== 'compose' && (filter === 'inbox' || filter === 'assigned')
     if (sentThreadIdForAdvance && replyMode !== 'compose') {
       setThreads(prev => prev.map(t => t.id === sentThreadIdForAdvance ? { ...t, status: 'closed' } : t))
+      // Replying is an inbox-zero action: close the Jolo thread and archive the
+      // underlying Gmail/IMAP thread so it leaves the mail provider Inbox while
+      // remaining available on the server.
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/imap-flag-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ threadId: sentThreadIdForAdvance, action: 'archive' }),
+      }).catch(() => {})
     }
 
     if (shouldAdvanceSelection && sentThreadIdForAdvance) {
