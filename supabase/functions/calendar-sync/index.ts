@@ -49,6 +49,7 @@ const GOOGLE_OAUTH_SCOPES = [
 
 const SYNC_PAST_DAYS = 90
 const SYNC_FUTURE_DAYS = 180
+const CALENDAR_TIMEZONE = 'America/New_York'
 
 type Provider = 'google'
 
@@ -161,6 +162,83 @@ async function hasCalendarConnect(userClient: ReturnType<typeof createClient>, o
     userClient.rpc('user_has_permission', { p_org_id: orgId, p_permission: 'calendar.connect' }),
   ])
   return isAdmin === true || canConnect === true
+}
+
+async function hasCalendarManage(userClient: ReturnType<typeof createClient>, orgId: string): Promise<boolean> {
+  const [{ data: isAdmin }, { data: canManage }] = await Promise.all([
+    userClient.rpc('is_org_admin', { p_org_id: orgId }),
+    userClient.rpc('user_has_permission', { p_org_id: orgId, p_permission: 'calendar.manage' }),
+  ])
+  return isAdmin === true || canManage === true
+}
+
+function getTimezoneOffsetMs(timeZone: string, date: Date): number {
+  const utcParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const tzParts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const toUtcMs = (parts: Intl.DateTimeFormatPart[]) => {
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '0'
+    return Date.UTC(
+      Number(get('year')),
+      Number(get('month')) - 1,
+      Number(get('day')),
+      Number(get('hour')),
+      Number(get('minute')),
+      Number(get('second')),
+    )
+  }
+  return toUtcMs(tzParts) - toUtcMs(utcParts)
+}
+
+function zonedTimeToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0,
+  ms = 0,
+  timeZone = CALENDAR_TIMEZONE,
+): Date {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second, ms)
+  const offset = getTimezoneOffsetMs(timeZone, new Date(utcGuess))
+  return new Date(utcGuess - offset)
+}
+
+function parseIsoDateParts(isoDate: string): { year: number; month: number; day: number } {
+  const [year, month, day] = isoDate.split('-').map(Number)
+  return { year, month, day }
+}
+
+function addCalendarDaysFromIso(isoDate: string, days: number): { year: number; month: number; day: number } {
+  const parts = parseIsoDateParts(isoDate)
+  const anchor = zonedTimeToUtc(parts.year, parts.month, parts.day, 12)
+  anchor.setUTCDate(anchor.getUTCDate() + days)
+  const shifted = new Intl.DateTimeFormat('en-US', {
+    timeZone: CALENDAR_TIMEZONE,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(anchor)
+  const get = (type: string) => Number(shifted.find((p) => p.type === type)?.value ?? 0)
+  return { year: get('year'), month: get('month'), day: get('day') }
 }
 
 async function createPendingConnection(
@@ -344,11 +422,19 @@ function parseGoogleEventTimes(event: GoogleEvent): { starts_at: string; ends_at
 
   const allDay = Boolean(event.start?.date && !event.start?.dateTime)
   if (allDay) {
-    const starts_at = new Date(`${event.start!.date}T00:00:00.000Z`).toISOString()
-    const endDate = new Date(`${event.end!.date}T00:00:00.000Z`)
-    endDate.setUTCDate(endDate.getUTCDate() - 1)
-    endDate.setUTCHours(23, 59, 59, 999)
-    return { starts_at, ends_at: endDate.toISOString(), all_day: true }
+    const startParts = parseIsoDateParts(event.start!.date!)
+    const starts_at = zonedTimeToUtc(startParts.year, startParts.month, startParts.day).toISOString()
+    const lastDayParts = addCalendarDaysFromIso(event.end!.date!, -1)
+    const ends_at = zonedTimeToUtc(
+      lastDayParts.year,
+      lastDayParts.month,
+      lastDayParts.day,
+      23,
+      59,
+      59,
+      999,
+    ).toISOString()
+    return { starts_at, ends_at, all_day: true }
   }
 
   return {
@@ -655,6 +741,24 @@ async function disconnectConnection(
   }).eq('id', pair.connection.id)
 }
 
+async function getOrgConnection(
+  service: ReturnType<typeof createClient>,
+  orgId: string,
+  provider: Provider,
+  connectionId: string,
+): Promise<CalendarConnectionRow | null> {
+  const { data, error } = await service
+    .from('calendar_connections')
+    .select('*')
+    .eq('org_id', orgId)
+    .eq('provider', provider)
+    .eq('id', connectionId)
+    .in('status', ['connected', 'error'])
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  return (data as CalendarConnectionRow | null) ?? null
+}
+
 async function handleSync(
   userClient: ReturnType<typeof createClient>,
   service: ReturnType<typeof createClient>,
@@ -663,11 +767,23 @@ async function handleSync(
   provider: Provider = 'google',
   connectionId?: string,
 ) {
-  if (!(await hasCalendarConnect(userClient, orgId))) {
-    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  const canConnect = await hasCalendarConnect(userClient, orgId)
+  const canManage = await hasCalendarManage(userClient, orgId)
+
+  let connections: CalendarConnectionRow[] = []
+
+  if (connectionId && canManage) {
+    const connection = await getOrgConnection(service, orgId, provider, connectionId)
+    if (!connection) {
+      return json({ ok: false, message: 'No connected calendar found', synced: 0 })
+    }
+    connections = [connection]
+  } else if (canConnect) {
+    connections = await getUserConnections(service, orgId, userId, provider, connectionId)
+  } else {
+    return json({ error: 'Forbidden: calendar.connect or calendar.manage required' }, 403)
   }
 
-  const connections = await getUserConnections(service, orgId, userId, provider, connectionId)
   if (connections.length === 0) {
     return json({ ok: false, message: 'No connected calendar found', synced: 0 })
   }

@@ -1,3 +1,4 @@
+import { formatCalendarEventStartTime, formatCalendarEventTime } from '@/lib/calendarTimezone'
 import type { CalendarConnection, CalendarEvent, CalendarEventVisibility, CalendarTeamMember } from '@/types/calendar'
 
 const CONNECTION_COLORS = [
@@ -185,11 +186,13 @@ export function connectionEmailSecondary(
 export function formatEventStartTime(
   event: Pick<CalendarEvent, 'all_day' | 'starts_at'>,
 ): string {
-  if (event.all_day) return 'All day'
-  return new Date(event.starts_at).toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  })
+  return formatCalendarEventStartTime(event.starts_at, event.all_day)
+}
+
+export function formatEventTimeRange(
+  event: Pick<CalendarEvent, 'all_day' | 'starts_at' | 'ends_at'>,
+): string {
+  return formatCalendarEventTime(event.starts_at, event.ends_at, event.all_day)
 }
 
 export function connectionFilterLabel(

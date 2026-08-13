@@ -6,7 +6,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Link2,
-  Pencil,
   RefreshCw,
   Unlink,
   Users,
@@ -34,12 +33,29 @@ import {
   displayEventTitle,
   eventOwnerLabel,
   formatEventStartTime,
+  formatEventTimeRange,
   formatLastSynced,
   getConnectionChipActiveStyles,
   getConnectionColorFromMap,
   getConnectionEventCardStyles,
   type ConnectionColorMap,
 } from '@/lib/calendarDisplay'
+import {
+  addCalendarDays,
+  CALENDAR_TIMEZONE_LABEL,
+  calendarDayKeyFromDate,
+  endOfCalendarMonth,
+  eventCalendarDayKey,
+  formatCalendarDayHeading,
+  formatCalendarDayLabel,
+  formatCalendarMonthLabel,
+  nowInCalendarTz,
+  sameCalendarDay,
+  startOfCalendarDay,
+  startOfCalendarMonth,
+  startOfCalendarWeek,
+  calendarDaysInMonth,
+} from '@/lib/calendarTimezone'
 import type {
   CalendarConnection,
   CalendarEvent,
@@ -47,61 +63,6 @@ import type {
 } from '@/types/calendar'
 
 type ViewMode = 'day' | 'week' | 'month'
-
-function startOfDay(date: Date): Date {
-  const d = new Date(date)
-  d.setHours(0, 0, 0, 0)
-  return d
-}
-
-function addDays(date: Date, days: number): Date {
-  const d = new Date(date)
-  d.setDate(d.getDate() + days)
-  return d
-}
-
-function startOfWeek(date: Date): Date {
-  const d = startOfDay(date)
-  const day = d.getDay()
-  d.setDate(d.getDate() - day)
-  return d
-}
-
-function startOfMonth(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), 1)
-}
-
-function endOfMonth(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999)
-}
-
-function sameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear()
-    && a.getMonth() === b.getMonth()
-    && a.getDate() === b.getDate()
-  )
-}
-
-function formatDayLabel(date: Date): string {
-  return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
-}
-
-function formatDayHeading(date: Date): string {
-  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
-}
-
-function formatMonthLabel(date: Date): string {
-  return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
-}
-
-function formatEventTime(event: CalendarEvent): string {
-  if (event.all_day) return 'All day'
-  const start = new Date(event.starts_at)
-  const end = new Date(event.ends_at)
-  const opts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' }
-  return `${start.toLocaleTimeString(undefined, opts)} – ${end.toLocaleTimeString(undefined, opts)}`
-}
 
 function ConnectionColorDot({ color, className = 'w-2 h-2' }: { color: string; className?: string }) {
   return (
@@ -160,7 +121,7 @@ function CalendarEventDetailModal({
               <h2 id="calendar-event-detail-title" className="text-lg font-semibold text-white break-words">
                 {title}
               </h2>
-              <p className="text-sm text-gray-400 mt-0.5">{formatEventTime(event)}</p>
+              <p className="text-sm text-gray-400 mt-0.5">{formatEventTimeRange(event)}</p>
             </div>
           </div>
           <button
@@ -242,7 +203,7 @@ function CalendarEventCard({
         style={colorStyles}
       >
         <p className="font-medium text-white truncate">{title}</p>
-        <p className="text-gray-400 mt-0.5">{formatEventTime(event)}</p>
+        <p className="text-gray-400 mt-0.5">{formatEventTimeRange(event)}</p>
         <p className="text-gray-500 truncate mt-0.5">{eventOwnerLabel(owner, conn)}</p>
         {location && <p className="text-gray-500 truncate mt-0.5">{location}</p>}
       </button>
@@ -271,7 +232,7 @@ function CalendarDayCard({
   onSelectEvent: (event: CalendarEvent) => void
   showDayHeader?: boolean
 }) {
-  const isToday = sameDay(day, new Date())
+  const isToday = sameCalendarDay(day, new Date())
 
   return (
     <div
@@ -281,7 +242,7 @@ function CalendarDayCard({
     >
       {showDayHeader && (
         <div className={`px-2 py-2 text-xs font-medium border-b border-border ${isToday ? 'text-accent' : 'text-gray-400'}`}>
-          {formatDayLabel(day)}
+          {formatCalendarDayLabel(day)}
         </div>
       )}
       <ul className="p-2 space-y-1.5">
@@ -312,6 +273,8 @@ function ConnectedCalendarCard({
   syncBusy,
   disconnectBusy,
   canEditLabel,
+  canSync,
+  canDisconnect,
   onSync,
   onDisconnect,
   onLabelSaved,
@@ -321,6 +284,8 @@ function ConnectedCalendarCard({
   syncBusy: boolean
   disconnectBusy: boolean
   canEditLabel: boolean
+  canSync: boolean
+  canDisconnect: boolean
   onSync: () => void
   onDisconnect: (label: string) => void
   onLabelSaved: () => Promise<void>
@@ -401,22 +366,23 @@ function ConnectedCalendarCard({
           </div>
         </div>
       ) : (
-        <div className="flex items-start gap-2">
-          <ConnectionColorDot color={accent} className="w-2 h-2 mt-1.5" />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-white truncate">{label}</p>
-            {emailSecondary && (
-              <p className="text-xs text-gray-500 truncate mt-0.5">{emailSecondary}</p>
-            )}
+        <div className="space-y-2">
+          <div className="flex items-start gap-2">
+            <ConnectionColorDot color={accent} className="w-2 h-2 mt-1.5" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-white truncate">{label}</p>
+              {emailSecondary && (
+                <p className="text-xs text-gray-500 truncate mt-0.5">{emailSecondary}</p>
+              )}
+            </div>
           </div>
           {canEditLabel && (
             <button
               type="button"
               onClick={startEdit}
-              className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted shrink-0"
-              aria-label={`Edit nickname for ${label}`}
+              className="text-xs text-accent hover:underline"
             >
-              <Pencil className="w-3.5 h-3.5" />
+              Edit nickname
             </button>
           )}
         </div>
@@ -433,24 +399,28 @@ function ConnectedCalendarCard({
         </p>
       )}
       <div className="flex flex-wrap gap-2 mt-3">
-        <button
-          type="button"
-          onClick={onSync}
-          disabled={syncBusy}
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${syncBusy ? 'animate-spin' : ''}`} />
-          {syncBusy ? 'Syncing…' : 'Sync now'}
-        </button>
-        <button
-          type="button"
-          onClick={() => onDisconnect(label)}
-          disabled={disconnectBusy}
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted disabled:opacity-50"
-        >
-          <Unlink className="w-4 h-4" />
-          {disconnectBusy ? 'Disconnecting…' : 'Disconnect'}
-        </button>
+        {canSync && (
+          <button
+            type="button"
+            onClick={onSync}
+            disabled={syncBusy}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${syncBusy ? 'animate-spin' : ''}`} />
+            {syncBusy ? 'Syncing…' : 'Sync now'}
+          </button>
+        )}
+        {canDisconnect && (
+          <button
+            type="button"
+            onClick={() => onDisconnect(label)}
+            disabled={disconnectBusy}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted disabled:opacity-50"
+          >
+            <Unlink className="w-4 h-4" />
+            {disconnectBusy ? 'Disconnecting…' : 'Disconnect'}
+          </button>
+        )}
       </div>
     </li>
   )
@@ -461,10 +431,11 @@ export default function CalendarPage() {
   const { currentOrg, isOrgAdmin } = useOrg()
   const canView = usePermission(currentOrg?.id, 'calendar.view')
   const canConnect = usePermission(currentOrg?.id, 'calendar.connect')
+  const canManage = usePermission(currentOrg?.id, 'calendar.manage')
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [viewMode, setViewMode] = useState<ViewMode>('week')
-  const [anchorDate, setAnchorDate] = useState(() => startOfDay(new Date()))
+  const [anchorDate, setAnchorDate] = useState(() => nowInCalendarTz())
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null)
   const [teamMembers, setTeamMembers] = useState<CalendarTeamMember[]>([])
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<Set<string>>(new Set())
@@ -479,19 +450,18 @@ export default function CalendarPage() {
 
   const range = useMemo(() => {
     if (viewMode === 'day') {
-      const start = startOfDay(anchorDate)
-      const end = addDays(start, 1)
+      const start = startOfCalendarDay(anchorDate)
+      const end = addCalendarDays(start, 1)
       return { start, end, days: [start] }
     }
     if (viewMode === 'week') {
-      const start = startOfWeek(anchorDate)
-      const end = addDays(start, 7)
-      return { start, end, days: Array.from({ length: 7 }, (_, i) => addDays(start, i)) }
+      const start = startOfCalendarWeek(anchorDate)
+      const end = addCalendarDays(start, 7)
+      return { start, end, days: Array.from({ length: 7 }, (_, i) => addCalendarDays(start, i)) }
     }
-    const start = startOfMonth(anchorDate)
-    const end = addDays(endOfMonth(anchorDate), 1)
-    const daysInMonth = endOfMonth(anchorDate).getDate()
-    const days = Array.from({ length: daysInMonth }, (_, i) => new Date(start.getFullYear(), start.getMonth(), i + 1))
+    const start = startOfCalendarMonth(anchorDate)
+    const end = addCalendarDays(endOfCalendarMonth(anchorDate), 1)
+    const days = calendarDaysInMonth(anchorDate)
     return { start, end, days }
   }, [anchorDate, viewMode])
 
@@ -581,6 +551,20 @@ export default function CalendarPage() {
     [connections],
   )
 
+  const canSyncConnection = useCallback((conn: CalendarConnection) => {
+    const isOwner = conn.user_id === user?.id
+    if (isOwner && canConnect === true) return true
+    return isOrgAdmin || canManage === true
+  }, [canConnect, canManage, isOrgAdmin, user?.id])
+
+  const canDisconnectConnection = useCallback((conn: CalendarConnection) => {
+    return conn.user_id === user?.id && canConnect === true
+  }, [canConnect, user?.id])
+
+  const canEditConnectionLabel = useCallback((conn: CalendarConnection) => {
+    return conn.user_id === user?.id && canConnect === true
+  }, [canConnect, user?.id])
+
   const membersById = useMemo(() => {
     const map = new Map<string, CalendarTeamMember>()
     for (const member of teamMembers) map.set(member.user_id, member)
@@ -665,11 +649,10 @@ export default function CalendarPage() {
   const eventsByDay = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>()
     for (const day of range.days) {
-      map.set(day.toDateString(), [])
+      map.set(calendarDayKeyFromDate(day), [])
     }
     for (const event of filteredEvents) {
-      const eventDay = startOfDay(new Date(event.starts_at))
-      const key = eventDay.toDateString()
+      const key = eventCalendarDayKey(event.starts_at, event.all_day)
       if (!map.has(key)) map.set(key, [])
       map.get(key)!.push(event)
     }
@@ -687,24 +670,25 @@ export default function CalendarPage() {
 
   const shiftRange = (direction: -1 | 1) => {
     setAnchorDate((prev) => {
-      if (viewMode === 'day') return addDays(prev, direction)
-      if (viewMode === 'week') return addDays(prev, direction * 7)
-      return new Date(prev.getFullYear(), prev.getMonth() + direction, 1)
+      if (viewMode === 'day') return addCalendarDays(prev, direction)
+      if (viewMode === 'week') return addCalendarDays(prev, direction * 7)
+      const monthStart = startOfCalendarMonth(prev)
+      return startOfCalendarMonth(addCalendarDays(monthStart, direction > 0 ? 32 : -1))
     })
   }
 
   const goToToday = () => {
     setViewMode('day')
-    setAnchorDate(startOfDay(new Date()))
+    setAnchorDate(nowInCalendarTz())
   }
 
   const eventTileVariant = viewMode === 'day' ? 'day' : 'compact'
 
   const rangeHeading = viewMode === 'day'
-    ? formatDayHeading(anchorDate)
+    ? formatCalendarDayHeading(anchorDate)
     : viewMode === 'week'
-      ? `${formatDayLabel(range.days[0])} – ${formatDayLabel(range.days[6])}`
-      : formatMonthLabel(anchorDate)
+      ? `${formatCalendarDayLabel(range.days[0])} – ${formatCalendarDayLabel(range.days[6])}`
+      : formatCalendarMonthLabel(anchorDate)
 
   const selectedEventDetails = selectedEvent ? {
     event: selectedEvent,
@@ -785,12 +769,12 @@ export default function CalendarPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 mb-4">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
             <button
               type="button"
               onClick={goToToday}
               className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                viewMode === 'day' && sameDay(anchorDate, new Date())
+                viewMode === 'day' && sameCalendarDay(anchorDate, new Date())
                   ? 'border-accent/50 bg-accent/10 text-accent'
                   : 'border-border text-gray-300 hover:bg-surface-muted'
               }`}
@@ -817,6 +801,7 @@ export default function CalendarPage() {
               {rangeHeading}
             </span>
           </div>
+          <p className="text-xs text-gray-500 mb-4">{CALENDAR_TIMEZONE_LABEL}</p>
 
           <div className="rounded-lg border border-border bg-surface-muted/30 p-3 mb-4">
             <div className="flex items-center gap-2 text-sm text-gray-300 mb-2">
@@ -874,7 +859,7 @@ export default function CalendarPage() {
                 <CalendarDayCard
                   key={day.toISOString()}
                   day={day}
-                  dayEvents={eventsByDay.get(day.toDateString()) ?? []}
+                  dayEvents={eventsByDay.get(calendarDayKeyFromDate(day)) ?? []}
                   viewerUserId={user?.id}
                   membersById={membersById}
                   connectionsById={connectionsById}
@@ -889,38 +874,48 @@ export default function CalendarPage() {
         </div>
 
         <aside className="w-full lg:w-80 shrink-0 space-y-4">
+          {connectMessage && (
+            <p className={`text-sm ${connectMessage.includes('failed') ? 'text-red-400' : 'text-green-400'}`}>
+              {connectMessage}
+            </p>
+          )}
+
+          {filterableConnections.length > 0 && (
+            <section className="rounded-lg border border-border bg-surface-muted/20 p-4">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-3">
+                <CalendarDays className="w-4 h-4" />
+                Connected calendars
+              </h2>
+              <ul className="space-y-3">
+                {filterableConnections.map((conn) => {
+                  const member = membersById.get(conn.user_id)
+                  const cardLabel = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
+                  return (
+                    <ConnectedCalendarCard
+                      key={conn.id}
+                      conn={conn}
+                      accent={getConnectionColorFromMap(conn.id, connectionColorMap)}
+                      syncBusy={syncBusyIds.has(conn.id)}
+                      disconnectBusy={disconnectBusyIds.has(conn.id)}
+                      canEditLabel={canEditConnectionLabel(conn)}
+                      canSync={canSyncConnection(conn)}
+                      canDisconnect={canDisconnectConnection(conn)}
+                      onSync={() => void handleSyncGoogle(conn.id)}
+                      onDisconnect={() => void handleDisconnectGoogle(conn.id, cardLabel)}
+                      onLabelSaved={loadData}
+                    />
+                  )
+                })}
+              </ul>
+            </section>
+          )}
+
           {(isOrgAdmin || canConnect) && (
             <section className="rounded-lg border border-dashed border-border bg-surface-muted/20 p-4">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-2">
                 <Link2 className="w-4 h-4" />
                 Connect Google Calendar
               </h2>
-
-              {connectMessage && (
-                <p className={`text-sm mt-3 ${connectMessage.includes('failed') ? 'text-red-400' : 'text-green-400'}`}>
-                  {connectMessage}
-                </p>
-              )}
-
-              {myConnections.some((c) => c.status === 'connected' || c.status === 'error') && (
-                <ul className="mt-4 space-y-3">
-                  {myConnections
-                    .filter((c) => c.status === 'connected' || c.status === 'error')
-                    .map((conn) => (
-                      <ConnectedCalendarCard
-                        key={conn.id}
-                        conn={conn}
-                        accent={getConnectionColorFromMap(conn.id, connectionColorMap)}
-                        syncBusy={syncBusyIds.has(conn.id)}
-                        disconnectBusy={disconnectBusyIds.has(conn.id)}
-                        canEditLabel={canConnect === true}
-                        onSync={() => void handleSyncGoogle(conn.id)}
-                        onDisconnect={(label) => void handleDisconnectGoogle(conn.id, label)}
-                        onLabelSaved={loadData}
-                      />
-                    ))}
-                </ul>
-              )}
 
               <div className="mt-4 space-y-3">
                 {googleConfigured === false && (
