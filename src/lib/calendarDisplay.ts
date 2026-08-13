@@ -1,4 +1,4 @@
-import type { CalendarEvent, CalendarEventVisibility } from '@/types/calendar'
+import type { CalendarConnection, CalendarEvent, CalendarEventVisibility, CalendarTeamMember } from '@/types/calendar'
 
 export function isEventMasked(
   visibility: CalendarEventVisibility,
@@ -31,6 +31,32 @@ export function displayEventLocation(
 ): string | null {
   if (isEventMasked(event.visibility, event.user_id, viewerUserId)) return null
   return event.location
+}
+
+export function memberLabel(member: Pick<CalendarTeamMember, 'display_name' | 'email'>): string {
+  return member.display_name?.trim() || member.email?.trim() || 'Unknown user'
+}
+
+export function connectionAccountLabel(
+  conn: Pick<CalendarConnection, 'account_label' | 'email' | 'provider'>,
+): string {
+  return conn.account_label?.trim() || conn.email?.trim() || conn.provider
+}
+
+export function connectionFilterLabel(
+  member: CalendarTeamMember,
+  conn: CalendarConnection,
+): string {
+  return `${memberLabel(member)} · ${connectionAccountLabel(conn)}`
+}
+
+export function eventOwnerLabel(
+  member: CalendarTeamMember | undefined,
+  conn: CalendarConnection | undefined,
+): string {
+  const owner = member ? memberLabel(member) : 'Unknown'
+  const account = conn ? connectionAccountLabel(conn) : null
+  return account ? `${owner} · ${account}` : owner
 }
 
 export function connectionStatusLabel(status: string): string {

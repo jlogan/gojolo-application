@@ -21,8 +21,8 @@
 // Actions:
 //   POST { action: 'start', orgId, provider: 'google', returnPath?: '/calendar' }
 //   GET  ?action=callback&code=...&state=...   (Google redirect; no JWT)
-//   POST { action: 'sync', orgId, provider?: 'google' }
-//   POST { action: 'disconnect', orgId, provider?: 'google' }
+//   POST { action: 'sync', orgId, provider?: 'google', connectionId?: string }
+//   POST { action: 'disconnect', orgId, provider?: 'google', connectionId?: string }
 //
 // Deploy: supabase functions deploy calendar-sync --no-verify-jwt
 
@@ -53,6 +53,7 @@ type CalendarConnectionRow = {
   provider: Provider
   provider_account_id: string | null
   email: string | null
+  account_label: string | null
   status: string
   primary_calendar_id: string | null
 }
@@ -155,7 +156,7 @@ async function hasCalendarConnect(userClient: ReturnType<typeof createClient>, o
   return isAdmin === true || canConnect === true
 }
 
-async function upsertPendingConnection(
+async function createPendingConnection(
   service: ReturnType<typeof createClient>,
   orgId: string,
   userId: string,
@@ -163,17 +164,13 @@ async function upsertPendingConnection(
 ): Promise<CalendarConnectionRow> {
   const { data, error } = await service
     .from('calendar_connections')
-    .upsert(
-      {
-        org_id: orgId,
-        user_id: userId,
-        provider,
-        status: 'pending',
-        sync_error: null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'org_id,user_id,provider' },
-    )
+    .insert({
+      org_id: orgId,
+      user_id: userId,
+      provider,
+      status: 'pending',
+      sync_error: null,
+    })
     .select('*')
     .single()
   if (error || !data) throw new Error(error?.message ?? 'Failed to create calendar connection')
@@ -196,7 +193,7 @@ async function handleStart(
   const { clientId } = requireGoogleOAuth()
   requireEncryptionKey()
 
-  const connection = await upsertPendingConnection(service, orgId, userId, provider)
+  const connection = await createPendingConnection(service, orgId, userId, provider)
   const nonce = randomNonce()
   const state = `${connection.id}.${nonce}`
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
@@ -505,8 +502,33 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
     const tokenExpiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
 
     const profile = await fetchGoogleUserEmail(tokenResponse.access_token)
+    const accountLabel = profile.email?.trim() || null
 
-    await service.from('calendar_connection_tokens').update({
+    let existingSameAccount: CalendarConnectionRow | null = null
+    if (profile.id) {
+      const { data } = await service
+        .from('calendar_connections')
+        .select('*')
+        .eq('org_id', connection.org_id)
+        .eq('user_id', connection.user_id)
+        .eq('provider', connection.provider)
+        .eq('provider_account_id', profile.id)
+        .neq('id', connectionId)
+        .maybeSingle()
+      existingSameAccount = (data as CalendarConnectionRow | null) ?? null
+    }
+
+    let targetConnectionId = connectionId
+    let targetConnection = connection as CalendarConnectionRow
+
+    if (existingSameAccount) {
+      targetConnectionId = existingSameAccount.id
+      targetConnection = existingSameAccount as CalendarConnectionRow
+      await service.from('calendar_connections').delete().eq('id', connectionId)
+    }
+
+    await service.from('calendar_connection_tokens').upsert({
+      connection_id: targetConnectionId,
       access_token_encrypted: accessEncrypted,
       refresh_token_encrypted: refreshEncrypted,
       token_expires_at: tokenExpiresAt,
@@ -514,24 +536,25 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
       oauth_state: null,
       oauth_state_expires_at: null,
       updated_at: new Date().toISOString(),
-    }).eq('connection_id', connectionId)
+    })
 
     await service.from('calendar_connections').update({
       status: 'connected',
       provider_account_id: profile.id || null,
       email: profile.email || null,
+      account_label: accountLabel,
       sync_error: null,
       updated_at: new Date().toISOString(),
-    }).eq('id', connectionId)
+    }).eq('id', targetConnectionId)
 
-    const conn = connection as CalendarConnectionRow
     const updatedTokens = {
       ...tokenRow,
+      connection_id: targetConnectionId,
       access_token_encrypted: accessEncrypted,
       refresh_token_encrypted: refreshEncrypted,
       token_expires_at: tokenExpiresAt,
     }
-    await syncGoogleConnection(service, conn, updatedTokens)
+    await syncGoogleConnection(service, targetConnection, updatedTokens)
 
     return htmlRedirect(appRedirect('/calendar', { calendar: 'connected', provider: 'google' }))
   } catch (err) {
@@ -547,74 +570,47 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
   }
 }
 
-async function getUserConnection(
+async function getConnectionWithTokens(
   service: ReturnType<typeof createClient>,
-  orgId: string,
-  userId: string,
-  provider: Provider,
+  connection: CalendarConnectionRow,
 ): Promise<{ connection: CalendarConnectionRow; tokens: TokenRow } | null> {
-  const { data: connection, error } = await service
-    .from('calendar_connections')
-    .select('*')
-    .eq('org_id', orgId)
-    .eq('user_id', userId)
-    .eq('provider', provider)
-    .maybeSingle()
-  if (error || !connection) return null
-
   const { data: tokens, error: tokenError } = await service
     .from('calendar_connection_tokens')
     .select('*')
     .eq('connection_id', connection.id)
     .maybeSingle()
-  if (tokenError || !tokens) return { connection: connection as CalendarConnectionRow, tokens: { connection_id: connection.id } as TokenRow }
-
-  return { connection: connection as CalendarConnectionRow, tokens: tokens as TokenRow }
+  if (tokenError || !tokens) {
+    return { connection, tokens: { connection_id: connection.id } as TokenRow }
+  }
+  return { connection, tokens: tokens as TokenRow }
 }
 
-async function handleSync(
-  userClient: ReturnType<typeof createClient>,
+async function getUserConnections(
   service: ReturnType<typeof createClient>,
-  userId: string,
   orgId: string,
-  provider: Provider = 'google',
-) {
-  if (!(await hasCalendarConnect(userClient, orgId))) {
-    return json({ error: 'Forbidden: calendar.connect required' }, 403)
-  }
+  userId: string,
+  provider: Provider,
+  connectionId?: string,
+): Promise<CalendarConnectionRow[]> {
+  let query = service
+    .from('calendar_connections')
+    .select('*')
+    .eq('org_id', orgId)
+    .eq('user_id', userId)
+    .eq('provider', provider)
+    .in('status', ['connected', 'error'])
 
-  const pair = await getUserConnection(service, orgId, userId, provider)
-  if (!pair?.tokens.access_token_encrypted) {
-    return json({ ok: false, message: 'No connected calendar found', synced: 0 })
-  }
+  if (connectionId) query = query.eq('id', connectionId)
 
-  try {
-    const synced = await syncGoogleConnection(service, pair.connection, pair.tokens)
-    return json({ ok: true, synced, message: `Synced ${synced} events` })
-  } catch (err) {
-    await service.from('calendar_connections').update({
-      status: 'error',
-      sync_error: (err as Error).message,
-      updated_at: new Date().toISOString(),
-    }).eq('id', pair.connection.id)
-    return json({ ok: false, synced: 0, message: (err as Error).message })
-  }
+  const { data, error } = await query.order('created_at', { ascending: true })
+  if (error) throw new Error(error.message)
+  return (data ?? []) as CalendarConnectionRow[]
 }
 
-async function handleDisconnect(
-  userClient: ReturnType<typeof createClient>,
+async function disconnectConnection(
   service: ReturnType<typeof createClient>,
-  userId: string,
-  orgId: string,
-  provider: Provider = 'google',
-) {
-  if (!(await hasCalendarConnect(userClient, orgId))) {
-    return json({ error: 'Forbidden: calendar.connect required' }, 403)
-  }
-
-  const pair = await getUserConnection(service, orgId, userId, provider)
-  if (!pair) return json({ ok: true, message: 'Already disconnected' })
-
+  pair: { connection: CalendarConnectionRow; tokens: TokenRow },
+): Promise<void> {
   try {
     const keyHex = requireEncryptionKey()
     if (pair.tokens.access_token_encrypted) {
@@ -633,10 +629,82 @@ async function handleDisconnect(
     last_synced_at: null,
     provider_account_id: null,
     email: null,
+    account_label: null,
     updated_at: new Date().toISOString(),
   }).eq('id', pair.connection.id)
+}
 
-  return json({ ok: true, message: 'Calendar disconnected' })
+async function handleSync(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  provider: Provider = 'google',
+  connectionId?: string,
+) {
+  if (!(await hasCalendarConnect(userClient, orgId))) {
+    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  }
+
+  const connections = await getUserConnections(service, orgId, userId, provider, connectionId)
+  if (connections.length === 0) {
+    return json({ ok: false, message: 'No connected calendar found', synced: 0 })
+  }
+
+  let totalSynced = 0
+  const errors: string[] = []
+
+  for (const connection of connections) {
+    const pair = await getConnectionWithTokens(service, connection)
+    if (!pair?.tokens.access_token_encrypted) continue
+
+    try {
+      totalSynced += await syncGoogleConnection(service, pair.connection, pair.tokens)
+    } catch (err) {
+      errors.push((err as Error).message)
+      await service.from('calendar_connections').update({
+        status: 'error',
+        sync_error: (err as Error).message,
+        updated_at: new Date().toISOString(),
+      }).eq('id', pair.connection.id)
+    }
+  }
+
+  if (errors.length > 0 && totalSynced === 0) {
+    return json({ ok: false, synced: 0, message: errors[0] })
+  }
+
+  return json({
+    ok: true,
+    synced: totalSynced,
+    message: errors.length > 0
+      ? `Synced ${totalSynced} events with ${errors.length} error(s)`
+      : `Synced ${totalSynced} events`,
+  })
+}
+
+async function handleDisconnect(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  provider: Provider = 'google',
+  connectionId?: string,
+) {
+  if (!(await hasCalendarConnect(userClient, orgId))) {
+    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  }
+
+  const connections = await getUserConnections(service, orgId, userId, provider, connectionId)
+  if (connections.length === 0) return json({ ok: true, message: 'Already disconnected' })
+
+  for (const connection of connections) {
+    const pair = await getConnectionWithTokens(service, connection)
+    if (!pair) continue
+    await disconnectConnection(service, pair)
+  }
+
+  return json({ ok: true, message: connectionId ? 'Calendar account disconnected' : 'Calendar disconnected' })
 }
 
 Deno.serve(async (req: Request) => {
@@ -676,6 +744,7 @@ Deno.serve(async (req: Request) => {
       action?: string
       provider?: Provider
       returnPath?: string
+      connectionId?: string
     }
 
     const orgId = body.orgId
@@ -688,10 +757,10 @@ Deno.serve(async (req: Request) => {
       return await handleStart(userClient, service, authData.user.id, orgId, provider, body.returnPath)
     }
     if (action === 'sync') {
-      return await handleSync(userClient, service, authData.user.id, orgId, provider)
+      return await handleSync(userClient, service, authData.user.id, orgId, provider, body.connectionId)
     }
     if (action === 'disconnect') {
-      return await handleDisconnect(userClient, service, authData.user.id, orgId, provider)
+      return await handleDisconnect(userClient, service, authData.user.id, orgId, provider, body.connectionId)
     }
 
     const googleConfigured = !!(googleClientId && googleClientSecret)

@@ -13,6 +13,7 @@ export type CalendarConnection = {
   provider: CalendarProvider
   provider_account_id: string | null
   email: string | null
+  account_label: string | null
   status: CalendarConnectionStatus
   sync_error: string | null
   last_synced_at: string | null

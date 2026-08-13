@@ -45,17 +45,17 @@ export async function startGoogleCalendarConnect(orgId: string): Promise<string>
   return data.authUrl
 }
 
-export async function syncGoogleCalendar(orgId: string): Promise<CalendarSyncResponse> {
+export async function syncGoogleCalendar(orgId: string, connectionId?: string): Promise<CalendarSyncResponse> {
   const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
-    body: { orgId, action: 'sync', provider: 'google' },
+    body: { orgId, action: 'sync', provider: 'google', ...(connectionId ? { connectionId } : {}) },
   })
   if (error) throw new Error(parseInvokeError(error, data ?? null))
   return data ?? {}
 }
 
-export async function disconnectGoogleCalendar(orgId: string): Promise<CalendarSyncResponse> {
+export async function disconnectGoogleCalendar(orgId: string, connectionId?: string): Promise<CalendarSyncResponse> {
   const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
-    body: { orgId, action: 'disconnect', provider: 'google' },
+    body: { orgId, action: 'disconnect', provider: 'google', ...(connectionId ? { connectionId } : {}) },
   })
   if (error) throw new Error(parseInvokeError(error, data ?? null))
   return data ?? {}
