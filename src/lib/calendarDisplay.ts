@@ -1,5 +1,78 @@
 import type { CalendarConnection, CalendarEvent, CalendarEventVisibility, CalendarTeamMember } from '@/types/calendar'
 
+const CONNECTION_COLORS = [
+  '#3b82f6',
+  '#22c55e',
+  '#f97316',
+  '#a855f7',
+  '#ec4899',
+  '#14b8a6',
+  '#eab308',
+  '#ef4444',
+  '#6366f1',
+  '#06b6d4',
+] as const
+
+export type ConnectionColorStyles = {
+  accent: string
+  background: string
+  border: string
+}
+
+function hashConnectionId(connectionId: string): number {
+  let hash = 0
+  for (let i = 0; i < connectionId.length; i++) {
+    hash = ((hash << 5) - hash + connectionId.charCodeAt(i)) | 0
+  }
+  return Math.abs(hash)
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = hex.replace('#', '')
+  const r = Number.parseInt(normalized.slice(0, 2), 16)
+  const g = Number.parseInt(normalized.slice(2, 4), 16)
+  const b = Number.parseInt(normalized.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+export function getConnectionColor(connectionId: string): string {
+  const index = hashConnectionId(connectionId) % CONNECTION_COLORS.length
+  return CONNECTION_COLORS[index]
+}
+
+export function getConnectionColorStyles(connectionId: string): ConnectionColorStyles {
+  const accent = getConnectionColor(connectionId)
+  return {
+    accent,
+    background: hexToRgba(accent, 0.1),
+    border: hexToRgba(accent, 0.28),
+  }
+}
+
+export function getConnectionChipActiveStyles(connectionId: string): {
+  borderColor: string
+  backgroundColor: string
+} {
+  const { accent } = getConnectionColorStyles(connectionId)
+  return {
+    borderColor: accent,
+    backgroundColor: hexToRgba(accent, 0.18),
+  }
+}
+
+export function getConnectionEventCardStyles(connectionId: string): {
+  borderLeftColor: string
+  borderColor: string
+  backgroundColor: string
+} {
+  const { accent, background, border } = getConnectionColorStyles(connectionId)
+  return {
+    borderLeftColor: accent,
+    borderColor: border,
+    backgroundColor: background,
+  }
+}
+
 export function isEventMasked(
   visibility: CalendarEventVisibility,
   eventUserId: string,

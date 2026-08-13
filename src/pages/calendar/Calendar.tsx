@@ -27,6 +27,9 @@ import {
   displayEventTitle,
   eventOwnerLabel,
   formatLastSynced,
+  getConnectionChipActiveStyles,
+  getConnectionColor,
+  getConnectionEventCardStyles,
   memberLabel,
 } from '@/lib/calendarDisplay'
 import type {
@@ -86,6 +89,87 @@ function formatEventTime(event: CalendarEvent): string {
   const end = new Date(event.ends_at)
   const opts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' }
   return `${start.toLocaleTimeString(undefined, opts)} – ${end.toLocaleTimeString(undefined, opts)}`
+}
+
+function ConnectionColorDot({ connectionId, className = 'w-2 h-2' }: { connectionId: string; className?: string }) {
+  return (
+    <span
+      className={`${className} rounded-full shrink-0`}
+      style={{ backgroundColor: getConnectionColor(connectionId) }}
+      aria-hidden
+    />
+  )
+}
+
+function CalendarEventCard({
+  event,
+  owner,
+  conn,
+  viewerUserId,
+}: {
+  event: CalendarEvent
+  owner: CalendarTeamMember | undefined
+  conn: CalendarConnection | undefined
+  viewerUserId: string | undefined
+}) {
+  const title = displayEventTitle(event, viewerUserId)
+  const location = displayEventLocation(event, viewerUserId)
+  const colorStyles = getConnectionEventCardStyles(event.connection_id)
+
+  return (
+    <li
+      className="rounded-md border border-l-[3px] px-2 py-1.5 text-xs"
+      style={colorStyles}
+    >
+      <p className="font-medium text-white truncate">{title}</p>
+      <p className="text-gray-400 mt-0.5">{formatEventTime(event)}</p>
+      <p className="text-gray-500 truncate mt-0.5">{eventOwnerLabel(owner, conn)}</p>
+      {location && <p className="text-gray-500 truncate mt-0.5">{location}</p>}
+    </li>
+  )
+}
+
+function CalendarDayCard({
+  day,
+  dayEvents,
+  viewerUserId,
+  membersById,
+  connectionsById,
+}: {
+  day: Date
+  dayEvents: CalendarEvent[]
+  viewerUserId: string | undefined
+  membersById: Map<string, CalendarTeamMember>
+  connectionsById: Map<string, CalendarConnection>
+}) {
+  const isToday = sameDay(day, new Date())
+
+  return (
+    <div
+      className={`rounded-lg border min-h-[140px] ${
+        isToday ? 'border-accent/50 bg-accent/5' : 'border-border bg-surface-muted/20'
+      }`}
+    >
+      <div className={`px-2 py-2 text-xs font-medium border-b border-border ${isToday ? 'text-accent' : 'text-gray-400'}`}>
+        {formatDayLabel(day)}
+      </div>
+      <ul className="p-2 space-y-1.5">
+        {dayEvents.length === 0 ? (
+          <li className="text-xs text-gray-500 px-1">No events</li>
+        ) : (
+          dayEvents.map((event) => (
+            <CalendarEventCard
+              key={event.id}
+              event={event}
+              owner={membersById.get(event.user_id)}
+              conn={connectionsById.get(event.connection_id)}
+              viewerUserId={viewerUserId}
+            />
+          ))
+        )}
+      </ul>
+    </div>
+  )
 }
 
 export default function CalendarPage() {
@@ -425,12 +509,14 @@ export default function CalendarPage() {
                       key={conn.id}
                       type="button"
                       onClick={() => toggleConnection(conn.id)}
-                      className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                      style={active ? getConnectionChipActiveStyles(conn.id) : undefined}
+                      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm border transition-colors ${
                         active
-                          ? 'border-accent bg-accent/15 text-white'
+                          ? 'text-white'
                           : 'border-border text-gray-400 hover:text-gray-200 hover:bg-surface-muted'
                       }`}
                     >
+                      <ConnectionColorDot connectionId={conn.id} />
                       {label}
                     </button>
                   )
@@ -441,81 +527,21 @@ export default function CalendarPage() {
 
           {loading ? (
             <div className="text-sm text-gray-400">Loading calendar…</div>
-          ) : viewMode === 'week' ? (
-            <div className="grid grid-cols-1 md:grid-cols-7 gap-2" data-testid="calendar-week-grid">
-              {range.days.map((day) => {
-                const dayEvents = eventsByDay.get(day.toDateString()) ?? []
-                const isToday = sameDay(day, new Date())
-                return (
-                  <div
-                    key={day.toISOString()}
-                    className={`rounded-lg border min-h-[140px] ${
-                      isToday ? 'border-accent/50 bg-accent/5' : 'border-border bg-surface-muted/20'
-                    }`}
-                  >
-                    <div className={`px-2 py-2 text-xs font-medium border-b border-border ${isToday ? 'text-accent' : 'text-gray-400'}`}>
-                      {formatDayLabel(day)}
-                    </div>
-                    <ul className="p-2 space-y-1.5">
-                      {dayEvents.length === 0 ? (
-                        <li className="text-xs text-gray-500 px-1">No events</li>
-                      ) : (
-                        dayEvents.map((event) => {
-                          const owner = membersById.get(event.user_id)
-                          const conn = connectionsById.get(event.connection_id)
-                          const title = displayEventTitle(event, user?.id)
-                          const location = displayEventLocation(event, user?.id)
-                          return (
-                            <li
-                              key={event.id}
-                              className="rounded-md bg-surface-elevated border border-border px-2 py-1.5 text-xs"
-                            >
-                              <p className="font-medium text-white truncate">{title}</p>
-                              <p className="text-gray-400 mt-0.5">{formatEventTime(event)}</p>
-                              <p className="text-gray-500 truncate mt-0.5">{eventOwnerLabel(owner, conn)}</p>
-                              {location && <p className="text-gray-500 truncate mt-0.5">{location}</p>}
-                            </li>
-                          )
-                        })
-                      )}
-                    </ul>
-                  </div>
-                )
-              })}
-            </div>
           ) : (
-            <div className="rounded-lg border border-border divide-y divide-border overflow-hidden" data-testid="calendar-month-list">
-              {range.days.map((day) => {
-                const dayEvents = eventsByDay.get(day.toDateString()) ?? []
-                const isToday = sameDay(day, new Date())
-                return (
-                  <div key={day.toISOString()} className={isToday ? 'bg-accent/5' : ''}>
-                    <div className={`px-4 py-2 text-sm font-medium border-b border-border ${isToday ? 'text-accent' : 'text-gray-300'}`}>
-                      {formatDayLabel(day)}
-                    </div>
-                    {dayEvents.length === 0 ? (
-                      <p className="px-4 py-3 text-sm text-gray-500">No events</p>
-                    ) : (
-                      <ul className="divide-y divide-border">
-                        {dayEvents.map((event) => {
-                          const owner = membersById.get(event.user_id)
-                          const conn = connectionsById.get(event.connection_id)
-                          const title = displayEventTitle(event, user?.id)
-                          return (
-                            <li key={event.id} className="px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
-                              <div className="min-w-0">
-                                <p className="text-sm font-medium text-white truncate">{title}</p>
-                                <p className="text-xs text-gray-500 truncate">{eventOwnerLabel(owner, conn)}</p>
-                              </div>
-                              <p className="text-xs text-gray-400 shrink-0">{formatEventTime(event)}</p>
-                            </li>
-                          )
-                        })}
-                      </ul>
-                    )}
-                  </div>
-                )
-              })}
+            <div
+              className="grid grid-cols-1 md:grid-cols-7 gap-2"
+              data-testid={viewMode === 'week' ? 'calendar-week-grid' : 'calendar-month-grid'}
+            >
+              {range.days.map((day) => (
+                <CalendarDayCard
+                  key={day.toISOString()}
+                  day={day}
+                  dayEvents={eventsByDay.get(day.toDateString()) ?? []}
+                  viewerUserId={user?.id}
+                  membersById={membersById}
+                  connectionsById={connectionsById}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -542,7 +568,10 @@ export default function CalendarPage() {
                         <ul className="mt-2 space-y-2 border-l border-border pl-3">
                           {userConnections.map((conn) => (
                             <li key={conn.id}>
-                              <p className="text-gray-300 truncate">{connectionAccountLabel(conn)}</p>
+                              <p className="text-gray-300 truncate flex items-center gap-2">
+                                <ConnectionColorDot connectionId={conn.id} />
+                                {connectionAccountLabel(conn)}
+                              </p>
                               <p className="text-gray-400 mt-0.5">
                                 {connectionStatusLabel(conn.status)}
                                 {conn.provider ? ` · ${conn.provider}` : ''}
@@ -596,7 +625,10 @@ export default function CalendarPage() {
                           key={conn.id}
                           className="rounded-lg border border-border bg-surface-muted/40 p-3"
                         >
-                          <p className="text-sm font-medium text-white truncate">{label}</p>
+                          <p className="text-sm font-medium text-white truncate flex items-center gap-2">
+                            <ConnectionColorDot connectionId={conn.id} />
+                            {label}
+                          </p>
                           <p className="text-xs text-gray-400 mt-0.5">
                             {connectionStatusLabel(conn.status)} · Last synced: {formatLastSynced(conn.last_synced_at)}
                           </p>
