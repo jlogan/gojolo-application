@@ -290,7 +290,6 @@ function ConnectedCalendarCard({
   onDisconnect: (label: string) => void
   onLabelSaved: () => Promise<void>
 }) {
-  const { user } = useAuth()
   const { currentOrg } = useOrg()
   const [editingLabel, setEditingLabel] = useState(false)
   const [labelDraft, setLabelDraft] = useState('')
@@ -313,11 +312,11 @@ function ConnectedCalendarCard({
   }
 
   const saveLabel = async () => {
-    if (!currentOrg?.id || !user?.id) return
+    if (!currentOrg?.id) return
     setLabelBusy(true)
     setLabelMessage(null)
     try {
-      await updateCalendarConnectionLabel(currentOrg.id, user.id, conn.id, labelDraft)
+      await updateCalendarConnectionLabel(currentOrg.id, conn.id, labelDraft)
       setEditingLabel(false)
       setLabelMessage('Nickname saved')
       await onLabelSaved()
@@ -562,8 +561,10 @@ export default function CalendarPage() {
   }, [canConnect, user?.id])
 
   const canEditConnectionLabel = useCallback((conn: CalendarConnection) => {
-    return conn.user_id === user?.id && canConnect === true
-  }, [canConnect, user?.id])
+    const isOwner = conn.user_id === user?.id
+    if (isOwner && canConnect === true) return true
+    return isOrgAdmin || canManage === true
+  }, [canConnect, canManage, isOrgAdmin, user?.id])
 
   const membersById = useMemo(() => {
     const map = new Map<string, CalendarTeamMember>()

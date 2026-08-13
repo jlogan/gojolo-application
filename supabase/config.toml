@@ -101,7 +101,7 @@ verify_jwt = false
 [functions.sync-profile-avatar]
 verify_jwt = false
 
-# calendar-sync: Google Calendar OAuth callback is unauthenticated GET; JWT verified for start/sync/disconnect.
+# calendar-sync: Google Calendar OAuth callback is unauthenticated GET; JWT verified for start/sync/disconnect; cron uses x-cron-secret.
 [functions.calendar-sync]
 verify_jwt = false
 

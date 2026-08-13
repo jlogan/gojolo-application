@@ -23,6 +23,8 @@
 //   GET  ?action=callback&code=...&state=...   (Google redirect; no JWT)
 //   POST { action: 'sync', orgId, provider?: 'google', connectionId?: string }
 //   POST { action: 'disconnect', orgId, provider?: 'google', connectionId?: string }
+// Cron (pg_cron via trigger_calendar_sync_for_connected):
+//   POST { action: 'sync', orgId, connectionId, provider?: 'google' } with header x-cron-secret = CRON_SECRET
 //
 // Deploy: supabase functions deploy calendar-sync --no-verify-jwt
 
@@ -32,6 +34,7 @@ import { corsHeaders } from '../_shared/cors.ts'
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+const cronSecret = Deno.env.get('CRON_SECRET')
 const encryptionKeyHex = Deno.env.get('ENCRYPTION_KEY')
 const googleClientId = Deno.env.get('GOOGLE_CALENDAR_CLIENT_ID')
 const googleClientSecret = Deno.env.get('GOOGLE_CALENDAR_CLIENT_SECRET')
@@ -759,35 +762,10 @@ async function getOrgConnection(
   return (data as CalendarConnectionRow | null) ?? null
 }
 
-async function handleSync(
-  userClient: ReturnType<typeof createClient>,
+async function syncConnections(
   service: ReturnType<typeof createClient>,
-  userId: string,
-  orgId: string,
-  provider: Provider = 'google',
-  connectionId?: string,
+  connections: CalendarConnectionRow[],
 ) {
-  const canConnect = await hasCalendarConnect(userClient, orgId)
-  const canManage = await hasCalendarManage(userClient, orgId)
-
-  let connections: CalendarConnectionRow[] = []
-
-  if (connectionId && canManage) {
-    const connection = await getOrgConnection(service, orgId, provider, connectionId)
-    if (!connection) {
-      return json({ ok: false, message: 'No connected calendar found', synced: 0 })
-    }
-    connections = [connection]
-  } else if (canConnect) {
-    connections = await getUserConnections(service, orgId, userId, provider, connectionId)
-  } else {
-    return json({ error: 'Forbidden: calendar.connect or calendar.manage required' }, 403)
-  }
-
-  if (connections.length === 0) {
-    return json({ ok: false, message: 'No connected calendar found', synced: 0 })
-  }
-
   let totalSynced = 0
   const errors: string[] = []
 
@@ -818,6 +796,56 @@ async function handleSync(
       ? `Synced ${totalSynced} events with ${errors.length} error(s)`
       : `Synced ${totalSynced} events`,
   })
+}
+
+async function handleSync(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  provider: Provider = 'google',
+  connectionId?: string,
+) {
+  const canConnect = await hasCalendarConnect(userClient, orgId)
+  const canManage = await hasCalendarManage(userClient, orgId)
+
+  let connections: CalendarConnectionRow[] = []
+
+  if (connectionId && canManage) {
+    const connection = await getOrgConnection(service, orgId, provider, connectionId)
+    if (!connection) {
+      return json({ ok: false, message: 'No connected calendar found', synced: 0 })
+    }
+    connections = [connection]
+  } else if (canConnect) {
+    connections = await getUserConnections(service, orgId, userId, provider, connectionId)
+  } else {
+    return json({ error: 'Forbidden: calendar.connect or calendar.manage required' }, 403)
+  }
+
+  if (connections.length === 0) {
+    return json({ ok: false, message: 'No connected calendar found', synced: 0 })
+  }
+
+  return syncConnections(service, connections)
+}
+
+async function handleCronSync(
+  service: ReturnType<typeof createClient>,
+  orgId?: string,
+  provider: Provider = 'google',
+  connectionId?: string,
+) {
+  if (!orgId || !connectionId) {
+    return json({ ok: false, message: 'orgId and connectionId required for cron sync', synced: 0 })
+  }
+
+  const connection = await getOrgConnection(service, orgId, provider, connectionId)
+  if (!connection) {
+    return json({ ok: false, message: 'No connected calendar found', synced: 0 })
+  }
+
+  return syncConnections(service, [connection])
 }
 
 async function handleDisconnect(
@@ -867,6 +895,22 @@ Deno.serve(async (req: Request) => {
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
 
   try {
+    const isCron = req.headers.get('x-cron-secret') === cronSecret && cronSecret
+    const body = await req.json().catch(() => ({})) as {
+      orgId?: string
+      action?: string
+      provider?: Provider
+      returnPath?: string
+      connectionId?: string
+    }
+
+    if (isCron) {
+      const action = body.action ?? 'sync'
+      if (action !== 'sync') return json({ error: 'Unknown cron action' }, 400)
+      const provider: Provider = body.provider === 'google' ? 'google' : 'google'
+      return await handleCronSync(service, body.orgId, provider, body.connectionId)
+    }
+
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) return json({ error: 'Unauthorized' }, 401)
 
@@ -875,14 +919,6 @@ Deno.serve(async (req: Request) => {
     })
     const { data: authData, error: authError } = await userClient.auth.getUser()
     if (authError || !authData.user) return json({ error: 'Unauthorized' }, 401)
-
-    const body = await req.json().catch(() => ({})) as {
-      orgId?: string
-      action?: string
-      provider?: Provider
-      returnPath?: string
-      connectionId?: string
-    }
 
     const orgId = body.orgId
     if (!orgId) return json({ error: 'orgId required' }, 400)

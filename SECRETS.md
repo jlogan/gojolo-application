@@ -78,7 +78,13 @@ Deploy:
 supabase functions deploy calendar-sync --no-verify-jwt
 ```
 
-Apply migration `20260813160000_calendar_connection_tokens.sql` (`supabase db push`).
+**Automated sync (every 15 minutes):** migration `20260813190000_calendar_label_manage_and_cron.sql` schedules `trigger_calendar_sync_for_connected()` via pg_cron. Requires the same vault secrets as IMAP cron (`supabase_url`, `imap_sync_cron_secret`) and `CRON_SECRET` on the Edge Function (same value as imap-sync):
+
+```bash
+supabase secrets set CRON_SECRET=your-shared-cron-secret
+```
+
+Apply migrations (`supabase db push`), including `20260813160000_calendar_connection_tokens.sql`.
 
 **Future (add when you implement):**
 
