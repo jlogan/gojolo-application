@@ -21,6 +21,7 @@ import {
   FileText,
   ReceiptText,
   Bell,
+  Calendar,
 } from 'lucide-react'
 import Dashboard from '@/pages/Dashboard'
 import Profile from '@/pages/Profile'
@@ -53,14 +54,24 @@ import BillsList from '@/pages/bills/BillsList'
 import BillDetail from '@/pages/bills/BillDetail'
 import CreateBill from '@/pages/bills/CreateBill'
 import VendorBillingSettings from '@/pages/admin/VendorBillingSettings'
+import CalendarPage from '@/pages/calendar/Calendar'
 // Expenses module hidden for now — tables remain in DB for future use
 
 type AppMode = 'software' | 'chat'
 
-const NAV = [
+type NavItem = {
+  to: string
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  testId: string
+  permission?: string
+}
+
+const NAV: NavItem[] = [
   { to: '/', label: 'Home', icon: LayoutGrid, testId: 'nav-home' },
   { to: '/inbox', label: 'Inbox', icon: Inbox, testId: 'nav-inbox' },
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
+  { to: '/calendar', label: 'Calendar', icon: Calendar, testId: 'nav-calendar', permission: 'calendar.view' },
   { to: '/leads', label: 'Leads', icon: Target, testId: 'nav-leads' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
   { to: '/invoices', label: 'Invoices', icon: FileText, testId: 'nav-invoices' },
@@ -68,7 +79,7 @@ const NAV = [
   { to: '/contacts', label: 'Contacts', icon: Users, testId: 'nav-contacts' },
 ]
 
-const VENDOR_NAV = [
+const VENDOR_NAV: NavItem[] = [
   { to: '/projects', label: 'Projects', icon: FolderKanban, testId: 'nav-projects' },
   { to: '/timesheets', label: 'Timesheets', icon: Clock, testId: 'nav-timesheets' },
   { to: '/bills', label: 'Bills', icon: ReceiptText, testId: 'nav-bills' },
@@ -88,6 +99,25 @@ export default function AppShell() {
   const [chatProjects, setChatProjects] = useState<{ id: string; name: string }[]>([])
   const [chatSessions, setChatSessions] = useState<{ id: string; title: string | null; project_id: string | null; updated_at: string }[]>([])
   const [showAllProjects, setShowAllProjects] = useState(false)
+  const [navPermissions, setNavPermissions] = useState<Record<string, boolean>>({})
+
+  const navItems = (isVendor ? VENDOR_NAV : NAV).filter(
+    (item) => !item.permission || navPermissions[item.permission],
+  )
+
+  useEffect(() => {
+    if (!currentOrg?.id) {
+      setNavPermissions({})
+      return
+    }
+    const permission = 'calendar.view'
+    supabase
+      .rpc('user_has_permission', { p_org_id: currentOrg.id, p_permission: permission })
+      .then(
+        ({ data }) => setNavPermissions({ [permission]: !!data }),
+        () => setNavPermissions({ [permission]: false }),
+      )
+  }, [currentOrg?.id])
 
   useEffect(() => {
     if (!currentOrg?.id || mode !== 'chat') return
@@ -171,7 +201,7 @@ export default function AppShell() {
         {mode === 'software' && (
           <nav className="flex-1 overflow-y-auto py-2">
             <ul className="space-y-0.5 px-2">
-              {(isVendor ? VENDOR_NAV : NAV).map(({ to, label, icon: Icon, testId }) => (
+              {navItems.map(({ to, label, icon: Icon, testId }) => (
                 <li key={to}>
                   <Link
                     to={to}
@@ -367,6 +397,7 @@ export default function AppShell() {
               <Route path="/contacts/new" element={<ContactForm />} />
               <Route path="/contacts/:id" element={<ContactDetail />} />
               <Route path="/contacts/:id/edit" element={<ContactForm />} />
+              <Route path="/calendar" element={<CalendarPage />} />
               <Route path="/projects" element={<ProjectsList />} />
               <Route path="/projects/new" element={<ProjectForm />} />
               <Route path="/projects/:id" element={<ProjectDetail />} />
@@ -403,8 +434,8 @@ export default function AppShell() {
 
           {/* Mobile bottom nav */}
           <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 border-t border-border bg-surface-elevated/95 backdrop-blur" aria-label="Mobile navigation">
-            <ul className="grid h-16" style={{ gridTemplateColumns: `repeat(${(isVendor ? VENDOR_NAV : NAV).length}, minmax(0, 1fr))` }}>
-              {(isVendor ? VENDOR_NAV : NAV).map(({ to, label, icon: Icon, testId }) => {
+            <ul className="grid h-16" style={{ gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))` }}>
+              {navItems.map(({ to, label, icon: Icon, testId }) => {
                 const active = location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
                 return (
                   <li key={`mobile-${to}`}>

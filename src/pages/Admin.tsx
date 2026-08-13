@@ -90,6 +90,7 @@ const ALL_PERMISSIONS = [
   { module: 'Companies', perms: ['companies.view', 'companies.create', 'companies.update', 'companies.delete'] },
   { module: 'Leads', perms: ['leads.view', 'leads.create', 'leads.update', 'leads.delete'] },
   { module: 'Inbox', perms: ['inbox.view', 'inbox.message', 'inbox.delete'] },
+  { module: 'Calendar', perms: ['calendar.view', 'calendar.connect'] },
   { module: 'Timesheets', perms: ['timesheets.view', 'timesheets.billable_status'] },
 ]
 
