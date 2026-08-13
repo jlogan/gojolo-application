@@ -12,6 +12,11 @@ import {
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
 import { sanitizeEmailHtml, buildEmailSrcDoc, prepareDraftHtmlForDisplay, resolveInlineEmailImages } from '@/lib/emailSanitizer'
 import { parseMentionUserIds } from '@/lib/mentionUtils'
+import {
+  isUnavailableBodyText,
+  isMessageBodyEmpty,
+  type BodyFetchStatus,
+} from '@/lib/inboxBodyUnavailable'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
@@ -313,6 +318,7 @@ export default function Inbox() {
   // Drag state
   const [isDragging, setIsDragging] = useState(false)
   const [imapReloadingId, setImapReloadingId] = useState<string | null>(null)
+  const [bodyFetchStatus, setBodyFetchStatus] = useState<Record<string, BodyFetchStatus>>({})
 
   // Assign popover (multi-select)
   const [showAssignPopover, setShowAssignPopover] = useState(false)
@@ -334,9 +340,15 @@ export default function Inbox() {
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
 
-  const cleanMessageBody = (msg: InboxMessage): { html: boolean; content: string } => {
-    if (msg.html_body) return { html: true, content: msg.html_body }
+  const cleanMessageBody = (
+    msg: InboxMessage,
+    fetchStatus?: BodyFetchStatus | null,
+  ): { html: boolean; content: string; loading?: boolean; failed?: boolean; unavailable?: boolean } => {
+    if (msg.html_body?.trim()) return { html: true, content: msg.html_body }
     const body = msg.body
+    if (isUnavailableBodyText(body)) {
+      return { html: false, content: body!.trim(), unavailable: true }
+    }
     if (!body?.trim()) {
       debugLog(
         'cleanMessageBody',
@@ -348,10 +360,17 @@ export default function Inbox() {
           external_uid: msg.external_uid,
           imap_account_id: msg.imap_account_id ?? null,
           hasHtmlBody: !!(msg.html_body?.trim()),
+          fetchStatus: fetchStatus ?? null,
         },
         msg.thread_id,
       )
-      return { html: false, content: 'Downloading message...' }
+      if (fetchStatus === 'loading') return { html: false, content: 'Downloading message...', loading: true }
+      if (fetchStatus === 'failed') return { html: false, content: 'Could not load message body.', failed: true }
+      if (fetchStatus === 'unavailable') return { html: false, content: body?.trim() || 'Message is no longer available on the mail server.', unavailable: true }
+      if (!msg.imap_account_id || msg.external_uid == null) {
+        return { html: false, content: 'Message body is not available for this message.', failed: true }
+      }
+      return { html: false, content: 'Downloading message...', loading: true }
     }
     const raw = body.trim()
     const bm = raw.match(/boundary="?([^"\s;]+)"?/i)
@@ -372,6 +391,56 @@ export default function Inbox() {
     if (looksLikeHtml(raw)) return { html: true, content: raw }
     return { html: false, content: raw }
   }
+
+  const syncBodyFetchStatus = useCallback((
+    msgs: InboxMessage[],
+    bodyMap: Map<string, { body: string | null; html_body: string | null; bodyUnavailable?: boolean }>,
+    deletedIds: Set<string>,
+    options?: { fetchFailed?: boolean; pendingMore?: boolean },
+  ) => {
+    setBodyFetchStatus((prev) => {
+      const next = { ...prev }
+      for (const m of msgs) {
+        if (deletedIds.has(m.id)) {
+          delete next[m.id]
+          continue
+        }
+        const entry = bodyMap.get(m.id)
+        const bodyVal = entry ? (entry.body ?? m.body) : m.body
+        const htmlVal = entry ? (entry.html_body ?? m.html_body) : m.html_body
+        if (entry?.bodyUnavailable || isUnavailableBodyText(bodyVal)) {
+          next[m.id] = 'unavailable'
+        } else if (isMessageBodyEmpty(bodyVal, htmlVal)) {
+          if (options?.pendingMore) next[m.id] = 'loading'
+          else next[m.id] = 'failed'
+        } else {
+          delete next[m.id]
+        }
+      }
+      if (options?.fetchFailed) {
+        for (const m of msgs) {
+          if (deletedIds.has(m.id)) continue
+          const entry = bodyMap.get(m.id)
+          const bodyVal = entry ? (entry.body ?? m.body) : m.body
+          const htmlVal = entry ? (entry.html_body ?? m.html_body) : m.html_body
+          if (isMessageBodyEmpty(bodyVal, htmlVal) && !isUnavailableBodyText(bodyVal)) {
+            next[m.id] = 'failed'
+          }
+        }
+      }
+      return next
+    })
+  }, [])
+
+  const markMessagesBodyLoading = useCallback((msgs: InboxMessage[]) => {
+    setBodyFetchStatus((prev) => {
+      const next = { ...prev }
+      for (const m of msgs) {
+        if (isMessageBodyEmpty(m.body, m.html_body)) next[m.id] = 'loading'
+      }
+      return next
+    })
+  }, [])
 
   const timeline: TimelineItem[] = [
     ...messages.map(m => ({ kind: 'message' as const, data: m, ts: m.received_at })),
@@ -571,7 +640,7 @@ export default function Inbox() {
 
     // Lazy-load bodies from IMAP when rows lack body/html, or reconcile DB drafts against provider Drafts mailbox
     if (msgs.length > 0) {
-      const emptyBeforeBodies = msgs.filter(m => !m.body?.trim() && !m.html_body?.trim())
+      const emptyBeforeBodies = msgs.filter(m => isMessageBodyEmpty(m.body, m.html_body))
       const hasDraftRows = msgs.some(m => m.is_draft)
       const mayHavePhantomOutbound = !hasDraftRows && msgs.some(m => m.direction === 'outbound' && !m.is_draft && m.external_uid != null)
       const needsBodyFetch = emptyBeforeBodies.length > 0
@@ -583,6 +652,7 @@ export default function Inbox() {
         if (hasDraftRows) draftReconcileDoneForThreadRef.current = tid
         if (needsPhantomHeal) phantomHealDoneForThreadRef.current = tid
         debugLog('fetchMessages', { event: needsBodyFetch ? 'empty_bodies_before_fetch' : needsPhantomHeal ? 'phantom_heal_before_fetch' : 'draft_reconcile_before_fetch', messageIds: emptyBeforeBodies.map(m => m.id), draftCount: msgs.filter(m => m.is_draft).length, count: emptyBeforeBodies.length }, tid)
+        if (needsBodyFetch) markMessagesBodyLoading(msgs)
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.access_token) {
           try {
@@ -603,31 +673,33 @@ export default function Inbox() {
               debugLog('fetchMessages', { event: 'fetch_thread_bodies_http_error', status: res.status, error: (result as { error?: string }).error }, tid)
             }
             const deletedIds = new Set<string>((result.deletedMessageIds ?? []) as string[])
-            if (result.messages?.length || deletedIds.size > 0) {
+            type BodyEntry = {
+              body: string | null
+              html_body: string | null
+              from_identifier?: string | null
+              to_identifier?: string | null
+              cc?: string | null
+              is_draft?: boolean | null
+              bodyUnavailable?: boolean
+            }
+            const bodyMap = new Map<string, BodyEntry>((result.messages ?? []).map((r: { id: string; body: string | null; htmlBody: string | null; isDraft?: boolean; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null; bodyUnavailable?: boolean }) => [r.id, {
+              body: r.body,
+              html_body: r.htmlBody,
+              from_identifier: r.from_identifier,
+              to_identifier: r.to_identifier,
+              cc: r.cc,
+              is_draft: r.isDraft ?? undefined,
+              bodyUnavailable: r.bodyUnavailable,
+            }]))
+            if (result.messages?.length || deletedIds.size > 0 || !res.ok) {
               if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
               clearComposeIfDraftDeleted(deletedIds)
-              type BodyEntry = {
-                body: string | null
-                html_body: string | null
-                from_identifier?: string | null
-                to_identifier?: string | null
-                cc?: string | null
-                is_draft?: boolean | null
-              }
-              const bodyMap = new Map<string, BodyEntry>((result.messages ?? []).map((r: { id: string; body: string | null; htmlBody: string | null; isDraft?: boolean; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null }) => [r.id, {
-                body: r.body,
-                html_body: r.htmlBody,
-                from_identifier: r.from_identifier,
-                to_identifier: r.to_identifier,
-                cc: r.cc,
-                is_draft: r.isDraft ?? undefined,
-              }]))
               const stillEmptyAfter = msgs.filter((pm) => {
                 if (deletedIds.has(pm.id)) return false
                 const b = bodyMap.get(pm.id)
                 const bodyVal = b ? (b.body ?? pm.body) : pm.body
                 const htmlVal = b ? (b.html_body ?? pm.html_body) : pm.html_body
-                return !(bodyVal && String(bodyVal).trim()) && !(htmlVal && String(htmlVal).trim())
+                return isMessageBodyEmpty(bodyVal, htmlVal)
               })
               if (stillEmptyAfter.length > 0 && !result.hasMore) {
                 const details = stillEmptyAfter.map((m) => ({
@@ -639,6 +711,7 @@ export default function Inbox() {
                 console.warn('[Inbox] After fetch-thread-bodies, some messages still have no body (see Edge Function logs / IMAP UID)', { threadId: tid, count: stillEmptyAfter.length, details })
                 debugLog('fetchMessages', { event: 'bodies_still_empty_after_fetch', threadId: tid, count: stillEmptyAfter.length, details }, tid)
               }
+              syncBodyFetchStatus(msgs, bodyMap, deletedIds, { fetchFailed: !res.ok, pendingMore: !!result.hasMore })
               setMessages(prev => {
                 const merged = prev
                   .filter(pm => !deletedIds.has(pm.id))
@@ -660,19 +733,24 @@ export default function Inbox() {
               fetchAttachments(tid)
               if (result.hasMore) {
                 const retry = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }, body: JSON.stringify({ threadId: tid }) })
-                  .then(r => r.json().catch(() => ({})))
-                  .then(r => {
+                  .then(async (res) => {
+                    const payload = await res.json().catch(() => ({}))
+                    return { res, payload }
+                  })
+                  .then(({ res, payload: r }) => {
                     if (selectedThreadIdRef.current !== tid) return // user switched thread, cancel retries
                     const retryDeleted = new Set<string>((r.deletedMessageIds ?? []) as string[])
-                    if (r.messages?.length || retryDeleted.size > 0) {
+                    if (r.messages?.length || retryDeleted.size > 0 || !res.ok) {
                       clearComposeIfDraftDeleted(retryDeleted)
-                      const m = new Map<string, BodyEntry>((r.messages ?? []).map((x: { id: string; body: string | null; htmlBody: string | null; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null }) => [x.id, {
+                      const m = new Map<string, BodyEntry>((r.messages ?? []).map((x: { id: string; body: string | null; htmlBody: string | null; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null; bodyUnavailable?: boolean }) => [x.id, {
                         body: x.body,
                         html_body: x.htmlBody,
                         from_identifier: x.from_identifier,
                         to_identifier: x.to_identifier,
                         cc: x.cc,
+                        bodyUnavailable: x.bodyUnavailable,
                       }]))
+                      syncBodyFetchStatus(msgs, m, retryDeleted, { fetchFailed: !res.ok, pendingMore: !!r.hasMore })
                       setMessages(prev2 => prev2
                         .filter(p => !retryDeleted.has(p.id))
                         .map(p => {
@@ -697,6 +775,7 @@ export default function Inbox() {
             }
           } catch (err) {
             console.error('[Inbox] Failed to fetch thread bodies:', err)
+            syncBodyFetchStatus(msgs, new Map(), new Set(), { fetchFailed: true })
           }
         } else {
           console.log('[Inbox] Skipping fetch-thread-bodies: no session/access_token')
@@ -707,7 +786,7 @@ export default function Inbox() {
       console.log('[Inbox] Skipping fetch-thread-bodies: no messages', { threadId: tid })
       debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_messages', threadId: tid }, tid)
     }
-  }, [userId, fetchAttachments, debugLog, clearComposeIfDraftDeleted])
+  }, [userId, fetchAttachments, debugLog, clearComposeIfDraftDeleted, markMessagesBodyLoading, syncBodyFetchStatus])
 
   const fetchComments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
@@ -908,10 +987,11 @@ export default function Inbox() {
 
   useEffect(() => {
     if (!selectedThreadId) {
-      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setDraftMessageId(null); setExpandedMsgs(new Set()); draftReconcileDoneForThreadRef.current = null; phantomHealDoneForThreadRef.current = null; return
+      setMessages([]); setComments([]); setThreadContacts([]); setThreadInvoiceLinks([]); setAttachments([]); setReplyMode(null); setDraftMessageId(null); setExpandedMsgs(new Set()); setBodyFetchStatus({}); draftReconcileDoneForThreadRef.current = null; phantomHealDoneForThreadRef.current = null; return
     }
     debugLog('selectThread', { selectedThreadId, filter }, selectedThreadId ?? undefined)
     setExpandedMsgs(new Set()) // Reset accordion on thread change
+    setBodyFetchStatus({})
     draftReconcileDoneForThreadRef.current = null
     phantomHealDoneForThreadRef.current = null
     // Use ref so this effect does not re-run when fetchMessages identity changes (e.g. debugLog after auth/org hydrate) — avoids duplicate fetch-thread-bodies
@@ -1842,6 +1922,7 @@ export default function Inbox() {
     }
 
     setImapReloadingId(m.id)
+    setBodyFetchStatus((prev) => ({ ...prev, [m.id]: 'loading' }))
     const t0 = performance.now()
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -1872,6 +1953,7 @@ export default function Inbox() {
         fromCache?: boolean
         fromImap?: boolean
         forceRefresh?: boolean
+        bodyUnavailable?: boolean
       }
       const elapsedMs = Math.round(performance.now() - t0)
       console.log('[Inbox:imap-reload] response', {
@@ -1901,18 +1983,28 @@ export default function Inbox() {
         htmlLen: data.htmlBody?.length ?? 0,
       }, m.thread_id)
 
-      if (!res.ok || data.error) {
+      if (!res.ok || (data.error && !data.bodyUnavailable && !isUnavailableBodyText(data.body))) {
         console.error('[Inbox:imap-reload] failed', { reloadId, messageId: m.id, status: res.status, error: data.error })
+        setBodyFetchStatus((prev) => ({ ...prev, [m.id]: 'failed' }))
         setToastMsg(data.error || `Reload failed (${res.status})`)
         setTimeout(() => setToastMsg(null), 4000)
         return
       }
 
+      const nextBody = data.body ?? null
+      const nextHtml = data.htmlBody ?? null
       setMessages((prev) =>
         prev.map((x) =>
-          x.id === m.id ? { ...x, body: data.body ?? null, html_body: data.htmlBody ?? null } : x
+          x.id === m.id ? { ...x, body: nextBody, html_body: nextHtml } : x
         )
       )
+      setBodyFetchStatus((prev) => {
+        const next = { ...prev }
+        if (data.bodyUnavailable || isUnavailableBodyText(nextBody)) next[m.id] = 'unavailable'
+        else if (isMessageBodyEmpty(nextBody, nextHtml)) next[m.id] = 'failed'
+        else delete next[m.id]
+        return next
+      })
       await fetchAttachments(m.thread_id)
 
       const { data: attRows } = await supabase
@@ -1941,7 +2033,11 @@ export default function Inbox() {
       }, m.thread_id)
 
       const ac = typeof data.attachmentCount === 'number' ? `${data.attachmentCount} file(s) from IMAP. ` : ''
-      setToastMsg(`${ac}Reloaded from mail server.`)
+      if (data.bodyUnavailable || isUnavailableBodyText(nextBody)) {
+        setToastMsg('Message body could not be loaded from mail server.')
+      } else {
+        setToastMsg(`${ac}Reloaded from mail server.`)
+      }
       setTimeout(() => setToastMsg(null), 3500)
     } catch (err) {
       console.error('[Inbox:imap-reload] exception', {
@@ -1956,6 +2052,7 @@ export default function Inbox() {
         messageId: m.id,
         error: err instanceof Error ? err.message : String(err),
       }, m.thread_id)
+      setBodyFetchStatus((prev) => ({ ...prev, [m.id]: 'failed' }))
       setToastMsg('Could not reload from mail server')
       setTimeout(() => setToastMsg(null), 3000)
     } finally {
@@ -2528,13 +2625,15 @@ export default function Inbox() {
                       const m = item.data
                       const isDraftMsg = !!m.is_draft
                       const isExpanded = m.id === lastMsgId || expandedMsgs.has(m.id)
-                      const { html, content } = isExpanded ? cleanMessageBody(m) : { html: false, content: '' }
+                      const messageFetchStatus = bodyFetchStatus[m.id] ?? (isUnavailableBodyText(m.body) ? 'unavailable' : null)
+                      const bodyDisplay = isExpanded ? cleanMessageBody(m, messageFetchStatus) : { html: false, content: '', loading: false, failed: false, unavailable: false }
+                      const { html, content, loading: bodyLoading, failed: bodyFailed, unavailable: bodyUnavailable } = bodyDisplay
                       const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
                       const displayContent = isDraftMsg && html ? prepareDraftHtmlForDisplay(content) : content
                       const sanitized = html
                         ? sanitizeEmailHtml(resolveInlineEmailImages(displayContent, msgAttachments))
                         : displayContent
-                      const preview = !isExpanded && m.body ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
+                      const preview = !isExpanded && m.body && !isUnavailableBodyText(m.body) ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       const isEditingThisDraft = draftMessageId === m.id && replyMode !== null && replyMode !== 'compose'
                       if (isEditingThisDraft) {
                         return (
@@ -2642,7 +2741,33 @@ export default function Inbox() {
                               </div>
                             )
                           })() : (
-                            <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">{content}</div>
+                            <div className="text-sm whitespace-pre-wrap break-words p-4 text-gray-200">
+                              {bodyLoading ? (
+                                <span className="inline-flex items-center gap-2 text-gray-400">
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+                                  Downloading message...
+                                </span>
+                              ) : (bodyFailed || bodyUnavailable) ? (
+                                <div className="rounded-lg border border-border/70 bg-surface-muted/40 px-3 py-2.5 text-gray-300">
+                                  <p>{bodyUnavailable ? 'This message could not be loaded from the mail server.' : 'Could not load message body.'}</p>
+                                  {m.imap_account_id && m.external_uid != null ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); void handleReloadFromImap(m) }}
+                                      disabled={imapReloadingId === m.id}
+                                      className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-surface-muted text-gray-200 hover:text-accent hover:bg-surface-muted/80 disabled:opacity-50"
+                                    >
+                                      <RotateCcw className={`w-3.5 h-3.5 ${imapReloadingId === m.id ? 'animate-spin' : ''}`} />
+                                      Retry from mail server
+                                    </button>
+                                  ) : (
+                                    <p className="mt-1 text-xs text-gray-500">No IMAP reference is stored for this message.</p>
+                                  )}
+                                </div>
+                              ) : (
+                                content
+                              )}
+                            </div>
                           ))}
                           {isExpanded && msgAttachments.length > 0 && (
                             <div className="border-t border-border px-4 py-2.5 bg-surface-muted/30">

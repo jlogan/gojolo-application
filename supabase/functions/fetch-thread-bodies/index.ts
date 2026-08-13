@@ -32,6 +32,7 @@ import {
   DRAFT_MATCH_MIN_SCORE,
   type ImapEnvelope,
 } from '../_shared/inboxGmailDraftIngest.ts'
+import { isUnavailableBodyText, unavailableBodyText } from '../_shared/inboxBodyUnavailable.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -358,11 +359,21 @@ Deno.serve(async (req: Request) => {
 
   /** imap-sync inserts inbound + outbound with null bodies; bodies are lazy-loaded from IMAP by UID (same mailbox as sync: All Mail / INBOX). */
   const isBodyEmpty = (m: { body: unknown; html_body: unknown }) => {
+    if (isUnavailableBodyText(m.body)) return false
     const b = m.body
     const h = m.html_body
     const bodyEmpty = b == null || (typeof b === 'string' && !b.trim())
     const htmlEmpty = h == null || (typeof h === 'string' && !h.trim())
     return bodyEmpty && htmlEmpty
+  }
+
+  const markBodyUnavailable = async (
+    msgId: string,
+    reason: 'missing' | 'empty' | 'error',
+  ): Promise<string> => {
+    const text = unavailableBodyText(reason)
+    await service.from('inbox_messages').update({ body: text, html_body: null }).eq('id', msgId)
+    return text
   }
 
   const isDraftRow = (m: { is_draft?: boolean | null }) => !!m.is_draft
@@ -608,6 +619,24 @@ Deno.serve(async (req: Request) => {
     ...phantomHealCandidates.map((m) => m.id),
   ])
 
+  const upsertResultBody = (
+    msgId: string,
+    body: string | null,
+    htmlBody: string | null,
+    extras?: { bodyUnavailable?: boolean; attachments?: { file_name: string; file_path: string }[] },
+  ) => {
+    const idx = result.findIndex((r) => r.id === msgId)
+    const entry = {
+      id: msgId,
+      body,
+      htmlBody,
+      attachments: extras?.attachments ?? attsByMsg.get(msgId) ?? [],
+      ...(extras?.bodyUnavailable ? { bodyUnavailable: true } : {}),
+    }
+    if (idx >= 0) result[idx] = { ...result[idx], ...entry }
+    else result.push(entry)
+  }
+
   // Add messages that already have body and do not need draft reconciliation
   for (const m of messages) {
     if (pendingImapIds.has(m.id)) continue
@@ -620,13 +649,30 @@ Deno.serve(async (req: Request) => {
   }
 
   if (needFetch.length === 0 && needDraftReconcile.length === 0 && phantomHealCandidates.length === 0) {
+    for (const m of stillNoAccount) {
+      const text = await markBodyUnavailable(m.id, 'error')
+      upsertResultBody(m.id, text, null, { bodyUnavailable: true })
+    }
     console.log('[fetch-thread-bodies] all from DB, returning', { threadId, messageCount: result.length, elapsedMs: Math.round(performance.now() - tStart) })
     return jsonRes({ messages: result, deletedMessageIds }, 200)
   }
 
   if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
     console.log('[fetch-thread-bodies] ENCRYPTION_KEY not configured, cannot fetch from IMAP', { threadId })
+    for (const m of needFetch) {
+      const text = await markBodyUnavailable(m.id, 'error')
+      upsertResultBody(m.id, text, null, { bodyUnavailable: true })
+    }
+    for (const m of stillNoAccount) {
+      const text = await markBodyUnavailable(m.id, 'error')
+      upsertResultBody(m.id, text, null, { bodyUnavailable: true })
+    }
     return jsonRes({ error: 'ENCRYPTION_KEY not configured', messages: result, deletedMessageIds }, 500)
+  }
+
+  for (const m of stillNoAccount) {
+    const text = await markBodyUnavailable(m.id, 'error')
+    upsertResultBody(m.id, text, null, { bodyUnavailable: true })
   }
 
   // Group by imap_account_id to reuse connection
@@ -663,6 +709,10 @@ Deno.serve(async (req: Request) => {
       .single()
     if (!acc) {
       console.log('[fetch-thread-bodies] IMAP account not found', { accId })
+      for (const msg of msgs) {
+        const text = await markBodyUnavailable(msg.id, 'error')
+        upsertResultBody(msg.id, text, null, { bodyUnavailable: true })
+      }
       continue
     }
     console.log('[fetch-thread-bodies] acc loaded', { accId, elapsedMs: Math.round(performance.now() - tAcc) })
@@ -674,6 +724,10 @@ Deno.serve(async (req: Request) => {
       console.log('[fetch-thread-bodies] decrypt done', { accId, elapsedMs: Math.round(performance.now() - tDec) })
     } catch (decErr) {
       console.log('[fetch-thread-bodies] decrypt credentials failed', { accId, error: (decErr as Error).message })
+      for (const msg of msgs) {
+        const text = await markBodyUnavailable(msg.id, 'error')
+        upsertResultBody(msg.id, text, null, { bodyUnavailable: true })
+      }
       continue
     }
 
@@ -908,9 +962,8 @@ Deno.serve(async (req: Request) => {
           console.log('[fetch-thread-bodies] IMAP fetch', { threadId, msgId: msg.id, uid: msg.external_uid, sourceBytes: source?.byteLength ?? 0, fetchMs })
           if (!source) {
             console.log('[fetch-thread-bodies] no source for message — marking unavailable', { msgId: msg.id, uid: msg.external_uid })
-            const unavailableBody = '[Message no longer available on mail server]'
-            await service.from('inbox_messages').update({ body: unavailableBody }).eq('id', msg.id)
-            result.push({ id: msg.id, body: unavailableBody, htmlBody: null, attachments: [] })
+            const unavailableBody = await markBodyUnavailable(msg.id, 'missing')
+            result.push({ id: msg.id, body: unavailableBody, htmlBody: null, attachments: [], bodyUnavailable: true })
             continue
           }
 
@@ -994,22 +1047,33 @@ Deno.serve(async (req: Request) => {
           if (bodyText.length > 50000) bodyText = bodyText.slice(0, 50000)
           if (htmlBody && htmlBody.length > 50000) htmlBody = htmlBody.slice(0, 50000)
 
-          const tDb = performance.now()
-          await service
-            .from('inbox_messages')
-            .update({ body: bodyText || null, html_body: htmlBody })
-            .eq('id', msg.id)
-          const dbMs = Math.round(performance.now() - tDb)
-
-          const attCount = (attsByMsg.get(msg.id) ?? []).length + newAtts.length
-          const msgTotalMs = Math.round(performance.now() - tMsg)
-          console.log('[fetch-thread-bodies] message done', { threadId, msgId: msg.id, bodyLen: bodyText?.length ?? 0, htmlLen: htmlBody?.length ?? 0, attachments: attCount, dbMs, totalMsgMs: msgTotalMs })
+          const hasDisplayBody = !!(bodyText.trim() || htmlBody?.trim())
+          let storedBody: string | null = bodyText || null
+          let storedHtml: string | null = htmlBody
+          let bodyUnavailable = false
+          if (!hasDisplayBody) {
+            console.log('[fetch-thread-bodies] parsed MIME has no displayable body — marking unavailable', { threadId, msgId: msg.id, uid: msg.external_uid, sourceBytes: source.byteLength })
+            storedBody = await markBodyUnavailable(msg.id, 'empty')
+            storedHtml = null
+            bodyUnavailable = true
+          } else {
+            const tDb = performance.now()
+            await service
+              .from('inbox_messages')
+              .update({ body: storedBody, html_body: storedHtml })
+              .eq('id', msg.id)
+            const dbMs = Math.round(performance.now() - tDb)
+            const attCount = (attsByMsg.get(msg.id) ?? []).length + newAtts.length
+            const msgTotalMs = Math.round(performance.now() - tMsg)
+            console.log('[fetch-thread-bodies] message done', { threadId, msgId: msg.id, bodyLen: bodyText?.length ?? 0, htmlLen: htmlBody?.length ?? 0, attachments: attCount, dbMs, totalMsgMs: msgTotalMs })
+          }
 
           result.push({
             id: msg.id,
-            body: bodyText || null,
-            htmlBody,
+            body: storedBody,
+            htmlBody: storedHtml,
             attachments: [...(attsByMsg.get(msg.id) ?? []), ...newAtts],
+            ...(bodyUnavailable ? { bodyUnavailable: true } : {}),
           })
         }
       } finally {
@@ -1024,7 +1088,9 @@ Deno.serve(async (req: Request) => {
       console.error('[fetch-thread-bodies] IMAP error', { accId, error: (err as Error).message })
       try { await client.logout() } catch { try { client.close() } catch { /* ignore */ } }
       for (const msg of msgs) {
-        result.push({ id: msg.id, body: null, htmlBody: null, attachments: [] })
+        if (result.some((r) => r.id === msg.id)) continue
+        const text = await markBodyUnavailable(msg.id, 'error')
+        result.push({ id: msg.id, body: text, htmlBody: null, attachments: [], bodyUnavailable: true })
       }
       for (const msg of draftMsgs) {
         if (deletedMessageIds.includes(msg.id)) continue

@@ -10,6 +10,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { corsHeaders } from '../_shared/cors.ts'
+import { isUnavailableBodyText, unavailableBodyText } from '../_shared/inboxBodyUnavailable.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -86,7 +87,7 @@ Deno.serve(async (req: Request) => {
 
   const force = Boolean(forceRefresh)
 
-  const hasStoredContent = (v: unknown) => v != null && String(v).trim() !== ''
+  const hasStoredContent = (v: unknown) => v != null && String(v).trim() !== '' && !isUnavailableBodyText(v)
   if (!force && (hasStoredContent(msg.body) || hasStoredContent(msg.html_body))) {
     return json({ body: msg.body, htmlBody: msg.html_body, fromCache: true })
   }
@@ -144,9 +145,11 @@ Deno.serve(async (req: Request) => {
       console.log('[imap-fetch-body] IMAP fetch', { messageId, uid: msg.external_uid, sourceBytes: source?.byteLength ?? 0, fetchedCount: fetched.length })
 
       if (!source) {
+        const unavailableBody = unavailableBodyText('missing')
+        await service.from('inbox_messages').update({ body: unavailableBody, html_body: null }).eq('id', msg.id)
         await lock.release()
         await client.logout().catch(() => client.close())
-        return json({ error: 'Message source not found on IMAP server' }, 404)
+        return json({ error: 'Message source not found on IMAP server', body: unavailableBody, htmlBody: null, bodyUnavailable: true }, 404)
       }
 
       const parsed = await PostalMime.parse(source)
@@ -233,14 +236,35 @@ Deno.serve(async (req: Request) => {
       if (bodyText.length > 50000) bodyText = bodyText.slice(0, 50000)
       if (htmlBody && htmlBody.length > 50000) htmlBody = htmlBody.slice(0, 50000)
 
-      await service.from('inbox_messages').update({ body: bodyText || null, html_body: htmlBody }).eq('id', msg.id)
+      const hasDisplayBody = !!(bodyText.trim() || htmlBody?.trim())
+      let storedBody: string | null = bodyText || null
+      let storedHtml: string | null = htmlBody
+      if (!hasDisplayBody) {
+        console.log('[imap-fetch-body] parsed MIME has no displayable body — marking unavailable', { messageId, uid: msg.external_uid, sourceBytes: source.byteLength })
+        storedBody = unavailableBodyText('empty')
+        storedHtml = null
+      }
+
+      await service.from('inbox_messages').update({ body: storedBody, html_body: storedHtml }).eq('id', msg.id)
 
       await lock.release()
       await client.logout().catch(() => client.close())
 
+      if (!hasDisplayBody) {
+        return json({
+          error: 'Message body could not be loaded from mail server',
+          body: storedBody,
+          htmlBody: null,
+          fromImap: true,
+          forceRefresh: force,
+          attachmentCount,
+          bodyUnavailable: true,
+        }, 422)
+      }
+
       return json({
-        body: bodyText,
-        htmlBody,
+        body: storedBody,
+        htmlBody: storedHtml,
         fromImap: true,
         forceRefresh: force,
         attachmentCount,
