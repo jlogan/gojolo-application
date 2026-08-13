@@ -171,6 +171,27 @@ export function connectionAccountLabel(
   return conn.account_label?.trim() || conn.email?.trim() || conn.provider
 }
 
+/** Email shown under a custom nickname when it differs from account_label. */
+export function connectionEmailSecondary(
+  conn: Pick<CalendarConnection, 'account_label' | 'email'>,
+): string | null {
+  const label = conn.account_label?.trim()
+  const email = conn.email?.trim()
+  if (!email) return null
+  if (!label || label.toLowerCase() === email.toLowerCase()) return null
+  return email
+}
+
+export function formatEventStartTime(
+  event: Pick<CalendarEvent, 'all_day' | 'starts_at'>,
+): string {
+  if (event.all_day) return 'All day'
+  return new Date(event.starts_at).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
 export function connectionFilterLabel(
   member: CalendarTeamMember,
   conn: CalendarConnection,

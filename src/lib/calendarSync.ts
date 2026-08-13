@@ -60,3 +60,23 @@ export async function disconnectGoogleCalendar(orgId: string, connectionId?: str
   if (error) throw new Error(parseInvokeError(error, data ?? null))
   return data ?? {}
 }
+
+export async function updateCalendarConnectionLabel(
+  orgId: string,
+  userId: string,
+  connectionId: string,
+  accountLabel: string,
+): Promise<void> {
+  const trimmed = accountLabel.trim()
+  const { error } = await supabase
+    .from('calendar_connections')
+    .update({
+      account_label: trimmed || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', connectionId)
+    .eq('org_id', orgId)
+    .eq('user_id', userId)
+
+  if (error) throw new Error(error.message)
+}

@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   CalendarDays,
+  Check,
   ChevronLeft,
   ChevronRight,
   Link2,
+  Pencil,
   RefreshCw,
   Unlink,
   Users,
+  X,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
@@ -17,16 +20,20 @@ import {
   fetchCalendarSyncStatus,
   startGoogleCalendarConnect,
   syncGoogleCalendar,
+  updateCalendarConnectionLabel,
 } from '@/lib/calendarSync'
 import { usePermission } from '@/lib/usePermission'
 import {
   buildConnectionColorMap,
   connectionAccountLabel,
+  connectionEmailSecondary,
   connectionFilterLabel,
   connectionStatusLabel,
+  displayEventDescription,
   displayEventLocation,
   displayEventTitle,
   eventOwnerLabel,
+  formatEventStartTime,
   formatLastSynced,
   getConnectionChipActiveStyles,
   getConnectionColorFromMap,
@@ -39,7 +46,7 @@ import type {
   CalendarTeamMember,
 } from '@/types/calendar'
 
-type ViewMode = 'week' | 'month'
+type ViewMode = 'day' | 'week' | 'month'
 
 function startOfDay(date: Date): Date {
   const d = new Date(date)
@@ -80,6 +87,10 @@ function formatDayLabel(date: Date): string {
   return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
+function formatDayHeading(date: Date): string {
+  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+}
+
 function formatMonthLabel(date: Date): string {
   return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
 }
@@ -102,32 +113,139 @@ function ConnectionColorDot({ color, className = 'w-2 h-2' }: { color: string; c
   )
 }
 
-function CalendarEventCard({
+function CalendarEventDetailModal({
   event,
   owner,
   conn,
   viewerUserId,
   connectionColor,
+  onClose,
 }: {
   event: CalendarEvent
   owner: CalendarTeamMember | undefined
   conn: CalendarConnection | undefined
   viewerUserId: string | undefined
   connectionColor: string
+  onClose: () => void
+}) {
+  const title = displayEventTitle(event, viewerUserId)
+  const location = displayEventLocation(event, viewerUserId)
+  const description = displayEventDescription(event, viewerUserId)
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="calendar-event-detail-title"
+      data-testid="calendar-event-detail-modal"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface-elevated border border-border rounded-xl max-w-md w-full p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="flex items-start gap-2 min-w-0">
+            <ConnectionColorDot color={connectionColor} className="w-2.5 h-2.5 mt-1.5" />
+            <div className="min-w-0">
+              <h2 id="calendar-event-detail-title" className="text-lg font-semibold text-white break-words">
+                {title}
+              </h2>
+              <p className="text-sm text-gray-400 mt-0.5">{formatEventTime(event)}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted shrink-0"
+            aria-label="Close event details"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <dl className="space-y-2 text-sm">
+          <div>
+            <dt className="text-gray-500">Calendar</dt>
+            <dd className="text-gray-200">{eventOwnerLabel(owner, conn)}</dd>
+          </div>
+          {location && (
+            <div>
+              <dt className="text-gray-500">Location</dt>
+              <dd className="text-gray-200 break-words">{location}</dd>
+            </div>
+          )}
+          {description && (
+            <div>
+              <dt className="text-gray-500">Description</dt>
+              <dd className="text-gray-200 whitespace-pre-wrap break-words">{description}</dd>
+            </div>
+          )}
+        </dl>
+      </div>
+    </div>
+  )
+}
+
+function CalendarEventCard({
+  event,
+  owner,
+  conn,
+  viewerUserId,
+  connectionColor,
+  variant,
+  onSelect,
+}: {
+  event: CalendarEvent
+  owner: CalendarTeamMember | undefined
+  conn: CalendarConnection | undefined
+  viewerUserId: string | undefined
+  connectionColor: string
+  variant: 'compact' | 'day'
+  onSelect: (event: CalendarEvent) => void
 }) {
   const title = displayEventTitle(event, viewerUserId)
   const location = displayEventLocation(event, viewerUserId)
   const colorStyles = getConnectionEventCardStyles(connectionColor)
 
+  if (variant === 'compact') {
+    return (
+      <li>
+        <button
+          type="button"
+          onClick={() => onSelect(event)}
+          className="w-full text-left rounded-md border border-l-[3px] px-2 py-1 text-xs hover:brightness-110 transition-[filter]"
+          style={colorStyles}
+        >
+          <p className="text-gray-400 truncate">{formatEventStartTime(event)}</p>
+          <p className="font-medium text-white truncate">{title}</p>
+        </button>
+      </li>
+    )
+  }
+
   return (
-    <li
-      className="rounded-md border border-l-[3px] px-2 py-1.5 text-xs"
-      style={colorStyles}
-    >
-      <p className="font-medium text-white truncate">{title}</p>
-      <p className="text-gray-400 mt-0.5">{formatEventTime(event)}</p>
-      <p className="text-gray-500 truncate mt-0.5">{eventOwnerLabel(owner, conn)}</p>
-      {location && <p className="text-gray-500 truncate mt-0.5">{location}</p>}
+    <li>
+      <button
+        type="button"
+        onClick={() => onSelect(event)}
+        className="w-full text-left rounded-md border border-l-[3px] px-2 py-1.5 text-xs hover:brightness-110 transition-[filter]"
+        style={colorStyles}
+      >
+        <p className="font-medium text-white truncate">{title}</p>
+        <p className="text-gray-400 mt-0.5">{formatEventTime(event)}</p>
+        <p className="text-gray-500 truncate mt-0.5">{eventOwnerLabel(owner, conn)}</p>
+        {location && <p className="text-gray-500 truncate mt-0.5">{location}</p>}
+      </button>
     </li>
   )
 }
@@ -139,6 +257,9 @@ function CalendarDayCard({
   membersById,
   connectionsById,
   connectionColorMap,
+  variant,
+  onSelectEvent,
+  showDayHeader = true,
 }: {
   day: Date
   dayEvents: CalendarEvent[]
@@ -146,6 +267,9 @@ function CalendarDayCard({
   membersById: Map<string, CalendarTeamMember>
   connectionsById: Map<string, CalendarConnection>
   connectionColorMap: ConnectionColorMap
+  variant: 'compact' | 'day'
+  onSelectEvent: (event: CalendarEvent) => void
+  showDayHeader?: boolean
 }) {
   const isToday = sameDay(day, new Date())
 
@@ -155,9 +279,11 @@ function CalendarDayCard({
         isToday ? 'border-accent/50 bg-accent/5' : 'border-border bg-surface-muted/20'
       }`}
     >
-      <div className={`px-2 py-2 text-xs font-medium border-b border-border ${isToday ? 'text-accent' : 'text-gray-400'}`}>
-        {formatDayLabel(day)}
-      </div>
+      {showDayHeader && (
+        <div className={`px-2 py-2 text-xs font-medium border-b border-border ${isToday ? 'text-accent' : 'text-gray-400'}`}>
+          {formatDayLabel(day)}
+        </div>
+      )}
       <ul className="p-2 space-y-1.5">
         {dayEvents.length === 0 ? (
           <li className="text-xs text-gray-500 px-1">No events</li>
@@ -170,11 +296,163 @@ function CalendarDayCard({
               conn={connectionsById.get(event.connection_id)}
               viewerUserId={viewerUserId}
               connectionColor={getConnectionColorFromMap(event.connection_id, connectionColorMap)}
+              variant={variant}
+              onSelect={onSelectEvent}
             />
           ))
         )}
       </ul>
     </div>
+  )
+}
+
+function ConnectedCalendarCard({
+  conn,
+  accent,
+  syncBusy,
+  disconnectBusy,
+  canEditLabel,
+  onSync,
+  onDisconnect,
+  onLabelSaved,
+}: {
+  conn: CalendarConnection
+  accent: string
+  syncBusy: boolean
+  disconnectBusy: boolean
+  canEditLabel: boolean
+  onSync: () => void
+  onDisconnect: (label: string) => void
+  onLabelSaved: () => Promise<void>
+}) {
+  const { user } = useAuth()
+  const { currentOrg } = useOrg()
+  const [editingLabel, setEditingLabel] = useState(false)
+  const [labelDraft, setLabelDraft] = useState('')
+  const [labelBusy, setLabelBusy] = useState(false)
+  const [labelMessage, setLabelMessage] = useState<string | null>(null)
+
+  const label = connectionAccountLabel(conn)
+  const emailSecondary = connectionEmailSecondary(conn)
+
+  const startEdit = () => {
+    setLabelDraft(label)
+    setLabelMessage(null)
+    setEditingLabel(true)
+  }
+
+  const cancelEdit = () => {
+    setEditingLabel(false)
+    setLabelDraft('')
+    setLabelMessage(null)
+  }
+
+  const saveLabel = async () => {
+    if (!currentOrg?.id || !user?.id) return
+    setLabelBusy(true)
+    setLabelMessage(null)
+    try {
+      await updateCalendarConnectionLabel(currentOrg.id, user.id, conn.id, labelDraft)
+      setEditingLabel(false)
+      setLabelMessage('Nickname saved')
+      await onLabelSaved()
+    } catch (err) {
+      setLabelMessage((err as Error).message)
+    } finally {
+      setLabelBusy(false)
+    }
+  }
+
+  return (
+    <li className="rounded-lg border border-border bg-surface-muted/40 p-3">
+      {editingLabel ? (
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={labelDraft}
+            onChange={(e) => setLabelDraft(e.target.value)}
+            disabled={labelBusy}
+            placeholder="Calendar nickname"
+            className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void saveLabel()
+              if (e.key === 'Escape') cancelEdit()
+            }}
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void saveLabel()}
+              disabled={labelBusy}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50"
+            >
+              <Check className="w-3.5 h-3.5" />
+              {labelBusy ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              disabled={labelBusy}
+              className="px-2.5 py-1.5 rounded-lg border border-border text-xs text-gray-300 hover:bg-surface-muted disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-2">
+          <ConnectionColorDot color={accent} className="w-2 h-2 mt-1.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-white truncate">{label}</p>
+            {emailSecondary && (
+              <p className="text-xs text-gray-500 truncate mt-0.5">{emailSecondary}</p>
+            )}
+          </div>
+          {canEditLabel && (
+            <button
+              type="button"
+              onClick={startEdit}
+              className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted shrink-0"
+              aria-label={`Edit nickname for ${label}`}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+      <p className="text-xs text-gray-400 mt-2">
+        {connectionStatusLabel(conn.status)} · Last synced: {formatLastSynced(conn.last_synced_at)}
+      </p>
+      {conn.sync_error && (
+        <p className="text-xs text-red-400 mt-0.5 truncate">{conn.sync_error}</p>
+      )}
+      {labelMessage && (
+        <p className={`text-xs mt-1 ${labelMessage.includes('saved') ? 'text-green-400' : 'text-red-400'}`}>
+          {labelMessage}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2 mt-3">
+        <button
+          type="button"
+          onClick={onSync}
+          disabled={syncBusy}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${syncBusy ? 'animate-spin' : ''}`} />
+          {syncBusy ? 'Syncing…' : 'Sync now'}
+        </button>
+        <button
+          type="button"
+          onClick={() => onDisconnect(label)}
+          disabled={disconnectBusy}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted disabled:opacity-50"
+        >
+          <Unlink className="w-4 h-4" />
+          {disconnectBusy ? 'Disconnecting…' : 'Disconnect'}
+        </button>
+      </div>
+    </li>
   )
 }
 
@@ -187,6 +465,7 @@ export default function CalendarPage() {
 
   const [viewMode, setViewMode] = useState<ViewMode>('week')
   const [anchorDate, setAnchorDate] = useState(() => startOfDay(new Date()))
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null)
   const [teamMembers, setTeamMembers] = useState<CalendarTeamMember[]>([])
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<Set<string>>(new Set())
   const [connections, setConnections] = useState<CalendarConnection[]>([])
@@ -199,6 +478,11 @@ export default function CalendarPage() {
   const [connectMessage, setConnectMessage] = useState<string | null>(null)
 
   const range = useMemo(() => {
+    if (viewMode === 'day') {
+      const start = startOfDay(anchorDate)
+      const end = addDays(start, 1)
+      return { start, end, days: [start] }
+    }
     if (viewMode === 'week') {
       const start = startOfWeek(anchorDate)
       const end = addDays(start, 7)
@@ -403,10 +687,31 @@ export default function CalendarPage() {
 
   const shiftRange = (direction: -1 | 1) => {
     setAnchorDate((prev) => {
+      if (viewMode === 'day') return addDays(prev, direction)
       if (viewMode === 'week') return addDays(prev, direction * 7)
       return new Date(prev.getFullYear(), prev.getMonth() + direction, 1)
     })
   }
+
+  const goToToday = () => {
+    setViewMode('day')
+    setAnchorDate(startOfDay(new Date()))
+  }
+
+  const eventTileVariant = viewMode === 'day' ? 'day' : 'compact'
+
+  const rangeHeading = viewMode === 'day'
+    ? formatDayHeading(anchorDate)
+    : viewMode === 'week'
+      ? `${formatDayLabel(range.days[0])} – ${formatDayLabel(range.days[6])}`
+      : formatMonthLabel(anchorDate)
+
+  const selectedEventDetails = selectedEvent ? {
+    event: selectedEvent,
+    owner: membersById.get(selectedEvent.user_id),
+    conn: connectionsById.get(selectedEvent.connection_id),
+    color: getConnectionColorFromMap(selectedEvent.connection_id, connectionColorMap),
+  } : null
 
   if (canView === null) {
     return (
@@ -427,6 +732,17 @@ export default function CalendarPage() {
 
   return (
     <div className="p-4 md:p-6" data-testid="calendar-page">
+      {selectedEventDetails && (
+        <CalendarEventDetailModal
+          event={selectedEventDetails.event}
+          owner={selectedEventDetails.owner}
+          conn={selectedEventDetails.conn}
+          viewerUserId={user?.id}
+          connectionColor={selectedEventDetails.color}
+          onClose={() => setSelectedEvent(null)}
+        />
+      )}
+
       <div className="flex flex-col lg:flex-row lg:items-start gap-6">
         <div className="flex-1 min-w-0">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
@@ -438,6 +754,15 @@ export default function CalendarPage() {
             </div>
             <div className="flex items-center gap-2">
               <div className="flex rounded-lg bg-surface-muted p-1">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('day')}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    viewMode === 'day' ? 'bg-surface-elevated text-white shadow' : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  Day
+                </button>
                 <button
                   type="button"
                   onClick={() => setViewMode('week')}
@@ -463,8 +788,12 @@ export default function CalendarPage() {
           <div className="flex flex-wrap items-center gap-2 mb-4">
             <button
               type="button"
-              onClick={() => setAnchorDate(startOfDay(new Date()))}
-              className="px-3 py-1.5 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted"
+              onClick={goToToday}
+              className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
+                viewMode === 'day' && sameDay(anchorDate, new Date())
+                  ? 'border-accent/50 bg-accent/10 text-accent'
+                  : 'border-border text-gray-300 hover:bg-surface-muted'
+              }`}
             >
               Today
             </button>
@@ -485,9 +814,7 @@ export default function CalendarPage() {
               <ChevronRight className="w-4 h-4" />
             </button>
             <span className="text-sm font-medium text-white px-2">
-              {viewMode === 'week'
-                ? `${formatDayLabel(range.days[0])} – ${formatDayLabel(range.days[6])}`
-                : formatMonthLabel(anchorDate)}
+              {rangeHeading}
             </span>
           </div>
 
@@ -503,7 +830,7 @@ export default function CalendarPage() {
                 filterableConnections.map((conn) => {
                   const member = membersById.get(conn.user_id)
                   const active = selectedConnectionIds.has(conn.id)
-                  const label = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
+                  const chipLabel = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
                   const accent = getConnectionColorFromMap(conn.id, connectionColorMap)
                   return (
                     <button
@@ -518,7 +845,7 @@ export default function CalendarPage() {
                       }`}
                     >
                       <ConnectionColorDot color={accent} />
-                      {label}
+                      {chipLabel}
                     </button>
                   )
                 })
@@ -530,8 +857,18 @@ export default function CalendarPage() {
             <div className="text-sm text-gray-400">Loading calendar…</div>
           ) : (
             <div
-              className="grid grid-cols-1 md:grid-cols-7 gap-2"
-              data-testid={viewMode === 'week' ? 'calendar-week-grid' : 'calendar-month-grid'}
+              className={
+                viewMode === 'day'
+                  ? 'max-w-xl'
+                  : 'grid grid-cols-1 md:grid-cols-7 gap-2'
+              }
+              data-testid={
+                viewMode === 'day'
+                  ? 'calendar-day-grid'
+                  : viewMode === 'week'
+                    ? 'calendar-week-grid'
+                    : 'calendar-month-grid'
+              }
             >
               {range.days.map((day) => (
                 <CalendarDayCard
@@ -542,6 +879,9 @@ export default function CalendarPage() {
                   membersById={membersById}
                   connectionsById={connectionsById}
                   connectionColorMap={connectionColorMap}
+                  variant={eventTileVariant}
+                  onSelectEvent={setSelectedEvent}
+                  showDayHeader={viewMode !== 'day'}
                 />
               ))}
             </div>
@@ -566,49 +906,19 @@ export default function CalendarPage() {
                 <ul className="mt-4 space-y-3">
                   {myConnections
                     .filter((c) => c.status === 'connected' || c.status === 'error')
-                    .map((conn) => {
-                      const label = connectionAccountLabel(conn)
-                      const syncBusy = syncBusyIds.has(conn.id)
-                      const disconnectBusy = disconnectBusyIds.has(conn.id)
-                      const accent = getConnectionColorFromMap(conn.id, connectionColorMap)
-                      return (
-                        <li
-                          key={conn.id}
-                          className="rounded-lg border border-border bg-surface-muted/40 p-3"
-                        >
-                          <p className="text-sm font-medium text-white truncate flex items-center gap-2">
-                            <ConnectionColorDot color={accent} />
-                            {label}
-                          </p>
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            {connectionStatusLabel(conn.status)} · Last synced: {formatLastSynced(conn.last_synced_at)}
-                          </p>
-                          {conn.sync_error && (
-                            <p className="text-xs text-red-400 mt-0.5 truncate">{conn.sync_error}</p>
-                          )}
-                          <div className="flex flex-wrap gap-2 mt-3">
-                            <button
-                              type="button"
-                              onClick={() => handleSyncGoogle(conn.id)}
-                              disabled={syncBusy}
-                              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
-                            >
-                              <RefreshCw className={`w-4 h-4 ${syncBusy ? 'animate-spin' : ''}`} />
-                              {syncBusy ? 'Syncing…' : 'Sync now'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDisconnectGoogle(conn.id, label)}
-                              disabled={disconnectBusy}
-                              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted disabled:opacity-50"
-                            >
-                              <Unlink className="w-4 h-4" />
-                              {disconnectBusy ? 'Disconnecting…' : 'Disconnect'}
-                            </button>
-                          </div>
-                        </li>
-                      )
-                    })}
+                    .map((conn) => (
+                      <ConnectedCalendarCard
+                        key={conn.id}
+                        conn={conn}
+                        accent={getConnectionColorFromMap(conn.id, connectionColorMap)}
+                        syncBusy={syncBusyIds.has(conn.id)}
+                        disconnectBusy={disconnectBusyIds.has(conn.id)}
+                        canEditLabel={canConnect === true}
+                        onSync={() => void handleSyncGoogle(conn.id)}
+                        onDisconnect={(label) => void handleDisconnectGoogle(conn.id, label)}
+                        onLabelSaved={loadData}
+                      />
+                    ))}
                 </ul>
               )}
 

@@ -506,7 +506,7 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
     const tokenExpiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
 
     const profile = await fetchGoogleUserEmail(tokenResponse.access_token)
-    const accountLabel = profile.email?.trim() || null
+    const defaultAccountLabel = profile.email?.trim() || null
 
     let existingSameAccount: CalendarConnectionRow | null = null
     if (profile.id) {
@@ -554,6 +554,9 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
       updated_at: new Date().toISOString(),
     })
     if (tokenUpsertError) throw new Error(`Failed to store tokens: ${tokenUpsertError.message}`)
+
+    const existingAccountLabel = targetConnection.account_label?.trim()
+    const accountLabel = existingAccountLabel || defaultAccountLabel
 
     const { error: connUpdateError } = await service.from('calendar_connections').update({
       status: 'connected',
