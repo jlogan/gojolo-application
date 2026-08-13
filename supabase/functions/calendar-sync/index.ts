@@ -39,7 +39,13 @@ const googleClientSecret = Deno.env.get('GOOGLE_CALENDAR_CLIENT_SECRET')
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
-const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
+// calendar.readonly for sync; openid/email/profile for userinfo (account id + email on callback)
+const GOOGLE_OAUTH_SCOPES = [
+  'https://www.googleapis.com/auth/calendar.readonly',
+  'openid',
+  'email',
+  'profile',
+].join(' ')
 
 const SYNC_PAST_DAYS = 90
 const SYNC_FUTURE_DAYS = 180
@@ -63,6 +69,7 @@ type TokenRow = {
   access_token_encrypted: string | null
   refresh_token_encrypted: string | null
   token_expires_at: string | null
+  scopes: string | null
   oauth_state: string | null
   oauth_state_expires_at: string | null
 }
@@ -211,7 +218,7 @@ async function handleStart(
   authUrl.searchParams.set('client_id', clientId)
   authUrl.searchParams.set('redirect_uri', redirectUri)
   authUrl.searchParams.set('response_type', 'code')
-  authUrl.searchParams.set('scope', GOOGLE_CALENDAR_SCOPE)
+  authUrl.searchParams.set('scope', GOOGLE_OAUTH_SCOPES)
   authUrl.searchParams.set('access_type', 'offline')
   authUrl.searchParams.set('prompt', 'consent')
   authUrl.searchParams.set('state', state)
@@ -306,7 +313,7 @@ async function getValidAccessToken(
   await service.from('calendar_connection_tokens').update({
     access_token_encrypted: newAccessEncrypted,
     token_expires_at: tokenExpiresAt,
-    scopes: refreshed.scope ?? tokens.scopes ?? GOOGLE_CALENDAR_SCOPE,
+    scopes: refreshed.scope ?? tokens.scopes ?? GOOGLE_OAUTH_SCOPES,
     updated_at: new Date().toISOString(),
   }).eq('connection_id', connection.id)
 
@@ -496,9 +503,6 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
     const tokenResponse = await exchangeGoogleCode(code)
     const keyHex = requireEncryptionKey()
     const accessEncrypted = await encrypt(tokenResponse.access_token, keyHex)
-    const refreshEncrypted = tokenResponse.refresh_token
-      ? await encrypt(tokenResponse.refresh_token, keyHex)
-      : tokenRow.refresh_token_encrypted
     const tokenExpiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
 
     const profile = await fetchGoogleUserEmail(tokenResponse.access_token)
@@ -520,25 +524,38 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
 
     let targetConnectionId = connectionId
     let targetConnection = connection as CalendarConnectionRow
+    let existingTargetTokens: TokenRow | null = null
 
     if (existingSameAccount) {
       targetConnectionId = existingSameAccount.id
       targetConnection = existingSameAccount as CalendarConnectionRow
-      await service.from('calendar_connections').delete().eq('id', connectionId)
+      const { data: targetTokens } = await service
+        .from('calendar_connection_tokens')
+        .select('*')
+        .eq('connection_id', existingSameAccount.id)
+        .maybeSingle()
+      existingTargetTokens = (targetTokens as TokenRow | null) ?? null
+      const { error: deleteError } = await service.from('calendar_connections').delete().eq('id', connectionId)
+      if (deleteError) throw new Error(`Failed to merge duplicate connection: ${deleteError.message}`)
     }
 
-    await service.from('calendar_connection_tokens').upsert({
+    const refreshEncrypted = tokenResponse.refresh_token
+      ? await encrypt(tokenResponse.refresh_token, keyHex)
+      : existingTargetTokens?.refresh_token_encrypted ?? tokenRow.refresh_token_encrypted
+
+    const { error: tokenUpsertError } = await service.from('calendar_connection_tokens').upsert({
       connection_id: targetConnectionId,
       access_token_encrypted: accessEncrypted,
       refresh_token_encrypted: refreshEncrypted,
       token_expires_at: tokenExpiresAt,
-      scopes: tokenResponse.scope ?? GOOGLE_CALENDAR_SCOPE,
+      scopes: tokenResponse.scope ?? existingTargetTokens?.scopes ?? GOOGLE_OAUTH_SCOPES,
       oauth_state: null,
       oauth_state_expires_at: null,
       updated_at: new Date().toISOString(),
     })
+    if (tokenUpsertError) throw new Error(`Failed to store tokens: ${tokenUpsertError.message}`)
 
-    await service.from('calendar_connections').update({
+    const { error: connUpdateError } = await service.from('calendar_connections').update({
       status: 'connected',
       provider_account_id: profile.id || null,
       email: profile.email || null,
@@ -546,6 +563,7 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
       sync_error: null,
       updated_at: new Date().toISOString(),
     }).eq('id', targetConnectionId)
+    if (connUpdateError) throw new Error(`Failed to update connection: ${connUpdateError.message}`)
 
     const updatedTokens = {
       ...tokenRow,
