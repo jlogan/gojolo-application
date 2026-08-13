@@ -30,7 +30,6 @@ import {
   getConnectionChipActiveStyles,
   getConnectionColor,
   getConnectionEventCardStyles,
-  memberLabel,
 } from '@/lib/calendarDisplay'
 import type {
   CalendarConnection,
@@ -379,16 +378,6 @@ export default function CalendarPage() {
     return map
   }, [filteredEvents, range.days])
 
-  const connectionsByUser = useMemo(() => {
-    const map = new Map<string, CalendarConnection[]>()
-    for (const conn of connections) {
-      const list = map.get(conn.user_id) ?? []
-      list.push(conn)
-      map.set(conn.user_id, list)
-    }
-    return map
-  }, [connections])
-
   const toggleConnection = (connectionId: string) => {
     setSelectedConnectionIds((prev) => {
       const next = new Set(prev)
@@ -547,52 +536,6 @@ export default function CalendarPage() {
         </div>
 
         <aside className="w-full lg:w-80 shrink-0 space-y-4">
-          <section className="rounded-lg border border-border bg-surface-muted/30 p-4">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-3">
-              <RefreshCw className="w-4 h-4" />
-              Connection status
-            </h2>
-            {teamMembers.length === 0 ? (
-              <p className="text-sm text-gray-500">No team members to show.</p>
-            ) : (
-              <ul className="space-y-4">
-                {teamMembers.map((member) => {
-                  const userConnections = (connectionsByUser.get(member.user_id) ?? [])
-                    .filter((c) => c.status !== 'disconnected')
-                  return (
-                    <li key={member.user_id} className="text-sm">
-                      <p className="font-medium text-white truncate">{memberLabel(member)}</p>
-                      {userConnections.length === 0 ? (
-                        <p className="text-gray-500 mt-0.5">Not connected</p>
-                      ) : (
-                        <ul className="mt-2 space-y-2 border-l border-border pl-3">
-                          {userConnections.map((conn) => (
-                            <li key={conn.id}>
-                              <p className="text-gray-300 truncate flex items-center gap-2">
-                                <ConnectionColorDot connectionId={conn.id} />
-                                {connectionAccountLabel(conn)}
-                              </p>
-                              <p className="text-gray-400 mt-0.5">
-                                {connectionStatusLabel(conn.status)}
-                                {conn.provider ? ` · ${conn.provider}` : ''}
-                              </p>
-                              <p className="text-xs text-gray-500 mt-0.5">
-                                Last synced: {formatLastSynced(conn.last_synced_at)}
-                              </p>
-                              {conn.sync_error && (
-                                <p className="text-xs text-red-400 mt-0.5 truncate">{conn.sync_error}</p>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </section>
-
           {(isOrgAdmin || canConnect) && (
             <section className="rounded-lg border border-dashed border-border bg-surface-muted/20 p-4">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-2">
