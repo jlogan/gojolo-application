@@ -162,6 +162,31 @@ export function displayEventLocation(
   return event.location
 }
 
+export function canViewEventRichDetails(
+  event: Pick<CalendarEvent, 'visibility' | 'user_id'>,
+  viewerUserId: string | undefined,
+): boolean {
+  return !isEventMasked(event.visibility, event.user_id, viewerUserId)
+}
+
+export function displayEventMeetingUrl(
+  event: Pick<CalendarEvent, 'meeting_url' | 'visibility' | 'user_id'>,
+  viewerUserId: string | undefined,
+): string | null {
+  if (!canViewEventRichDetails(event, viewerUserId)) return null
+  const url = event.meeting_url?.trim()
+  return url || null
+}
+
+export function displayEventHtmlLink(
+  event: Pick<CalendarEvent, 'html_link' | 'visibility' | 'user_id'>,
+  viewerUserId: string | undefined,
+): string | null {
+  if (!canViewEventRichDetails(event, viewerUserId)) return null
+  const url = event.html_link?.trim()
+  return url || null
+}
+
 export function memberLabel(member: Pick<CalendarTeamMember, 'display_name' | 'email'>): string {
   return member.display_name?.trim() || member.email?.trim() || 'Unknown user'
 }

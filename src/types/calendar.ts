@@ -6,6 +6,56 @@ export type CalendarEventVisibility = 'default' | 'public' | 'private' | 'busy_o
 
 export type CalendarEventStatus = 'confirmed' | 'tentative' | 'cancelled'
 
+export type CalendarConferenceEntryPoint = {
+  entryPointType?: string
+  uri?: string
+  label?: string
+  pin?: string
+  meetingCode?: string
+  passcode?: string
+  regionCode?: string
+}
+
+export type CalendarConferenceData = {
+  entryPoints?: CalendarConferenceEntryPoint[]
+  conferenceId?: string
+  signature?: string
+  notes?: string
+}
+
+export type CalendarAttendee = {
+  email?: string
+  displayName?: string
+  responseStatus?: string
+  organizer?: boolean
+  self?: boolean
+  optional?: boolean
+}
+
+export type CalendarAttachment = {
+  fileUrl?: string
+  title?: string
+  mimeType?: string
+  iconLink?: string
+  fileId?: string
+}
+
+export type CalendarReminder = {
+  method?: string
+  minutes?: number
+}
+
+export type CalendarReminders = {
+  useDefault?: boolean
+  overrides?: CalendarReminder[]
+}
+
+export type CalendarPerson = {
+  email?: string
+  displayName?: string
+  self?: boolean
+}
+
 export type CalendarConnection = {
   id: string
   org_id: string
@@ -35,6 +85,17 @@ export type CalendarEvent = {
   all_day: boolean
   visibility: CalendarEventVisibility
   status: CalendarEventStatus
+  meeting_url: string | null
+  conference_data: CalendarConferenceData | null
+  attendees: CalendarAttendee[] | null
+  attachments: CalendarAttachment[] | null
+  reminders: CalendarReminders | null
+  organizer: CalendarPerson | null
+  creator: CalendarPerson | null
+  recurrence_rules: string[] | null
+  recurring_event_id: string | null
+  html_link: string | null
+  provider_updated_at: string | null
   created_at: string
   updated_at: string
 }

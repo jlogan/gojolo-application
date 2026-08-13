@@ -159,6 +159,11 @@ function requireGoogleOAuth(): { clientId: string; clientSecret: string } {
   return { clientId: googleClientId, clientSecret: googleClientSecret }
 }
 
+async function isOrgAdmin(userClient: ReturnType<typeof createClient>, orgId: string): Promise<boolean> {
+  const { data: isAdmin } = await userClient.rpc('is_org_admin', { p_org_id: orgId })
+  return isAdmin === true
+}
+
 async function hasCalendarConnect(userClient: ReturnType<typeof createClient>, orgId: string): Promise<boolean> {
   const [{ data: isAdmin }, { data: canConnect }] = await Promise.all([
     userClient.rpc('is_org_admin', { p_org_id: orgId }),
@@ -274,8 +279,8 @@ async function handleStart(
   returnPath?: string,
 ) {
   if (provider !== 'google') return json({ error: 'Only Google Calendar is supported currently' }, 400)
-  if (!(await hasCalendarConnect(userClient, orgId))) {
-    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  if (!(await isOrgAdmin(userClient, orgId))) {
+    return json({ error: 'Forbidden: org admin required' }, 403)
   }
 
   const { clientId } = requireGoogleOAuth()
@@ -401,6 +406,16 @@ async function getValidAccessToken(
   return refreshed.access_token
 }
 
+type GoogleConferenceEntryPoint = {
+  entryPointType?: string
+  uri?: string
+  label?: string
+  pin?: string
+  meetingCode?: string
+  passcode?: string
+  regionCode?: string
+}
+
 type GoogleEvent = {
   id: string
   status?: string
@@ -410,6 +425,120 @@ type GoogleEvent = {
   visibility?: string
   start?: { dateTime?: string; date?: string }
   end?: { dateTime?: string; date?: string }
+  hangoutLink?: string
+  htmlLink?: string
+  updated?: string
+  recurringEventId?: string
+  recurrence?: string[]
+  conferenceData?: {
+    entryPoints?: GoogleConferenceEntryPoint[]
+    conferenceId?: string
+    signature?: string
+    notes?: string
+  }
+  attendees?: Array<{
+    email?: string
+    displayName?: string
+    responseStatus?: string
+    organizer?: boolean
+    self?: boolean
+    optional?: boolean
+  }>
+  attachments?: Array<{
+    fileUrl?: string
+    title?: string
+    mimeType?: string
+    iconLink?: string
+    fileId?: string
+  }>
+  reminders?: {
+    useDefault?: boolean
+    overrides?: Array<{ method?: string; minutes?: number }>
+  }
+  organizer?: { email?: string; displayName?: string; self?: boolean }
+  creator?: { email?: string; displayName?: string; self?: boolean }
+}
+
+function extractMeetingUrl(event: GoogleEvent): string | null {
+  const hangout = event.hangoutLink?.trim()
+  if (hangout) return hangout
+
+  const entryPoints = event.conferenceData?.entryPoints ?? []
+  const video = entryPoints.find((ep) => ep.entryPointType === 'video' && ep.uri?.trim())
+  if (video?.uri?.trim()) return video.uri.trim()
+
+  const anyUri = entryPoints.find((ep) => ep.uri?.trim())
+  return anyUri?.uri?.trim() || null
+}
+
+function mapConferenceData(event: GoogleEvent): Record<string, unknown> | null {
+  const data = event.conferenceData
+  if (!data?.entryPoints?.length && !data?.conferenceId && !data?.notes) return null
+  return {
+    entryPoints: (data.entryPoints ?? []).map((ep) => ({
+      entryPointType: ep.entryPointType ?? null,
+      uri: ep.uri?.trim() || null,
+      label: ep.label?.trim() || null,
+      pin: ep.pin?.trim() || null,
+      meetingCode: ep.meetingCode?.trim() || null,
+      passcode: ep.passcode?.trim() || null,
+      regionCode: ep.regionCode?.trim() || null,
+    })),
+    conferenceId: data.conferenceId ?? null,
+    signature: data.signature ?? null,
+    notes: data.notes?.trim() || null,
+  }
+}
+
+function mapAttendees(event: GoogleEvent): Record<string, unknown>[] | null {
+  const attendees = event.attendees
+  if (!attendees?.length) return null
+  return attendees.map((a) => ({
+    email: a.email?.trim() || null,
+    displayName: a.displayName?.trim() || null,
+    responseStatus: a.responseStatus ?? null,
+    organizer: a.organizer ?? false,
+    self: a.self ?? false,
+    optional: a.optional ?? false,
+  }))
+}
+
+function mapAttachments(event: GoogleEvent): Record<string, unknown>[] | null {
+  const attachments = event.attachments
+  if (!attachments?.length) return null
+  return attachments.map((a) => ({
+    fileUrl: a.fileUrl?.trim() || null,
+    title: a.title?.trim() || null,
+    mimeType: a.mimeType?.trim() || null,
+    iconLink: a.iconLink?.trim() || null,
+    fileId: a.fileId?.trim() || null,
+  }))
+}
+
+function mapReminders(event: GoogleEvent): Record<string, unknown> | null {
+  const reminders = event.reminders
+  if (!reminders) return null
+  if (reminders.useDefault && !reminders.overrides?.length) {
+    return { useDefault: true, overrides: [] }
+  }
+  if (!reminders.overrides?.length && reminders.useDefault == null) return null
+  return {
+    useDefault: reminders.useDefault ?? false,
+    overrides: (reminders.overrides ?? []).map((r) => ({
+      method: r.method ?? null,
+      minutes: r.minutes ?? null,
+    })),
+  }
+}
+
+function mapPerson(person: GoogleEvent['organizer']): Record<string, unknown> | null {
+  if (!person) return null
+  if (!person.email?.trim() && !person.displayName?.trim()) return null
+  return {
+    email: person.email?.trim() || null,
+    displayName: person.displayName?.trim() || null,
+    self: person.self ?? false,
+  }
 }
 
 function mapGoogleVisibility(visibility: string | undefined): 'default' | 'public' | 'private' | 'busy_only' {
@@ -469,6 +598,8 @@ async function syncGoogleConnection(
     url.searchParams.set('orderBy', 'startTime')
     url.searchParams.set('maxResults', '250')
     url.searchParams.set('showDeleted', 'true')
+    url.searchParams.set('conferenceDataVersion', '1')
+    url.searchParams.set('supportsAttachments', 'true')
     if (pageToken) url.searchParams.set('pageToken', pageToken)
 
     const res = await fetch(url.toString(), {
@@ -504,6 +635,17 @@ async function syncGoogleConnection(
         all_day: times.all_day,
         visibility: mapGoogleVisibility(event.visibility),
         status,
+        meeting_url: extractMeetingUrl(event),
+        conference_data: mapConferenceData(event),
+        attendees: mapAttendees(event),
+        attachments: mapAttachments(event),
+        reminders: mapReminders(event),
+        organizer: mapPerson(event.organizer),
+        creator: mapPerson(event.creator),
+        recurrence_rules: event.recurrence?.length ? event.recurrence : null,
+        recurring_event_id: event.recurringEventId?.trim() || null,
+        html_link: event.htmlLink?.trim() || null,
+        provider_updated_at: event.updated ? new Date(event.updated).toISOString() : null,
         updated_at: new Date().toISOString(),
       }
 
@@ -851,25 +993,26 @@ async function handleCronSync(
 async function handleDisconnect(
   userClient: ReturnType<typeof createClient>,
   service: ReturnType<typeof createClient>,
-  userId: string,
+  _userId: string,
   orgId: string,
   provider: Provider = 'google',
   connectionId?: string,
 ) {
-  if (!(await hasCalendarConnect(userClient, orgId))) {
-    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  if (!(await isOrgAdmin(userClient, orgId))) {
+    return json({ error: 'Forbidden: org admin required' }, 403)
   }
 
-  const connections = await getUserConnections(service, orgId, userId, provider, connectionId)
-  if (connections.length === 0) return json({ ok: true, message: 'Already disconnected' })
-
-  for (const connection of connections) {
-    const pair = await getConnectionWithTokens(service, connection)
-    if (!pair) continue
-    await disconnectConnection(service, pair)
+  if (!connectionId) {
+    return json({ error: 'connectionId required' }, 400)
   }
 
-  return json({ ok: true, message: connectionId ? 'Calendar account disconnected' : 'Calendar disconnected' })
+  const connection = await getOrgConnection(service, orgId, provider, connectionId)
+  if (!connection) return json({ ok: true, message: 'Already disconnected' })
+
+  const pair = await getConnectionWithTokens(service, connection)
+  if (pair) await disconnectConnection(service, pair)
+
+  return json({ ok: true, message: 'Calendar account disconnected' })
 }
 
 Deno.serve(async (req: Request) => {

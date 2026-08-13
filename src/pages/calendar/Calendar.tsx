@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
+  Bell,
   CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
+  ExternalLink,
   Link2,
+  Paperclip,
+  Phone,
   RefreshCw,
   Unlink,
+  User,
   Users,
+  Video,
   X,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -29,7 +35,9 @@ import {
   connectionFilterLabel,
   connectionStatusLabel,
   displayEventDescription,
+  displayEventHtmlLink,
   displayEventLocation,
+  displayEventMeetingUrl,
   displayEventTitle,
   eventOwnerLabel,
   formatEventStartTime,
@@ -38,8 +46,17 @@ import {
   getConnectionChipActiveStyles,
   getConnectionColorFromMap,
   getConnectionEventCardStyles,
+  canViewEventRichDetails,
   type ConnectionColorMap,
 } from '@/lib/calendarDisplay'
+import {
+  conferenceEntryPointLabel,
+  formatAttendeeLabel,
+  formatPersonLabel,
+  formatReminderLabel,
+  isSafeExternalUrl,
+  renderSanitizedDescription,
+} from '@/lib/calendarDescription'
 import {
   addCalendarDays,
   CALENDAR_TIMEZONE_LABEL,
@@ -92,6 +109,30 @@ function CalendarEventDetailModal({
   const title = displayEventTitle(event, viewerUserId)
   const location = displayEventLocation(event, viewerUserId)
   const description = displayEventDescription(event, viewerUserId)
+  const meetingUrl = displayEventMeetingUrl(event, viewerUserId)
+  const htmlLink = displayEventHtmlLink(event, viewerUserId)
+  const showRichDetails = canViewEventRichDetails(event, viewerUserId)
+
+  const conferenceEntryPoints = showRichDetails
+    ? (event.conference_data?.entryPoints ?? []).filter((ep) => ep.uri?.trim())
+    : []
+  const extraConferenceLinks = conferenceEntryPoints.filter((ep) => {
+    const uri = ep.uri?.trim()
+    return uri && uri !== meetingUrl
+  })
+
+  const attendees = showRichDetails ? (event.attendees ?? []) : []
+  const attachments = showRichDetails
+    ? (event.attachments ?? []).filter((a) => a.fileUrl?.trim() && isSafeExternalUrl(a.fileUrl.trim()))
+    : []
+  const reminderItems = showRichDetails
+    ? (event.reminders?.useDefault
+      ? [{ method: 'default', minutes: undefined }]
+      : (event.reminders?.overrides ?? []))
+    : []
+  const organizerLabel = showRichDetails ? formatPersonLabel(event.organizer) : null
+  const creatorLabel = showRichDetails ? formatPersonLabel(event.creator) : null
+  const descriptionContent = description ? renderSanitizedDescription(description) : null
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -111,10 +152,10 @@ function CalendarEventDetailModal({
       onClick={onClose}
     >
       <div
-        className="bg-surface-elevated border border-border rounded-xl max-w-md w-full p-5 shadow-xl"
+        className="bg-surface-elevated border border-border rounded-xl max-w-lg w-full p-5 shadow-xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex items-start justify-between gap-3 mb-4">
           <div className="flex items-start gap-2 min-w-0">
             <ConnectionColorDot color={connectionColor} className="w-2.5 h-2.5 mt-1.5" />
             <div className="min-w-0">
@@ -134,21 +175,166 @@ function CalendarEventDetailModal({
           </button>
         </div>
 
-        <dl className="space-y-2 text-sm">
+        <dl className="space-y-4 text-sm">
           <div>
             <dt className="text-gray-500">Calendar</dt>
             <dd className="text-gray-200">{eventOwnerLabel(owner, conn)}</dd>
           </div>
+
+          {(meetingUrl || extraConferenceLinks.length > 0) && (
+            <div>
+              <dt className="text-gray-500 flex items-center gap-1.5">
+                <Video className="w-3.5 h-3.5" />
+                Join
+              </dt>
+              <dd className="mt-1 space-y-2">
+                {meetingUrl && isSafeExternalUrl(meetingUrl) && (
+                  <a
+                    href={meetingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-accent hover:underline break-all"
+                  >
+                    <Video className="w-4 h-4 shrink-0" />
+                    Join Google Meet
+                  </a>
+                )}
+                {extraConferenceLinks.map((entryPoint, index) => {
+                  const uri = entryPoint.uri!.trim()
+                  const label = conferenceEntryPointLabel(entryPoint)
+                  const Icon = entryPoint.entryPointType === 'phone' ? Phone : Video
+                  const pinParts = [entryPoint.pin, entryPoint.passcode, entryPoint.meetingCode]
+                    .map((v) => v?.trim())
+                    .filter(Boolean)
+                  return (
+                    <div key={`${uri}-${index}`} className="space-y-0.5">
+                      <a
+                        href={uri}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 text-accent hover:underline break-all"
+                      >
+                        <Icon className="w-4 h-4 shrink-0" />
+                        {label}
+                      </a>
+                      {pinParts.length > 0 && (
+                        <p className="text-xs text-gray-400 pl-6">
+                          {entryPoint.entryPointType === 'phone' ? 'PIN' : 'Code'}: {pinParts.join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </dd>
+            </div>
+          )}
+
           {location && (
             <div>
               <dt className="text-gray-500">Location</dt>
               <dd className="text-gray-200 break-words">{location}</dd>
             </div>
           )}
-          {description && (
+
+          {descriptionContent && (
             <div>
               <dt className="text-gray-500">Description</dt>
-              <dd className="text-gray-200 whitespace-pre-wrap break-words">{description}</dd>
+              <dd className="text-gray-200 break-words">{descriptionContent}</dd>
+            </div>
+          )}
+
+          {attachments.length > 0 && (
+            <div>
+              <dt className="text-gray-500 flex items-center gap-1.5">
+                <Paperclip className="w-3.5 h-3.5" />
+                Attachments
+              </dt>
+              <dd className="mt-1">
+                <ul className="space-y-1.5">
+                  {attachments.map((attachment, index) => {
+                    const href = attachment.fileUrl!.trim()
+                    const title = attachment.title?.trim() || 'Open attachment'
+                    return (
+                      <li key={`${href}-${index}`}>
+                        <a
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 text-accent hover:underline break-all"
+                        >
+                          <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                          {title}
+                        </a>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </dd>
+            </div>
+          )}
+
+          {attendees.length > 0 && (
+            <div>
+              <dt className="text-gray-500 flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5" />
+                Guests
+              </dt>
+              <dd className="mt-1">
+                <ul className="space-y-1 text-gray-200">
+                  {attendees.map((attendee, index) => (
+                    <li key={`${attendee.email ?? attendee.displayName ?? index}-${index}`}>
+                      {formatAttendeeLabel(attendee)}
+                    </li>
+                  ))}
+                </ul>
+              </dd>
+            </div>
+          )}
+
+          {reminderItems.length > 0 && (
+            <div>
+              <dt className="text-gray-500 flex items-center gap-1.5">
+                <Bell className="w-3.5 h-3.5" />
+                Reminders
+              </dt>
+              <dd className="mt-1">
+                <ul className="space-y-1 text-gray-200">
+                  {reminderItems.map((reminder, index) => (
+                    <li key={index}>
+                      {reminder.method === 'default'
+                        ? 'Default reminders'
+                        : formatReminderLabel(reminder)}
+                    </li>
+                  ))}
+                </ul>
+              </dd>
+            </div>
+          )}
+
+          {(organizerLabel || creatorLabel) && (
+            <div>
+              <dt className="text-gray-500 flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5" />
+                People
+              </dt>
+              <dd className="mt-1 space-y-1 text-gray-200">
+                {organizerLabel && <p>Organizer: {organizerLabel}</p>}
+                {creatorLabel && creatorLabel !== organizerLabel && <p>Creator: {creatorLabel}</p>}
+              </dd>
+            </div>
+          )}
+
+          {htmlLink && isSafeExternalUrl(htmlLink) && (
+            <div>
+              <a
+                href={htmlLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-accent hover:underline"
+              >
+                <ExternalLink className="w-4 h-4" />
+                Open in Google Calendar
+              </a>
             </div>
           )}
         </dl>
@@ -429,8 +615,6 @@ export default function CalendarPage() {
   const { user } = useAuth()
   const { currentOrg, isOrgAdmin } = useOrg()
   const canView = usePermission(currentOrg?.id, 'calendar.view')
-  const canConnect = usePermission(currentOrg?.id, 'calendar.connect')
-  const canManage = usePermission(currentOrg?.id, 'calendar.manage')
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [viewMode, setViewMode] = useState<ViewMode>('week')
@@ -481,14 +665,11 @@ export default function CalendarPage() {
         .select('*')
         .eq('org_id', currentOrg.id)
         .order('updated_at', { ascending: false }),
-      supabase
-        .from('calendar_events')
-        .select('*')
-        .eq('org_id', currentOrg.id)
-        .gte('starts_at', rangeStart)
-        .lt('starts_at', rangeEnd)
-        .neq('status', 'cancelled')
-        .order('starts_at', { ascending: true }),
+      supabase.rpc('get_calendar_events_for_viewer', {
+        p_org_id: currentOrg.id,
+        p_range_start: rangeStart,
+        p_range_end: rangeEnd,
+      }),
     ])
 
     const members = (membersRes.data ?? []) as CalendarTeamMember[]
@@ -513,11 +694,11 @@ export default function CalendarPage() {
   }, [loadData])
 
   useEffect(() => {
-    if (!currentOrg?.id || canConnect !== true) return
+    if (!currentOrg?.id || !isOrgAdmin) return
     fetchCalendarSyncStatus(currentOrg.id)
       .then((status) => setGoogleConfigured(status.ok === true && status.providers?.google === true))
       .catch(() => setGoogleConfigured(false))
-  }, [canConnect, currentOrg?.id])
+  }, [currentOrg?.id, isOrgAdmin])
 
   useEffect(() => {
     const result = searchParams.get('calendar')
@@ -550,21 +731,15 @@ export default function CalendarPage() {
     [connections],
   )
 
-  const canSyncConnection = useCallback((conn: CalendarConnection) => {
-    const isOwner = conn.user_id === user?.id
-    if (isOwner && canConnect === true) return true
-    return isOrgAdmin || canManage === true
-  }, [canConnect, canManage, isOrgAdmin, user?.id])
+  const canSyncConnection = useCallback((_conn: CalendarConnection) => isOrgAdmin, [isOrgAdmin])
 
-  const canDisconnectConnection = useCallback((conn: CalendarConnection) => {
-    return conn.user_id === user?.id && canConnect === true
-  }, [canConnect, user?.id])
+  const canDisconnectConnection = useCallback((_conn: CalendarConnection) => {
+    return isOrgAdmin
+  }, [isOrgAdmin])
 
-  const canEditConnectionLabel = useCallback((conn: CalendarConnection) => {
-    const isOwner = conn.user_id === user?.id
-    if (isOwner && canConnect === true) return true
-    return isOrgAdmin || canManage === true
-  }, [canConnect, canManage, isOrgAdmin, user?.id])
+  const canEditConnectionLabel = useCallback((_conn: CalendarConnection) => {
+    return isOrgAdmin
+  }, [isOrgAdmin])
 
   const membersById = useMemo(() => {
     const map = new Map<string, CalendarTeamMember>()
@@ -874,6 +1049,7 @@ export default function CalendarPage() {
           )}
         </div>
 
+        {isOrgAdmin && (
         <aside className="w-full lg:w-80 shrink-0 space-y-4">
           {connectMessage && (
             <p className={`text-sm ${connectMessage.includes('failed') ? 'text-red-400' : 'text-green-400'}`}>
@@ -881,7 +1057,7 @@ export default function CalendarPage() {
             </p>
           )}
 
-          {filterableConnections.length > 0 && (
+          {isOrgAdmin && filterableConnections.length > 0 && (
             <section className="rounded-lg border border-border bg-surface-muted/20 p-4">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-3">
                 <CalendarDays className="w-4 h-4" />
@@ -911,7 +1087,7 @@ export default function CalendarPage() {
             </section>
           )}
 
-          {(isOrgAdmin || canConnect) && (
+          {isOrgAdmin && (
             <section className="rounded-lg border border-dashed border-border bg-surface-muted/20 p-4">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-2">
                 <Link2 className="w-4 h-4" />
@@ -951,6 +1127,7 @@ export default function CalendarPage() {
             </section>
           )}
         </aside>
+        )}
       </div>
     </div>
   )
