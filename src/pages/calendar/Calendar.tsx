@@ -421,9 +421,6 @@ export default function CalendarPage() {
                 <CalendarDays className="w-5 h-5 text-accent" />
                 Team Calendar
               </h1>
-              <p className="text-sm text-gray-400 mt-1">
-                Read-only view of connected team calendars. For now, only Jay and Chris should connect their Google accounts.
-              </p>
             </div>
             <div className="flex items-center gap-2">
               <div className="flex rounded-lg bg-surface-muted p-1">
@@ -542,12 +539,6 @@ export default function CalendarPage() {
                 <Link2 className="w-4 h-4" />
                 Connect Google Calendar
               </h2>
-              <p className="text-sm text-gray-400">
-                Read-only access. Connect one or more Google accounts. Team members see event titles; Google private events appear as Busy for others.
-              </p>
-              <p className="text-xs text-gray-500 mt-2">
-                For now, only Jay and Chris should connect calendars for this workspace.
-              </p>
 
               {connectMessage && (
                 <p className={`text-sm mt-3 ${connectMessage.includes('failed') ? 'text-red-400' : 'text-green-400'}`}>
@@ -633,14 +624,6 @@ export default function CalendarPage() {
                       ? 'Connect another Google account'
                       : 'Connect Google Calendar'}
                 </button>
-                {myConnections.some((c) => c.status === 'pending') && (
-                  <p className="text-xs text-gray-500">
-                    {myConnections
-                      .filter((c) => c.status === 'pending')
-                      .map((c) => `Pending: ${connectionStatusLabel(c.status)}${c.sync_error ? ` — ${c.sync_error}` : ''}`)
-                      .join(' · ')}
-                  </p>
-                )}
               </div>
             </section>
           )}
