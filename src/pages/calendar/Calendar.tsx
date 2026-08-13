@@ -20,6 +20,7 @@ import {
 } from '@/lib/calendarSync'
 import { usePermission } from '@/lib/usePermission'
 import {
+  buildConnectionColorMap,
   connectionAccountLabel,
   connectionFilterLabel,
   connectionStatusLabel,
@@ -28,8 +29,9 @@ import {
   eventOwnerLabel,
   formatLastSynced,
   getConnectionChipActiveStyles,
-  getConnectionColor,
+  getConnectionColorFromMap,
   getConnectionEventCardStyles,
+  type ConnectionColorMap,
 } from '@/lib/calendarDisplay'
 import type {
   CalendarConnection,
@@ -90,11 +92,11 @@ function formatEventTime(event: CalendarEvent): string {
   return `${start.toLocaleTimeString(undefined, opts)} – ${end.toLocaleTimeString(undefined, opts)}`
 }
 
-function ConnectionColorDot({ connectionId, className = 'w-2 h-2' }: { connectionId: string; className?: string }) {
+function ConnectionColorDot({ color, className = 'w-2 h-2' }: { color: string; className?: string }) {
   return (
     <span
       className={`${className} rounded-full shrink-0`}
-      style={{ backgroundColor: getConnectionColor(connectionId) }}
+      style={{ backgroundColor: color }}
       aria-hidden
     />
   )
@@ -105,15 +107,17 @@ function CalendarEventCard({
   owner,
   conn,
   viewerUserId,
+  connectionColor,
 }: {
   event: CalendarEvent
   owner: CalendarTeamMember | undefined
   conn: CalendarConnection | undefined
   viewerUserId: string | undefined
+  connectionColor: string
 }) {
   const title = displayEventTitle(event, viewerUserId)
   const location = displayEventLocation(event, viewerUserId)
-  const colorStyles = getConnectionEventCardStyles(event.connection_id)
+  const colorStyles = getConnectionEventCardStyles(connectionColor)
 
   return (
     <li
@@ -134,12 +138,14 @@ function CalendarDayCard({
   viewerUserId,
   membersById,
   connectionsById,
+  connectionColorMap,
 }: {
   day: Date
   dayEvents: CalendarEvent[]
   viewerUserId: string | undefined
   membersById: Map<string, CalendarTeamMember>
   connectionsById: Map<string, CalendarConnection>
+  connectionColorMap: ConnectionColorMap
 }) {
   const isToday = sameDay(day, new Date())
 
@@ -163,6 +169,7 @@ function CalendarDayCard({
               owner={membersById.get(event.user_id)}
               conn={connectionsById.get(event.connection_id)}
               viewerUserId={viewerUserId}
+              connectionColor={getConnectionColorFromMap(event.connection_id, connectionColorMap)}
             />
           ))
         )}
@@ -301,6 +308,13 @@ export default function CalendarPage() {
     for (const conn of connections) map.set(conn.id, conn)
     return map
   }, [connections])
+
+  const connectionColorMap = useMemo(
+    () => buildConnectionColorMap(
+      connections.filter((c) => c.status !== 'disconnected').map((c) => c.id),
+    ),
+    [connections],
+  )
 
   const handleConnectGoogle = async () => {
     if (!currentOrg?.id) return
@@ -490,19 +504,20 @@ export default function CalendarPage() {
                   const member = membersById.get(conn.user_id)
                   const active = selectedConnectionIds.has(conn.id)
                   const label = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
+                  const accent = getConnectionColorFromMap(conn.id, connectionColorMap)
                   return (
                     <button
                       key={conn.id}
                       type="button"
                       onClick={() => toggleConnection(conn.id)}
-                      style={active ? getConnectionChipActiveStyles(conn.id) : undefined}
+                      style={active ? getConnectionChipActiveStyles(accent) : undefined}
                       className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm border transition-colors ${
                         active
                           ? 'text-white'
                           : 'border-border text-gray-400 hover:text-gray-200 hover:bg-surface-muted'
                       }`}
                     >
-                      <ConnectionColorDot connectionId={conn.id} />
+                      <ConnectionColorDot color={accent} />
                       {label}
                     </button>
                   )
@@ -526,6 +541,7 @@ export default function CalendarPage() {
                   viewerUserId={user?.id}
                   membersById={membersById}
                   connectionsById={connectionsById}
+                  connectionColorMap={connectionColorMap}
                 />
               ))}
             </div>
@@ -554,13 +570,14 @@ export default function CalendarPage() {
                       const label = connectionAccountLabel(conn)
                       const syncBusy = syncBusyIds.has(conn.id)
                       const disconnectBusy = disconnectBusyIds.has(conn.id)
+                      const accent = getConnectionColorFromMap(conn.id, connectionColorMap)
                       return (
                         <li
                           key={conn.id}
                           className="rounded-lg border border-border bg-surface-muted/40 p-3"
                         >
                           <p className="text-sm font-medium text-white truncate flex items-center gap-2">
-                            <ConnectionColorDot connectionId={conn.id} />
+                            <ConnectionColorDot color={accent} />
                             {label}
                           </p>
                           <p className="text-xs text-gray-400 mt-0.5">

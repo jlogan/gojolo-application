@@ -13,6 +13,10 @@ const CONNECTION_COLORS = [
   '#06b6d4',
 ] as const
 
+const UNKNOWN_CONNECTION_COLOR = '#6b7280'
+
+export type ConnectionColorMap = ReadonlyMap<string, string>
+
 export type ConnectionColorStyles = {
   accent: string
   background: string
@@ -35,13 +39,65 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-export function getConnectionColor(connectionId: string): string {
-  const index = hashConnectionId(connectionId) % CONNECTION_COLORS.length
-  return CONNECTION_COLORS[index]
+function hslToHex(h: number, s: number, l: number): string {
+  const saturation = s / 100
+  const lightness = l / 100
+  const chroma = saturation * Math.min(lightness, 1 - lightness)
+  const channel = (n: number) => {
+    const k = (n + h / 30) % 12
+    const color = lightness - chroma * Math.max(Math.min(k - 3, 9 - k, 1), -1)
+    return Math.round(255 * color).toString(16).padStart(2, '0')
+  }
+  return `#${channel(0)}${channel(8)}${channel(4)}`
 }
 
-export function getConnectionColorStyles(connectionId: string): ConnectionColorStyles {
-  const accent = getConnectionColor(connectionId)
+function assignOverflowColor(connectionId: string, usedColors: Set<string>): string {
+  const hash = hashConnectionId(connectionId)
+  for (let attempt = 0; attempt < 720; attempt++) {
+    const hue = (hash + attempt * 41) % 360
+    const saturation = 62 + (attempt % 4) * 8
+    const lightness = 48 + (Math.floor(attempt / 4) % 5) * 6
+    const hex = hslToHex(hue, saturation, lightness)
+    if (!usedColors.has(hex)) return hex
+  }
+  return hslToHex(hash % 360, 70, 52)
+}
+
+function assignColorForConnection(connectionId: string, usedColors: Set<string>): string {
+  const paletteLength = CONNECTION_COLORS.length
+  const preferredIndex = hashConnectionId(connectionId) % paletteLength
+
+  for (let offset = 0; offset < paletteLength; offset++) {
+    const color = CONNECTION_COLORS[(preferredIndex + offset) % paletteLength]
+    if (!usedColors.has(color)) return color
+  }
+
+  return assignOverflowColor(connectionId, usedColors)
+}
+
+/** Stable unique accent colors for a set of calendar connection IDs. */
+export function buildConnectionColorMap(connectionIds: Iterable<string>): ConnectionColorMap {
+  const uniqueIds = [...new Set(connectionIds)].sort()
+  const map = new Map<string, string>()
+  const usedColors = new Set<string>()
+
+  for (const connectionId of uniqueIds) {
+    const color = assignColorForConnection(connectionId, usedColors)
+    map.set(connectionId, color)
+    usedColors.add(color)
+  }
+
+  return map
+}
+
+export function getConnectionColorFromMap(
+  connectionId: string,
+  colorMap: ConnectionColorMap,
+): string {
+  return colorMap.get(connectionId) ?? UNKNOWN_CONNECTION_COLOR
+}
+
+export function getConnectionColorStyles(accent: string): ConnectionColorStyles {
   return {
     accent,
     background: hexToRgba(accent, 0.1),
@@ -49,23 +105,22 @@ export function getConnectionColorStyles(connectionId: string): ConnectionColorS
   }
 }
 
-export function getConnectionChipActiveStyles(connectionId: string): {
+export function getConnectionChipActiveStyles(accent: string): {
   borderColor: string
   backgroundColor: string
 } {
-  const { accent } = getConnectionColorStyles(connectionId)
   return {
     borderColor: accent,
     backgroundColor: hexToRgba(accent, 0.18),
   }
 }
 
-export function getConnectionEventCardStyles(connectionId: string): {
+export function getConnectionEventCardStyles(accent: string): {
   borderLeftColor: string
   borderColor: string
   backgroundColor: string
 } {
-  const { accent, background, border } = getConnectionColorStyles(connectionId)
+  const { background, border } = getConnectionColorStyles(accent)
   return {
     borderLeftColor: accent,
     borderColor: border,
