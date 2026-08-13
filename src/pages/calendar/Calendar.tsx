@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
   Link2,
   RefreshCw,
+  Unlink,
   Users,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
+import {
+  disconnectGoogleCalendar,
+  fetchCalendarSyncStatus,
+  startGoogleCalendarConnect,
+  syncGoogleCalendar,
+} from '@/lib/calendarSync'
 import { usePermission } from '@/lib/usePermission'
 import {
   connectionStatusLabel,
@@ -85,6 +93,7 @@ export default function CalendarPage() {
   const { currentOrg, isOrgAdmin } = useOrg()
   const canView = usePermission(currentOrg?.id, 'calendar.view')
   const canConnect = usePermission(currentOrg?.id, 'calendar.connect')
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [viewMode, setViewMode] = useState<ViewMode>('week')
   const [anchorDate, setAnchorDate] = useState(() => startOfDay(new Date()))
@@ -93,6 +102,11 @@ export default function CalendarPage() {
   const [connections, setConnections] = useState<CalendarConnection[]>([])
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [googleConfigured, setGoogleConfigured] = useState<boolean | null>(null)
+  const [connectBusy, setConnectBusy] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
+  const [disconnectBusy, setDisconnectBusy] = useState(false)
+  const [connectMessage, setConnectMessage] = useState<string | null>(null)
 
   const range = useMemo(() => {
     if (viewMode === 'week') {
@@ -150,6 +164,81 @@ export default function CalendarPage() {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  useEffect(() => {
+    if (!currentOrg?.id || canConnect !== true) return
+    fetchCalendarSyncStatus(currentOrg.id)
+      .then((status) => setGoogleConfigured(status.ok === true && status.providers?.google === true))
+      .catch(() => setGoogleConfigured(false))
+  }, [canConnect, currentOrg?.id])
+
+  useEffect(() => {
+    const result = searchParams.get('calendar')
+    if (!result) return
+
+    if (result === 'connected') {
+      setConnectMessage('Google Calendar connected. Events will appear after sync completes.')
+      loadData()
+    } else if (result === 'error') {
+      const message = searchParams.get('message')
+      setConnectMessage(message ? `Calendar connect failed: ${decodeURIComponent(message)}` : 'Calendar connect failed.')
+    }
+
+    const next = new URLSearchParams(searchParams)
+    next.delete('calendar')
+    next.delete('message')
+    next.delete('provider')
+    setSearchParams(next, { replace: true })
+  }, [loadData, searchParams, setSearchParams])
+
+  const myConnection = useMemo(
+    () => connections.find((c) => c.user_id === user?.id && c.provider === 'google'),
+    [connections, user?.id],
+  )
+
+  const handleConnectGoogle = async () => {
+    if (!currentOrg?.id) return
+    setConnectBusy(true)
+    setConnectMessage(null)
+    try {
+      const authUrl = await startGoogleCalendarConnect(currentOrg.id)
+      window.location.href = authUrl
+    } catch (err) {
+      setConnectMessage((err as Error).message)
+      setConnectBusy(false)
+    }
+  }
+
+  const handleSyncGoogle = async () => {
+    if (!currentOrg?.id) return
+    setSyncBusy(true)
+    setConnectMessage(null)
+    try {
+      const result = await syncGoogleCalendar(currentOrg.id)
+      setConnectMessage(result.message ?? `Synced ${result.synced ?? 0} events`)
+      await loadData()
+    } catch (err) {
+      setConnectMessage((err as Error).message)
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  const handleDisconnectGoogle = async () => {
+    if (!currentOrg?.id) return
+    if (!window.confirm('Disconnect Google Calendar? Synced events for your calendar will be removed.')) return
+    setDisconnectBusy(true)
+    setConnectMessage(null)
+    try {
+      const result = await disconnectGoogleCalendar(currentOrg.id)
+      setConnectMessage(result.message ?? 'Calendar disconnected')
+      await loadData()
+    } catch (err) {
+      setConnectMessage((err as Error).message)
+    } finally {
+      setDisconnectBusy(false)
+    }
+  }
 
   const filteredEvents = useMemo(
     () => events.filter((e) => selectedUserIds.has(e.user_id)),
@@ -432,19 +521,79 @@ export default function CalendarPage() {
             <section className="rounded-lg border border-dashed border-border bg-surface-muted/20 p-4">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-2">
                 <Link2 className="w-4 h-4" />
-                Connect a calendar
+                Connect Google Calendar
               </h2>
-              <p className="text-sm text-gray-400 mt-2">
-                Calendar OAuth is not enabled yet. To connect Google or Microsoft calendars:
+              <p className="text-sm text-gray-400">
+                Read-only access. Team members see event titles; Google private events appear as Busy for others.
               </p>
-              <ol className="mt-3 space-y-2 text-sm text-gray-300 list-decimal list-inside">
-                <li>Add OAuth client IDs as Supabase secrets (<code className="text-xs text-gray-400">GOOGLE_CALENDAR_CLIENT_ID</code>, <code className="text-xs text-gray-400">MICROSOFT_CALENDAR_CLIENT_ID</code>).</li>
-                <li>Deploy the <code className="text-xs text-gray-400">calendar-sync</code> Edge Function stub.</li>
-                <li>Each team member connects their calendar from Profile (coming soon).</li>
-              </ol>
-              <p className="text-xs text-gray-500 mt-3">
-                Workspace admins and account managers can connect calendars once OAuth is configured.
-              </p>
+
+              {connectMessage && (
+                <p className={`text-sm mt-3 ${connectMessage.includes('failed') ? 'text-red-400' : 'text-green-400'}`}>
+                  {connectMessage}
+                </p>
+              )}
+
+              {myConnection?.status === 'connected' ? (
+                <div className="mt-4 space-y-3">
+                  <p className="text-sm text-gray-300">
+                    Connected{myConnection.email ? ` as ${myConnection.email}` : ''}.
+                    {' '}Last synced: {formatLastSynced(myConnection.last_synced_at)}.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSyncGoogle}
+                      disabled={syncBusy}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${syncBusy ? 'animate-spin' : ''}`} />
+                      {syncBusy ? 'Syncing…' : 'Sync now'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDisconnectGoogle}
+                      disabled={disconnectBusy}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted disabled:opacity-50"
+                    >
+                      <Unlink className="w-4 h-4" />
+                      {disconnectBusy ? 'Disconnecting…' : 'Disconnect'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {googleConfigured === false && (
+                    <div className="text-sm text-gray-400 space-y-2">
+                      <p>Google Calendar OAuth is not configured yet. A workspace admin must set Supabase secrets:</p>
+                      <ul className="list-disc list-inside text-xs text-gray-500 space-y-1">
+                        <li><code>GOOGLE_CALENDAR_CLIENT_ID</code> and <code>GOOGLE_CALENDAR_CLIENT_SECRET</code></li>
+                        <li><code>ENCRYPTION_KEY</code> (64 hex chars — same as IMAP vault)</li>
+                      </ul>
+                      <p className="text-xs text-gray-500">
+                        In Google Cloud Console, add redirect URI:
+                        {' '}
+                        <code className="break-all">https://YOUR_PROJECT_REF.supabase.co/functions/v1/calendar-sync?action=callback</code>
+                      </p>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleConnectGoogle}
+                    disabled={connectBusy || googleConfigured !== true}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                    data-testid="connect-google-calendar"
+                  >
+                    <Link2 className="w-4 h-4" />
+                    {connectBusy ? 'Redirecting…' : 'Connect Google Calendar'}
+                  </button>
+                  {myConnection && (
+                    <p className="text-xs text-gray-500">
+                      Status: {connectionStatusLabel(myConnection.status)}
+                      {myConnection.sync_error ? ` — ${myConnection.sync_error}` : ''}
+                    </p>
+                  )}
+                </div>
+              )}
             </section>
           )}
         </aside>

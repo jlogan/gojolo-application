@@ -1,8 +1,70 @@
+// Google Calendar read-only OAuth connect + sync for Team Calendar.
+//
+// Required Supabase secrets:
+//   GOOGLE_CALENDAR_CLIENT_ID      — OAuth 2.0 Web client ID (Google Cloud Console)
+//   GOOGLE_CALENDAR_CLIENT_SECRET  — OAuth client secret
+//   ENCRYPTION_KEY                   — 32-byte hex (openssl rand -hex 32); encrypts stored tokens
+//   SUPABASE_SERVICE_ROLE_KEY        — service role (auto-injected on hosted Supabase)
+//
+// Optional:
+//   GOOGLE_CALENDAR_REDIRECT_URI   — OAuth redirect (must match Google Console exactly).
+//                                    Default: {SUPABASE_URL}/functions/v1/calendar-sync?action=callback
+//   CALENDAR_APP_URL               — App origin for post-OAuth redirect (default: http://localhost:5173
+//                                    when SUPABASE_URL is local, else https://app.gojolo.io)
+//
+// Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client:
+//   Authorized redirect URI (production):
+//     https://YOUR_PROJECT_REF.supabase.co/functions/v1/calendar-sync?action=callback
+//   Local dev:
+//     http://127.0.0.1:54321/functions/v1/calendar-sync?action=callback
+//
+// Actions:
+//   POST { action: 'start', orgId, provider: 'google', returnPath?: '/calendar' }
+//   GET  ?action=callback&code=...&state=...   (Google redirect; no JWT)
+//   POST { action: 'sync', orgId, provider?: 'google' }
+//   POST { action: 'disconnect', orgId, provider?: 'google' }
+//
+// Deploy: supabase functions deploy calendar-sync --no-verify-jwt
+
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { corsHeaders } from '../_shared/cors.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!
+const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+const encryptionKeyHex = Deno.env.get('ENCRYPTION_KEY')
+const googleClientId = Deno.env.get('GOOGLE_CALENDAR_CLIENT_ID')
+const googleClientSecret = Deno.env.get('GOOGLE_CALENDAR_CLIENT_SECRET')
+
+const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
+const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
+const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
+
+const SYNC_PAST_DAYS = 90
+const SYNC_FUTURE_DAYS = 180
+
+type Provider = 'google'
+
+type CalendarConnectionRow = {
+  id: string
+  org_id: string
+  user_id: string
+  provider: Provider
+  provider_account_id: string | null
+  email: string | null
+  status: string
+  primary_calendar_id: string | null
+}
+
+type TokenRow = {
+  connection_id: string
+  access_token_encrypted: string | null
+  refresh_token_encrypted: string | null
+  token_expires_at: string | null
+  oauth_state: string | null
+  oauth_state_expires_at: string | null
+}
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -10,8 +72,594 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 
+const htmlRedirect = (url: string) =>
+  new Response(null, { status: 302, headers: { Location: url } })
+
+function keyBytesFromHex(keyHex: string) {
+  const keyBytes = new Uint8Array(32)
+  for (let i = 0; i < 32; i++) keyBytes[i] = parseInt(keyHex.slice(i * 2, i * 2 + 2), 16)
+  return keyBytes
+}
+
+async function encrypt(plain: string, keyHex: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', keyBytesFromHex(keyHex), { name: 'AES-GCM' }, false, ['encrypt'])
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, new TextEncoder().encode(plain))
+  const combined = new Uint8Array(iv.length + cipher.byteLength)
+  combined.set(iv)
+  combined.set(new Uint8Array(cipher), iv.length)
+  return btoa(String.fromCharCode(...combined))
+}
+
+async function decrypt(cipherText: string, keyHex: string): Promise<string> {
+  const combined = Uint8Array.from(atob(cipherText), (c) => c.charCodeAt(0))
+  const iv = combined.slice(0, 12)
+  const cipher = combined.slice(12)
+  const key = await crypto.subtle.importKey('raw', keyBytesFromHex(keyHex), { name: 'AES-GCM' }, false, ['decrypt'])
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, cipher)
+  return new TextDecoder().decode(plain)
+}
+
+function randomNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24))
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function googleRedirectUri(): string {
+  const configured = Deno.env.get('GOOGLE_CALENDAR_REDIRECT_URI')?.trim()
+  if (configured) return configured
+  return `${supabaseUrl.replace(/\/$/, '')}/functions/v1/calendar-sync?action=callback`
+}
+
+function appBaseUrl(): string {
+  const configured = Deno.env.get('CALENDAR_APP_URL')?.trim()
+  if (configured) return configured.replace(/\/$/, '')
+  if (supabaseUrl.includes('127.0.0.1') || supabaseUrl.includes('localhost')) {
+    return 'http://localhost:5173'
+  }
+  return 'https://app.gojolo.io'
+}
+
+function sanitizeReturnPath(path: string | undefined): string {
+  if (!path || !path.startsWith('/') || path.startsWith('//') || path.includes('://')) {
+    return '/calendar'
+  }
+  return path.split('?')[0] || '/calendar'
+}
+
+function appRedirect(path: string, params: Record<string, string>): string {
+  const url = new URL(path, appBaseUrl())
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
+  return url.toString()
+}
+
+function requireEncryptionKey(): string {
+  if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
+    throw new Error('ENCRYPTION_KEY not configured (need 64 hex chars)')
+  }
+  return encryptionKeyHex.slice(0, 64)
+}
+
+function requireGoogleOAuth(): { clientId: string; clientSecret: string } {
+  if (!googleClientId || !googleClientSecret) {
+    throw new Error('Google Calendar OAuth is not configured (GOOGLE_CALENDAR_CLIENT_ID / GOOGLE_CALENDAR_CLIENT_SECRET)')
+  }
+  return { clientId: googleClientId, clientSecret: googleClientSecret }
+}
+
+async function hasCalendarConnect(userClient: ReturnType<typeof createClient>, orgId: string): Promise<boolean> {
+  const [{ data: isAdmin }, { data: canConnect }] = await Promise.all([
+    userClient.rpc('is_org_admin', { p_org_id: orgId }),
+    userClient.rpc('user_has_permission', { p_org_id: orgId, p_permission: 'calendar.connect' }),
+  ])
+  return isAdmin === true || canConnect === true
+}
+
+async function upsertPendingConnection(
+  service: ReturnType<typeof createClient>,
+  orgId: string,
+  userId: string,
+  provider: Provider,
+): Promise<CalendarConnectionRow> {
+  const { data, error } = await service
+    .from('calendar_connections')
+    .upsert(
+      {
+        org_id: orgId,
+        user_id: userId,
+        provider,
+        status: 'pending',
+        sync_error: null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'org_id,user_id,provider' },
+    )
+    .select('*')
+    .single()
+  if (error || !data) throw new Error(error?.message ?? 'Failed to create calendar connection')
+  return data as CalendarConnectionRow
+}
+
+async function handleStart(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  provider: Provider,
+  returnPath?: string,
+) {
+  if (provider !== 'google') return json({ error: 'Only Google Calendar is supported currently' }, 400)
+  if (!(await hasCalendarConnect(userClient, orgId))) {
+    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  }
+
+  const { clientId } = requireGoogleOAuth()
+  requireEncryptionKey()
+
+  const connection = await upsertPendingConnection(service, orgId, userId, provider)
+  const nonce = randomNonce()
+  const state = `${connection.id}.${nonce}`
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
+
+  const { error: tokenError } = await service.from('calendar_connection_tokens').upsert({
+    connection_id: connection.id,
+    oauth_state: nonce,
+    oauth_state_expires_at: expiresAt,
+    updated_at: new Date().toISOString(),
+  })
+  if (tokenError) return json({ error: tokenError.message }, 500)
+
+  const redirectUri = googleRedirectUri()
+  const authUrl = new URL(GOOGLE_AUTH_URL)
+  authUrl.searchParams.set('client_id', clientId)
+  authUrl.searchParams.set('redirect_uri', redirectUri)
+  authUrl.searchParams.set('response_type', 'code')
+  authUrl.searchParams.set('scope', GOOGLE_CALENDAR_SCOPE)
+  authUrl.searchParams.set('access_type', 'offline')
+  authUrl.searchParams.set('prompt', 'consent')
+  authUrl.searchParams.set('state', state)
+
+  return json({
+    ok: true,
+    authUrl: authUrl.toString(),
+    connectionId: connection.id,
+    returnPath: sanitizeReturnPath(returnPath),
+  })
+}
+
+async function exchangeGoogleCode(code: string): Promise<{
+  access_token: string
+  refresh_token?: string
+  expires_in: number
+  scope?: string
+}> {
+  const { clientId, clientSecret } = requireGoogleOAuth()
+  const res = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: googleRedirectUri(),
+      grant_type: 'authorization_code',
+    }),
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.error_description ?? data.error ?? 'Token exchange failed')
+  }
+  return data
+}
+
+async function refreshGoogleAccessToken(refreshToken: string): Promise<{
+  access_token: string
+  expires_in: number
+  scope?: string
+}> {
+  const { clientId, clientSecret } = requireGoogleOAuth()
+  const res = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: 'refresh_token',
+    }),
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.error_description ?? data.error ?? 'Token refresh failed')
+  }
+  return data
+}
+
+async function fetchGoogleUserEmail(accessToken: string): Promise<{ id: string; email: string }> {
+  const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error?.message ?? 'Failed to fetch Google profile')
+  return { id: String(data.id ?? data.sub ?? ''), email: String(data.email ?? '') }
+}
+
+async function getValidAccessToken(
+  service: ReturnType<typeof createClient>,
+  connection: CalendarConnectionRow,
+  tokens: TokenRow,
+): Promise<string> {
+  const keyHex = requireEncryptionKey()
+  if (!tokens.access_token_encrypted) throw new Error('No access token stored')
+
+  const expiresAt = tokens.token_expires_at ? new Date(tokens.token_expires_at).getTime() : 0
+  const needsRefresh = Date.now() >= expiresAt - 60_000
+
+  if (!needsRefresh) {
+    return decrypt(tokens.access_token_encrypted, keyHex)
+  }
+
+  if (!tokens.refresh_token_encrypted) throw new Error('Access token expired and no refresh token')
+
+  const refreshToken = await decrypt(tokens.refresh_token_encrypted, keyHex)
+  const refreshed = await refreshGoogleAccessToken(refreshToken)
+  const newAccessEncrypted = await encrypt(refreshed.access_token, keyHex)
+  const tokenExpiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString()
+
+  await service.from('calendar_connection_tokens').update({
+    access_token_encrypted: newAccessEncrypted,
+    token_expires_at: tokenExpiresAt,
+    scopes: refreshed.scope ?? tokens.scopes ?? GOOGLE_CALENDAR_SCOPE,
+    updated_at: new Date().toISOString(),
+  }).eq('connection_id', connection.id)
+
+  return refreshed.access_token
+}
+
+type GoogleEvent = {
+  id: string
+  status?: string
+  summary?: string
+  description?: string
+  location?: string
+  visibility?: string
+  start?: { dateTime?: string; date?: string }
+  end?: { dateTime?: string; date?: string }
+}
+
+function mapGoogleVisibility(visibility: string | undefined): 'default' | 'public' | 'private' | 'busy_only' {
+  if (visibility === 'private' || visibility === 'confidential') return 'private'
+  if (visibility === 'public') return 'public'
+  return 'default'
+}
+
+function parseGoogleEventTimes(event: GoogleEvent): { starts_at: string; ends_at: string; all_day: boolean } | null {
+  const startRaw = event.start?.dateTime ?? event.start?.date
+  const endRaw = event.end?.dateTime ?? event.end?.date
+  if (!startRaw || !endRaw) return null
+
+  const allDay = Boolean(event.start?.date && !event.start?.dateTime)
+  if (allDay) {
+    const starts_at = new Date(`${event.start!.date}T00:00:00.000Z`).toISOString()
+    const endDate = new Date(`${event.end!.date}T00:00:00.000Z`)
+    endDate.setUTCDate(endDate.getUTCDate() - 1)
+    endDate.setUTCHours(23, 59, 59, 999)
+    return { starts_at, ends_at: endDate.toISOString(), all_day: true }
+  }
+
+  return {
+    starts_at: new Date(startRaw).toISOString(),
+    ends_at: new Date(endRaw).toISOString(),
+    all_day: false,
+  }
+}
+
+async function syncGoogleConnection(
+  service: ReturnType<typeof createClient>,
+  connection: CalendarConnectionRow,
+  tokens: TokenRow,
+): Promise<number> {
+  const accessToken = await getValidAccessToken(service, connection, tokens)
+  const calendarId = encodeURIComponent(connection.primary_calendar_id ?? 'primary')
+  const timeMin = new Date(Date.now() - SYNC_PAST_DAYS * 86400000).toISOString()
+  const timeMax = new Date(Date.now() + SYNC_FUTURE_DAYS * 86400000).toISOString()
+
+  const seenExternalIds = new Set<string>()
+  let synced = 0
+  let pageToken: string | undefined
+
+  do {
+    const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`)
+    url.searchParams.set('timeMin', timeMin)
+    url.searchParams.set('timeMax', timeMax)
+    url.searchParams.set('singleEvents', 'true')
+    url.searchParams.set('orderBy', 'startTime')
+    url.searchParams.set('maxResults', '250')
+    url.searchParams.set('showDeleted', 'true')
+    if (pageToken) url.searchParams.set('pageToken', pageToken)
+
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error?.message ?? 'Google Calendar fetch failed')
+
+    const items = (data.items ?? []) as GoogleEvent[]
+    for (const event of items) {
+      if (!event.id) continue
+      seenExternalIds.add(event.id)
+
+      const times = parseGoogleEventTimes(event)
+      if (!times) continue
+
+      const status = event.status === 'cancelled'
+        ? 'cancelled'
+        : event.status === 'tentative'
+        ? 'tentative'
+        : 'confirmed'
+
+      const row = {
+        org_id: connection.org_id,
+        connection_id: connection.id,
+        user_id: connection.user_id,
+        external_id: event.id,
+        title: event.summary?.trim() || null,
+        description: event.description?.trim() || null,
+        location: event.location?.trim() || null,
+        starts_at: times.starts_at,
+        ends_at: times.ends_at,
+        all_day: times.all_day,
+        visibility: mapGoogleVisibility(event.visibility),
+        status,
+        updated_at: new Date().toISOString(),
+      }
+
+      const { error } = await service
+        .from('calendar_events')
+        .upsert(row, { onConflict: 'connection_id,external_id' })
+      if (error) throw new Error(error.message)
+      synced++
+    }
+
+    pageToken = data.nextPageToken
+  } while (pageToken)
+
+  // Remove stale events in sync window that Google no longer returns
+  const { data: existing, error: listError } = await service
+    .from('calendar_events')
+    .select('id, external_id')
+    .eq('connection_id', connection.id)
+    .gte('starts_at', timeMin)
+    .lt('starts_at', timeMax)
+
+  if (listError) throw new Error(listError.message)
+
+  const staleIds = (existing ?? [])
+    .filter((e: { external_id: string }) => !seenExternalIds.has(e.external_id))
+    .map((e: { id: string }) => e.id)
+
+  if (staleIds.length > 0) {
+    await service.from('calendar_events').delete().in('id', staleIds)
+  }
+
+  await service.from('calendar_connections').update({
+    status: 'connected',
+    sync_error: null,
+    last_synced_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq('id', connection.id)
+
+  return synced
+}
+
+async function handleCallback(service: ReturnType<typeof createClient>, req: Request) {
+  const url = new URL(req.url)
+  const code = url.searchParams.get('code')
+  const state = url.searchParams.get('state')
+  const oauthError = url.searchParams.get('error')
+
+  if (oauthError) {
+    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message: oauthError }))
+  }
+  if (!code || !state) {
+    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message: 'missing_code_or_state' }))
+  }
+
+  const [connectionId, nonce] = state.split('.')
+  if (!connectionId || !nonce) {
+    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message: 'invalid_state' }))
+  }
+
+  try {
+    requireEncryptionKey()
+    requireGoogleOAuth()
+
+    const { data: connection, error: connError } = await service
+      .from('calendar_connections')
+      .select('*')
+      .eq('id', connectionId)
+      .single()
+    if (connError || !connection) throw new Error('Connection not found')
+
+    const { data: tokens, error: tokenError } = await service
+      .from('calendar_connection_tokens')
+      .select('*')
+      .eq('connection_id', connectionId)
+      .single()
+    if (tokenError || !tokens) throw new Error('OAuth state not found')
+
+    const tokenRow = tokens as TokenRow
+    if (!tokenRow.oauth_state || tokenRow.oauth_state !== nonce) {
+      throw new Error('OAuth state mismatch')
+    }
+    if (tokenRow.oauth_state_expires_at && new Date(tokenRow.oauth_state_expires_at).getTime() < Date.now()) {
+      throw new Error('OAuth state expired')
+    }
+
+    const tokenResponse = await exchangeGoogleCode(code)
+    const keyHex = requireEncryptionKey()
+    const accessEncrypted = await encrypt(tokenResponse.access_token, keyHex)
+    const refreshEncrypted = tokenResponse.refresh_token
+      ? await encrypt(tokenResponse.refresh_token, keyHex)
+      : tokenRow.refresh_token_encrypted
+    const tokenExpiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
+
+    const profile = await fetchGoogleUserEmail(tokenResponse.access_token)
+
+    await service.from('calendar_connection_tokens').update({
+      access_token_encrypted: accessEncrypted,
+      refresh_token_encrypted: refreshEncrypted,
+      token_expires_at: tokenExpiresAt,
+      scopes: tokenResponse.scope ?? GOOGLE_CALENDAR_SCOPE,
+      oauth_state: null,
+      oauth_state_expires_at: null,
+      updated_at: new Date().toISOString(),
+    }).eq('connection_id', connectionId)
+
+    await service.from('calendar_connections').update({
+      status: 'connected',
+      provider_account_id: profile.id || null,
+      email: profile.email || null,
+      sync_error: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', connectionId)
+
+    const conn = connection as CalendarConnectionRow
+    const updatedTokens = {
+      ...tokenRow,
+      access_token_encrypted: accessEncrypted,
+      refresh_token_encrypted: refreshEncrypted,
+      token_expires_at: tokenExpiresAt,
+    }
+    await syncGoogleConnection(service, conn, updatedTokens)
+
+    return htmlRedirect(appRedirect('/calendar', { calendar: 'connected', provider: 'google' }))
+  } catch (err) {
+    const message = encodeURIComponent((err as Error).message)
+    if (connectionId) {
+      await service.from('calendar_connections').update({
+        status: 'error',
+        sync_error: (err as Error).message,
+        updated_at: new Date().toISOString(),
+      }).eq('id', connectionId)
+    }
+    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message }))
+  }
+}
+
+async function getUserConnection(
+  service: ReturnType<typeof createClient>,
+  orgId: string,
+  userId: string,
+  provider: Provider,
+): Promise<{ connection: CalendarConnectionRow; tokens: TokenRow } | null> {
+  const { data: connection, error } = await service
+    .from('calendar_connections')
+    .select('*')
+    .eq('org_id', orgId)
+    .eq('user_id', userId)
+    .eq('provider', provider)
+    .maybeSingle()
+  if (error || !connection) return null
+
+  const { data: tokens, error: tokenError } = await service
+    .from('calendar_connection_tokens')
+    .select('*')
+    .eq('connection_id', connection.id)
+    .maybeSingle()
+  if (tokenError || !tokens) return { connection: connection as CalendarConnectionRow, tokens: { connection_id: connection.id } as TokenRow }
+
+  return { connection: connection as CalendarConnectionRow, tokens: tokens as TokenRow }
+}
+
+async function handleSync(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  provider: Provider = 'google',
+) {
+  if (!(await hasCalendarConnect(userClient, orgId))) {
+    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  }
+
+  const pair = await getUserConnection(service, orgId, userId, provider)
+  if (!pair?.tokens.access_token_encrypted) {
+    return json({ ok: false, message: 'No connected calendar found', synced: 0 })
+  }
+
+  try {
+    const synced = await syncGoogleConnection(service, pair.connection, pair.tokens)
+    return json({ ok: true, synced, message: `Synced ${synced} events` })
+  } catch (err) {
+    await service.from('calendar_connections').update({
+      status: 'error',
+      sync_error: (err as Error).message,
+      updated_at: new Date().toISOString(),
+    }).eq('id', pair.connection.id)
+    return json({ ok: false, synced: 0, message: (err as Error).message })
+  }
+}
+
+async function handleDisconnect(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  provider: Provider = 'google',
+) {
+  if (!(await hasCalendarConnect(userClient, orgId))) {
+    return json({ error: 'Forbidden: calendar.connect required' }, 403)
+  }
+
+  const pair = await getUserConnection(service, orgId, userId, provider)
+  if (!pair) return json({ ok: true, message: 'Already disconnected' })
+
+  try {
+    const keyHex = requireEncryptionKey()
+    if (pair.tokens.access_token_encrypted) {
+      const accessToken = await decrypt(pair.tokens.access_token_encrypted, keyHex)
+      await fetch(`${GOOGLE_REVOKE_URL}?token=${encodeURIComponent(accessToken)}`, { method: 'POST' })
+    }
+  } catch {
+    // Best-effort revoke; continue disconnect locally
+  }
+
+  await service.from('calendar_events').delete().eq('connection_id', pair.connection.id)
+  await service.from('calendar_connection_tokens').delete().eq('connection_id', pair.connection.id)
+  await service.from('calendar_connections').update({
+    status: 'disconnected',
+    sync_error: null,
+    last_synced_at: null,
+    provider_account_id: null,
+    email: null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', pair.connection.id)
+
+  return json({ ok: true, message: 'Calendar disconnected' })
+}
+
 Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: {
+        ...corsHeaders,
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      },
+    })
+  }
+
+  if (!serviceKey) return json({ error: 'Server misconfiguration: missing service role key' }, 500)
+
+  const service = createClient(supabaseUrl, serviceKey)
+  const url = new URL(req.url)
+  const queryAction = url.searchParams.get('action')
+
+  if (req.method === 'GET' && queryAction === 'callback') {
+    return handleCallback(service, req)
+  }
+
+  if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
 
   try {
     const authHeader = req.headers.get('Authorization')
@@ -23,45 +671,41 @@ Deno.serve(async (req: Request) => {
     const { data: authData, error: authError } = await userClient.auth.getUser()
     if (authError || !authData.user) return json({ error: 'Unauthorized' }, 401)
 
-    const body = await req.json().catch(() => ({})) as { orgId?: string; action?: string }
+    const body = await req.json().catch(() => ({})) as {
+      orgId?: string
+      action?: string
+      provider?: Provider
+      returnPath?: string
+    }
+
     const orgId = body.orgId
     if (!orgId) return json({ error: 'orgId required' }, 400)
 
-    const [{ data: isAdmin }, { data: canConnect }] = await Promise.all([
-      userClient.rpc('is_org_admin', { p_org_id: orgId }),
-      userClient.rpc('user_has_permission', { p_org_id: orgId, p_permission: 'calendar.connect' }),
-    ])
+    const action = body.action ?? queryAction ?? 'status'
+    const provider: Provider = body.provider === 'google' ? 'google' : 'google'
 
-    if (!isAdmin && !canConnect) {
-      return json({ error: 'Forbidden: calendar.connect required' }, 403)
+    if (action === 'start') {
+      return await handleStart(userClient, service, authData.user.id, orgId, provider, body.returnPath)
+    }
+    if (action === 'sync') {
+      return await handleSync(userClient, service, authData.user.id, orgId, provider)
+    }
+    if (action === 'disconnect') {
+      return await handleDisconnect(userClient, service, authData.user.id, orgId, provider)
     }
 
-    const googleConfigured = !!Deno.env.get('GOOGLE_CALENDAR_CLIENT_ID')
-    const microsoftConfigured = !!Deno.env.get('MICROSOFT_CALENDAR_CLIENT_ID')
-
-    if (body.action === 'sync') {
-      if (!googleConfigured && !microsoftConfigured) {
-        return json({
-          ok: false,
-          message: 'Calendar sync is not configured. Set GOOGLE_CALENDAR_CLIENT_ID and/or MICROSOFT_CALENDAR_CLIENT_ID in Supabase secrets, then implement OAuth token exchange.',
-          synced: 0,
-        })
-      }
-
-      return json({
-        ok: false,
-        message: 'Calendar sync stub: OAuth credentials detected but sync pipeline is not implemented yet.',
-        synced: 0,
-      })
-    }
+    const googleConfigured = !!(googleClientId && googleClientSecret)
+    const encryptionConfigured = !!(encryptionKeyHex && encryptionKeyHex.length >= 64)
 
     return json({
-      ok: false,
-      message: 'Calendar OAuth connect is not implemented yet. Configure provider client IDs in Supabase secrets and wire the OAuth callback flow.',
-      providers: {
-        google: googleConfigured,
-        microsoft: microsoftConfigured,
-      },
+      ok: googleConfigured && encryptionConfigured,
+      message: googleConfigured
+        ? encryptionConfigured
+          ? 'Google Calendar OAuth is configured'
+          : 'Set ENCRYPTION_KEY to enable calendar connect'
+        : 'Set GOOGLE_CALENDAR_CLIENT_ID and GOOGLE_CALENDAR_CLIENT_SECRET in Supabase secrets',
+      providers: { google: googleConfigured },
+      redirectUri: googleConfigured ? googleRedirectUri() : null,
     })
   } catch (err) {
     return json({ error: (err as Error).message }, 500)

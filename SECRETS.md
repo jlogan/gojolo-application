@@ -52,6 +52,34 @@ This function skips gateway JWT verification (see `supabase/config.toml`) and ve
 supabase functions deploy imap-test-and-save --no-verify-jwt
 ```
 
+**Team Calendar — Google Calendar OAuth (`calendar-sync`):**
+
+```bash
+# Google Cloud Console → OAuth 2.0 Web client (Calendar API enabled)
+supabase secrets set GOOGLE_CALENDAR_CLIENT_ID=xxxx.apps.googleusercontent.com
+supabase secrets set GOOGLE_CALENDAR_CLIENT_SECRET=xxxx
+
+# Same 32-byte hex key used for IMAP/vault (generate: openssl rand -hex 32)
+supabase secrets set ENCRYPTION_KEY=your64charhex...
+
+# Optional: override defaults
+# supabase secrets set GOOGLE_CALENDAR_REDIRECT_URI=https://YOUR_PROJECT_REF.supabase.co/functions/v1/calendar-sync?action=callback
+# supabase secrets set CALENDAR_APP_URL=https://app.gojolo.io
+```
+
+Google Cloud Console → **Authorized redirect URIs** (must match exactly):
+
+- Production: `https://YOUR_PROJECT_REF.supabase.co/functions/v1/calendar-sync?action=callback`
+- Local: `http://127.0.0.1:54321/functions/v1/calendar-sync?action=callback`
+
+Deploy:
+
+```bash
+supabase functions deploy calendar-sync --no-verify-jwt
+```
+
+Apply migration `20260813160000_calendar_connection_tokens.sql` (`supabase db push`).
+
 **Future (add when you implement):**
 
 ```bash

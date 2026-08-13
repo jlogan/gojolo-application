@@ -101,6 +101,10 @@ verify_jwt = false
 [functions.sync-profile-avatar]
 verify_jwt = false
 
+# calendar-sync: Google Calendar OAuth callback is unauthenticated GET; JWT verified for start/sync/disconnect.
+[functions.calendar-sync]
+verify_jwt = false
+
 # process-pending-notifications: org admin triggers processing of queued notifications (e.g. after setting app_config).
 [functions.process-pending-notifications]
 verify_jwt = true
