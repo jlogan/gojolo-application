@@ -646,6 +646,23 @@ async function syncGoogleConnection(
   let synced = 0
   let pageToken: string | undefined
 
+  const { data: gojoloRows, error: gojoloMetaError } = await service
+    .from('calendar_events')
+    .select('external_id, created_by_user_id')
+    .eq('connection_id', connection.id)
+    .eq('source', 'gojolo')
+    .gte('starts_at', timeMin)
+    .lt('starts_at', timeMax)
+
+  if (gojoloMetaError) throw new Error(gojoloMetaError.message)
+
+  const gojoloMeta = new Map<string, string | null>(
+    (gojoloRows ?? []).map((row: { external_id: string; created_by_user_id: string | null }) => [
+      row.external_id,
+      row.created_by_user_id,
+    ]),
+  )
+
   do {
     const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`)
     url.searchParams.set('timeMin', timeMin)
@@ -671,6 +688,12 @@ async function syncGoogleConnection(
 
       const row = googleEventToRow(connection, event)
       if (!row) continue
+
+      if (gojoloMeta.has(event.id)) {
+        row.source = 'gojolo'
+        const createdBy = gojoloMeta.get(event.id)
+        if (createdBy) row.created_by_user_id = createdBy
+      }
 
       const { error } = await service
         .from('calendar_events')
