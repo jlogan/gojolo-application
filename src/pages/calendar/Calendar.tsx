@@ -200,6 +200,7 @@ function CalendarEventFormModal({
   const [reminder, setReminder] = useState<CreateCalendarEventReminder>(editDefaults?.reminder ?? '10')
   const [visibility, setVisibility] = useState<CreateCalendarEventVisibility>(editDefaults?.visibility ?? 'default')
   const [availability, setAvailability] = useState<CreateCalendarEventAvailability>(editDefaults?.availability ?? 'busy')
+  const [sendEmailUpdates, setSendEmailUpdates] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -235,7 +236,11 @@ function CalendarEventFormModal({
         availability,
       }
       const result = mode === 'edit'
-        ? await updateGoogleCalendarEvent(currentOrg.id, { eventId: editEvent!.id, ...fields })
+        ? await updateGoogleCalendarEvent(currentOrg.id, {
+            eventId: editEvent!.id,
+            ...fields,
+            ...(sendEmailUpdates ? { sendEmailUpdates: true } : {}),
+          })
         : await createGoogleCalendarEvent(currentOrg.id, { connectionId, ...fields })
       await onSaved(result.message ?? (mode === 'edit' ? 'Event updated' : 'Event created'))
       onClose()
@@ -250,6 +255,7 @@ function CalendarEventFormModal({
     ? connections.find((c) => c.id === editEvent?.connection_id)
     : undefined
   const isEdit = mode === 'edit'
+  const hasAttendees = parseAttendeeInput(attendeesRaw).length > 0
   const modalTitle = isEdit ? 'Edit event' : 'Create event'
   const submitLabel = submitting ? (isEdit ? 'Saving…' : 'Creating…') : (isEdit ? 'Save changes' : 'Create event')
   const testId = isEdit ? 'calendar-edit-event-modal' : 'calendar-create-event-modal'
@@ -483,6 +489,20 @@ function CalendarEventFormModal({
               />
               Add Google Meet link
             </label>
+
+            {isEdit && hasAttendees && (
+              <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={sendEmailUpdates}
+                  onChange={(e) => setSendEmailUpdates(e.target.checked)}
+                  disabled={submitting}
+                  className="rounded border-border"
+                  data-testid="calendar-edit-event-send-email-updates"
+                />
+                Email guests about this change
+              </label>
+            )}
 
             {error && (
               <p className="text-sm text-red-400">{error}</p>

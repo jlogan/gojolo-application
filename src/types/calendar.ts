@@ -166,6 +166,8 @@ export type MutateCalendarEventFields = {
 
 export type UpdateCalendarEventInput = MutateCalendarEventFields & {
   eventId: string
+  /** When true, Google Calendar sends update emails to guests (sendUpdates=all). Default: false. */
+  sendEmailUpdates?: boolean
 }
 
 export type UpdateCalendarEventResult = CreateCalendarEventResult

@@ -24,7 +24,7 @@
 //   POST { action: 'sync', orgId, provider?: 'google', connectionId?: string }
 //   POST { action: 'disconnect', orgId, provider?: 'google', connectionId?: string }
 //   POST { action: 'createEvent', orgId, connectionId, title, startDate, startTime?, endDate?, endTime?, allDay?, description?, location?, attendees?, addGoogleMeet?, reminder?, visibility?, availability? }
-//   POST { action: 'updateEvent', orgId, eventId, title, startDate, ... (same fields as createEvent except connectionId) }
+//   POST { action: 'updateEvent', orgId, eventId, title, startDate, ... (same fields as createEvent except connectionId), sendEmailUpdates?: boolean }
 //   POST { action: 'deleteEvent', orgId, eventId }
 // Cron (pg_cron via trigger_calendar_sync_for_connected):
 //   POST { action: 'sync', orgId, connectionId, provider?: 'google' } with header x-cron-secret = CRON_SECRET
@@ -1091,6 +1091,8 @@ type CreateEventBody = {
   reminder?: CreateEventReminder
   visibility?: CreateEventVisibility
   availability?: CreateEventAvailability
+  /** When true on updateEvent, Google sends update emails to guests (sendUpdates=all). */
+  sendEmailUpdates?: boolean
 }
 
 type CalendarEventRow = {
@@ -1487,7 +1489,7 @@ async function handleUpdateEvent(
   }
 
   const { event, connection, tokens } = context
-  const { payload: googlePayload, attendeeEmails, addGoogleMeet } = built
+  const { payload: googlePayload, addGoogleMeet } = built
 
   const hasExistingMeet = Boolean(event.meeting_url?.trim())
   const shouldAddMeet = addGoogleMeet === true && !hasExistingMeet
@@ -1503,7 +1505,7 @@ async function handleUpdateEvent(
     calendarId,
     event.external_id,
     googlePayload,
-    { addGoogleMeet: shouldAddMeet, sendUpdates: attendeeEmails.length > 0 },
+    { addGoogleMeet: shouldAddMeet, sendUpdates: body.sendEmailUpdates === true },
   )
 
   if (!updated.id) throw new Error('Google did not return an event id')
@@ -1617,6 +1619,7 @@ Deno.serve(async (req: Request) => {
       visibility?: CreateEventVisibility
       availability?: CreateEventAvailability
       eventId?: string
+      sendEmailUpdates?: boolean
     }
 
     if (isCron) {
