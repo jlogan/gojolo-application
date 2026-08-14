@@ -1,7 +1,7 @@
 /** Jay's calendar display timezone — all calendar bucketing and labels use this zone. */
 export const CALENDAR_TIMEZONE = 'America/New_York'
 
-export const CALENDAR_TIMEZONE_LABEL = "Times shown in Jay's timezone (Eastern)"
+export const CALENDAR_TIMEZONE_LABEL = 'Times shown in Eastern time'
 
 export type CalendarDateParts = {
   year: number
