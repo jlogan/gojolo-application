@@ -24,6 +24,8 @@
 //   POST { action: 'sync', orgId, provider?: 'google', connectionId?: string }
 //   POST { action: 'disconnect', orgId, provider?: 'google', connectionId?: string }
 //   POST { action: 'createEvent', orgId, connectionId, title, startDate, startTime?, endDate?, endTime?, allDay?, description?, location?, attendees?, addGoogleMeet?, reminder?, visibility?, availability? }
+//   POST { action: 'updateEvent', orgId, eventId, title, startDate, ... (same fields as createEvent except connectionId) }
+//   POST { action: 'deleteEvent', orgId, eventId }
 // Cron (pg_cron via trigger_calendar_sync_for_connected):
 //   POST { action: 'sync', orgId, connectionId, provider?: 'google' } with header x-cron-secret = CRON_SECRET
 //
@@ -1052,6 +1054,7 @@ type CreateEventAvailability = 'busy' | 'free'
 
 type CreateEventBody = {
   connectionId?: string
+  eventId?: string
   title?: string
   startDate?: string
   startTime?: string
@@ -1065,6 +1068,18 @@ type CreateEventBody = {
   reminder?: CreateEventReminder
   visibility?: CreateEventVisibility
   availability?: CreateEventAvailability
+}
+
+type CalendarEventRow = {
+  id: string
+  org_id: string
+  connection_id: string
+  user_id: string
+  external_id: string
+  source: string | null
+  meeting_url: string | null
+  created_by_user_id: string | null
+  attendees: Array<{ email?: string }> | null
 }
 
 function buildGoogleReminders(reminder: CreateEventReminder | undefined): { useDefault: boolean; overrides: { method: string; minutes: number }[] } {
@@ -1122,50 +1137,17 @@ function normalizeAttendeeEmails(attendees: string[] | undefined): string[] {
   return result
 }
 
-async function createGoogleCalendarEvent(
-  accessToken: string,
-  calendarId: string,
-  payload: Record<string, unknown>,
-  options: { addGoogleMeet: boolean; sendUpdates: boolean },
-): Promise<GoogleEvent> {
-  const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`)
-  if (options.addGoogleMeet) url.searchParams.set('conferenceDataVersion', '1')
-  if (options.sendUpdates) url.searchParams.set('sendUpdates', 'all')
-
-  const res = await fetch(url.toString(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  })
-  const data = await res.json()
-  if (!res.ok) {
-    throw new Error(data.error?.message ?? 'Failed to create Google Calendar event')
-  }
-  return data as GoogleEvent
-}
-
-async function handleCreateEvent(
-  userClient: ReturnType<typeof createClient>,
-  service: ReturnType<typeof createClient>,
-  userId: string,
-  orgId: string,
-  body: CreateEventBody,
-) {
-  if (!(await isOrgAdmin(userClient, orgId))) {
-    return json({ error: 'Forbidden: org admin required' }, 403)
-  }
-
-  const connectionId = body.connectionId?.trim()
-  if (!connectionId) return json({ error: 'connectionId required' }, 400)
-
+function buildGoogleEventPayload(body: CreateEventBody): {
+  payload: Record<string, unknown>
+  attendeeEmails: string[]
+  addGoogleMeet: boolean
+  title: string
+} | { error: string; status: number } {
   const title = body.title?.trim()
-  if (!title) return json({ error: 'title required' }, 400)
+  if (!title) return { error: 'title required', status: 400 }
 
   const startParts = parseDateOnly(body.startDate)
-  if (!startParts) return json({ error: 'startDate required (YYYY-MM-DD)' }, 400)
+  if (!startParts) return { error: 'startDate required (YYYY-MM-DD)', status: 400 }
 
   const allDay = body.allDay === true
   const endParts = parseDateOnly(body.endDate) ?? startParts
@@ -1202,14 +1184,14 @@ async function handleCreateEvent(
 
   const description = body.description?.trim()
   if (description) googlePayload.description = description
+  else googlePayload.description = ''
 
   const location = body.location?.trim()
   if (location) googlePayload.location = location
+  else googlePayload.location = ''
 
   const attendeeEmails = normalizeAttendeeEmails(body.attendees)
-  if (attendeeEmails.length > 0) {
-    googlePayload.attendees = attendeeEmails.map((email) => ({ email }))
-  }
+  googlePayload.attendees = attendeeEmails.map((email) => ({ email }))
 
   const addGoogleMeet = body.addGoogleMeet !== false
   if (addGoogleMeet) {
@@ -1224,6 +1206,148 @@ async function handleCreateEvent(
   googlePayload.reminders = buildGoogleReminders(body.reminder)
   googlePayload.visibility = mapCreateEventVisibility(body.visibility)
   googlePayload.transparency = mapCreateEventTransparency(body.availability)
+
+  return { payload: googlePayload, attendeeEmails, addGoogleMeet, title }
+}
+
+async function getGojoloEventContext(
+  service: ReturnType<typeof createClient>,
+  orgId: string,
+  eventId: string,
+): Promise<
+  | { event: CalendarEventRow; connection: CalendarConnectionRow; tokens: TokenRow }
+  | { error: string; status: number; message?: string }
+> {
+  const { data: event, error } = await service
+    .from('calendar_events')
+    .select('id, org_id, connection_id, user_id, external_id, source, meeting_url, created_by_user_id, attendees')
+    .eq('id', eventId)
+    .eq('org_id', orgId)
+    .maybeSingle()
+
+  if (error) throw new Error(error.message)
+  if (!event) return { error: 'not_found', status: 404, message: 'Event not found' }
+  if (event.source !== 'gojolo') {
+    return { error: 'forbidden', status: 403, message: 'Only GoJoLo-created events can be modified' }
+  }
+
+  const connection = await getOrgConnection(service, orgId, 'google', event.connection_id)
+  if (!connection || connection.status !== 'connected') {
+    return { error: 'no_connection', status: 400, message: 'No connected calendar found for this event' }
+  }
+
+  const pair = await getConnectionWithTokens(service, connection)
+  if (!pair?.tokens.access_token_encrypted) {
+    return {
+      error: 'no_tokens',
+      status: 400,
+      message: 'Calendar connection has no stored tokens. Reconnect Google Calendar.',
+    }
+  }
+
+  if (!hasWritableCalendarScope(pair.tokens.scopes)) {
+    return {
+      error: 'reconnect_required',
+      status: 400,
+      message: 'This calendar was connected with read-only access. Disconnect and reconnect Google Calendar to enable event changes.',
+    }
+  }
+
+  return { event: event as CalendarEventRow, connection: pair.connection, tokens: pair.tokens }
+}
+
+async function createGoogleCalendarEvent(
+  accessToken: string,
+  calendarId: string,
+  payload: Record<string, unknown>,
+  options: { addGoogleMeet: boolean; sendUpdates: boolean },
+): Promise<GoogleEvent> {
+  const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`)
+  if (options.addGoogleMeet) url.searchParams.set('conferenceDataVersion', '1')
+  if (options.sendUpdates) url.searchParams.set('sendUpdates', 'all')
+
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.error?.message ?? 'Failed to create Google Calendar event')
+  }
+  return data as GoogleEvent
+}
+
+async function patchGoogleCalendarEvent(
+  accessToken: string,
+  calendarId: string,
+  externalId: string,
+  payload: Record<string, unknown>,
+  options: { addGoogleMeet: boolean; sendUpdates: boolean },
+): Promise<GoogleEvent> {
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(externalId)}`,
+  )
+  if (options.addGoogleMeet) url.searchParams.set('conferenceDataVersion', '1')
+  if (options.sendUpdates) url.searchParams.set('sendUpdates', 'all')
+
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.error?.message ?? 'Failed to update Google Calendar event')
+  }
+  return data as GoogleEvent
+}
+
+async function deleteGoogleCalendarEventApi(
+  accessToken: string,
+  calendarId: string,
+  externalId: string,
+  sendUpdates: boolean,
+): Promise<void> {
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(externalId)}`,
+  )
+  if (sendUpdates) url.searchParams.set('sendUpdates', 'all')
+
+  const res = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!res.ok && res.status !== 410) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error?.message ?? 'Failed to delete Google Calendar event')
+  }
+}
+
+async function handleCreateEvent(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  body: CreateEventBody,
+) {
+  if (!(await hasCalendarManage(userClient, orgId))) {
+    return json({ error: 'Forbidden: org admin or calendar.manage required' }, 403)
+  }
+
+  const connectionId = body.connectionId?.trim()
+  if (!connectionId) return json({ error: 'connectionId required' }, 400)
+
+  const built = buildGoogleEventPayload(body)
+  if ('error' in built) return json({ error: built.error }, built.status)
+
+  const { payload: googlePayload, attendeeEmails, addGoogleMeet } = built
 
   const connection = await getOrgConnection(service, orgId, 'google', connectionId)
   if (!connection || connection.status !== 'connected') {
@@ -1275,6 +1399,115 @@ async function handleCreateEvent(
   })
 }
 
+async function handleUpdateEvent(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  _userId: string,
+  orgId: string,
+  body: CreateEventBody,
+) {
+  if (!(await hasCalendarManage(userClient, orgId))) {
+    return json({ error: 'Forbidden: org admin or calendar.manage required' }, 403)
+  }
+
+  const eventId = body.eventId?.trim()
+  if (!eventId) return json({ error: 'eventId required' }, 400)
+
+  const built = buildGoogleEventPayload(body)
+  if ('error' in built) return json({ error: built.error }, built.status)
+
+  const context = await getGojoloEventContext(service, orgId, eventId)
+  if ('error' in context && 'status' in context) {
+    return json({ error: context.error, message: context.message }, context.status)
+  }
+
+  const { event, connection, tokens } = context
+  const { payload: googlePayload, attendeeEmails, addGoogleMeet } = built
+
+  const hasExistingMeet = Boolean(event.meeting_url?.trim())
+  const shouldAddMeet = addGoogleMeet && !hasExistingMeet
+  if (!shouldAddMeet) {
+    delete googlePayload.conferenceData
+  }
+
+  const accessToken = await getValidAccessToken(service, connection, tokens)
+  const calendarId = connection.primary_calendar_id ?? 'primary'
+
+  const updated = await patchGoogleCalendarEvent(
+    accessToken,
+    calendarId,
+    event.external_id,
+    googlePayload,
+    { addGoogleMeet: shouldAddMeet, sendUpdates: attendeeEmails.length > 0 },
+  )
+
+  if (!updated.id) throw new Error('Google did not return an event id')
+
+  const row = googleEventToRow(connection, updated, {
+    source: 'gojolo',
+    created_by_user_id: event.created_by_user_id ?? undefined,
+  })
+  if (!row) throw new Error('Failed to map updated event')
+
+  const { data: upserted, error: upsertError } = await service
+    .from('calendar_events')
+    .upsert(row, { onConflict: 'connection_id,external_id' })
+    .select('id, external_id, title, starts_at, ends_at, meeting_url, html_link, source, created_by_user_id')
+    .single()
+
+  if (upsertError) throw new Error(upsertError.message)
+
+  return json({
+    ok: true,
+    message: 'Event updated',
+    event: upserted,
+  })
+}
+
+async function handleDeleteEvent(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  _userId: string,
+  orgId: string,
+  body: CreateEventBody,
+) {
+  if (!(await hasCalendarManage(userClient, orgId))) {
+    return json({ error: 'Forbidden: org admin or calendar.manage required' }, 403)
+  }
+
+  const eventId = body.eventId?.trim()
+  if (!eventId) return json({ error: 'eventId required' }, 400)
+
+  const context = await getGojoloEventContext(service, orgId, eventId)
+  if ('error' in context && 'status' in context) {
+    return json({ error: context.error, message: context.message }, context.status)
+  }
+
+  const { event, connection, tokens } = context
+
+  const accessToken = await getValidAccessToken(service, connection, tokens)
+  const calendarId = connection.primary_calendar_id ?? 'primary'
+
+  const hasAttendees = (event.attendees ?? []).some((a) => a.email?.trim())
+
+  await deleteGoogleCalendarEventApi(
+    accessToken,
+    calendarId,
+    event.external_id,
+    hasAttendees,
+  )
+
+  const { error: deleteError } = await service
+    .from('calendar_events')
+    .delete()
+    .eq('id', eventId)
+    .eq('org_id', orgId)
+
+  if (deleteError) throw new Error(deleteError.message)
+
+  return json({ ok: true, message: 'Event deleted' })
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
@@ -1315,6 +1548,10 @@ Deno.serve(async (req: Request) => {
       location?: string
       attendees?: string[]
       addGoogleMeet?: boolean
+      reminder?: CreateEventReminder
+      visibility?: CreateEventVisibility
+      availability?: CreateEventAvailability
+      eventId?: string
     }
 
     if (isCron) {
@@ -1350,6 +1587,12 @@ Deno.serve(async (req: Request) => {
     }
     if (action === 'createEvent') {
       return await handleCreateEvent(userClient, service, authData.user.id, orgId, body)
+    }
+    if (action === 'updateEvent') {
+      return await handleUpdateEvent(userClient, service, authData.user.id, orgId, body)
+    }
+    if (action === 'deleteEvent') {
+      return await handleDeleteEvent(userClient, service, authData.user.id, orgId, body)
     }
 
     const googleConfigured = !!(googleClientId && googleClientSecret)

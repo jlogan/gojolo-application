@@ -4,14 +4,17 @@ import {
   Bell,
   CalendarDays,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
   Link2,
   Paperclip,
+  Pencil,
   Phone,
   Plus,
   RefreshCw,
+  Trash2,
   Unlink,
   User,
   Users,
@@ -24,10 +27,12 @@ import { supabase } from '@/lib/supabase'
 import {
   disconnectGoogleCalendar,
   createGoogleCalendarEvent,
+  deleteGoogleCalendarEvent,
   fetchCalendarSyncStatus,
   startGoogleCalendarConnect,
   syncGoogleCalendar,
   updateCalendarConnectionLabel,
+  updateGoogleCalendarEvent,
 } from '@/lib/calendarSync'
 import { usePermission } from '@/lib/usePermission'
 import {
@@ -50,6 +55,7 @@ import {
   getConnectionColorFromMap,
   getConnectionEventCardStyles,
   canViewEventRichDetails,
+  sortConnectionsByDisplayLabel,
   type ConnectionColorMap,
 } from '@/lib/calendarDisplay'
 import {
@@ -62,6 +68,7 @@ import {
 } from '@/lib/calendarDescription'
 import {
   addCalendarDays,
+  CALENDAR_TIMEZONE,
   CALENDAR_TIMEZONE_LABEL,
   calendarDayKeyFromDate,
   endOfCalendarMonth,
@@ -80,6 +87,7 @@ import {
 import type {
   CalendarConnection,
   CalendarEvent,
+  CalendarReminders,
   CalendarTeamMember,
   CreateCalendarEventAvailability,
   CreateCalendarEventReminder,
@@ -110,35 +118,94 @@ function parseAttendeeInput(raw: string): string[] {
     .filter(Boolean)
 }
 
-function CalendarCreateEventModal({
+function formatTimeInputValue(iso: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: CALENDAR_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(iso))
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00'
+  return `${get('hour')}:${get('minute')}`
+}
+
+function reminderFromEvent(reminders: CalendarReminders | null): CreateCalendarEventReminder {
+  if (!reminders) return '10'
+  if (reminders.useDefault && !reminders.overrides?.length) return '10'
+  if (!reminders.overrides?.length) return 'none'
+  const popup = reminders.overrides.find((r) => r.method === 'popup') ?? reminders.overrides[0]
+  if (popup?.minutes == null) return '10'
+  if (popup.minutes === 0) return 'at_time'
+  const presets = ['5', '10', '15', '30', '60', '1440'] as const
+  const match = presets.find((p) => Number(p) === popup.minutes)
+  return match ?? '10'
+}
+
+function visibilityFromEvent(visibility: CalendarEvent['visibility']): CreateCalendarEventVisibility {
+  if (visibility === 'public' || visibility === 'private') return visibility
+  return 'default'
+}
+
+function attendeesToRaw(attendees: CalendarEvent['attendees']): string {
+  return (attendees ?? [])
+    .map((a) => a.email?.trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function CalendarEventFormModal({
+  mode,
   connections,
   defaultDate,
+  editEvent,
   onClose,
-  onCreated,
+  onSaved,
 }: {
+  mode: 'create' | 'edit'
   connections: CalendarConnection[]
   defaultDate: Date
+  editEvent?: CalendarEvent
   onClose: () => void
-  onCreated: (message: string) => Promise<void>
+  onSaved: (message: string) => Promise<void>
 }) {
   const { currentOrg } = useOrg()
-  const connected = connections.filter((c) => c.status === 'connected')
+  const connected = useMemo(
+    () => sortConnectionsByDisplayLabel(connections.filter((c) => c.status === 'connected')),
+    [connections],
+  )
   const defaultDateStr = formatDateInputValue(defaultDate)
+  const editDefaults = editEvent ? {
+    title: editEvent.title ?? '',
+    startDate: formatDateInputValue(new Date(editEvent.starts_at)),
+    endDate: formatDateInputValue(new Date(editEvent.ends_at)),
+    startTime: formatTimeInputValue(editEvent.starts_at),
+    endTime: formatTimeInputValue(editEvent.ends_at),
+    allDay: editEvent.all_day,
+    description: editEvent.description ?? '',
+    location: editEvent.location ?? '',
+    attendeesRaw: attendeesToRaw(editEvent.attendees),
+    addGoogleMeet: Boolean(editEvent.meeting_url || editEvent.conference_data?.entryPoints?.length),
+    reminder: reminderFromEvent(editEvent.reminders),
+    visibility: visibilityFromEvent(editEvent.visibility),
+    availability: 'busy' as CreateCalendarEventAvailability,
+  } : null
 
-  const [connectionId, setConnectionId] = useState(connected[0]?.id ?? '')
-  const [title, setTitle] = useState('')
-  const [startDate, setStartDate] = useState(defaultDateStr)
-  const [startTime, setStartTime] = useState('09:00')
-  const [endDate, setEndDate] = useState(defaultDateStr)
-  const [endTime, setEndTime] = useState('10:00')
-  const [allDay, setAllDay] = useState(false)
-  const [description, setDescription] = useState('')
-  const [location, setLocation] = useState('')
-  const [attendeesRaw, setAttendeesRaw] = useState('')
-  const [addGoogleMeet, setAddGoogleMeet] = useState(true)
-  const [reminder, setReminder] = useState<CreateCalendarEventReminder>('10')
-  const [visibility, setVisibility] = useState<CreateCalendarEventVisibility>('default')
-  const [availability, setAvailability] = useState<CreateCalendarEventAvailability>('busy')
+  const [connectionId, setConnectionId] = useState(
+    mode === 'edit' && editEvent ? editEvent.connection_id : (connected[0]?.id ?? ''),
+  )
+  const [title, setTitle] = useState(editDefaults?.title ?? '')
+  const [startDate, setStartDate] = useState(editDefaults?.startDate ?? defaultDateStr)
+  const [startTime, setStartTime] = useState(editDefaults?.startTime ?? '09:00')
+  const [endDate, setEndDate] = useState(editDefaults?.endDate ?? defaultDateStr)
+  const [endTime, setEndTime] = useState(editDefaults?.endTime ?? '10:00')
+  const [allDay, setAllDay] = useState(editDefaults?.allDay ?? false)
+  const [description, setDescription] = useState(editDefaults?.description ?? '')
+  const [location, setLocation] = useState(editDefaults?.location ?? '')
+  const [attendeesRaw, setAttendeesRaw] = useState(editDefaults?.attendeesRaw ?? '')
+  const [addGoogleMeet, setAddGoogleMeet] = useState(editDefaults?.addGoogleMeet ?? true)
+  const [reminder, setReminder] = useState<CreateCalendarEventReminder>(editDefaults?.reminder ?? '10')
+  const [visibility, setVisibility] = useState<CreateCalendarEventVisibility>(editDefaults?.visibility ?? 'default')
+  const [availability, setAvailability] = useState<CreateCalendarEventAvailability>(editDefaults?.availability ?? 'busy')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -152,12 +219,13 @@ function CalendarCreateEventModal({
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!currentOrg?.id || !connectionId || !title.trim() || submitting) return
+    if (!currentOrg?.id || !title.trim() || submitting) return
+    if (mode === 'create' && !connectionId) return
+    if (mode === 'edit' && !editEvent) return
     setError(null)
     setSubmitting(true)
     try {
-      const result = await createGoogleCalendarEvent(currentOrg.id, {
-        connectionId,
+      const fields = {
         title: title.trim(),
         startDate,
         startTime: allDay ? undefined : startTime,
@@ -171,8 +239,11 @@ function CalendarCreateEventModal({
         reminder,
         visibility,
         availability,
-      })
-      await onCreated(result.message ?? 'Event created')
+      }
+      const result = mode === 'edit'
+        ? await updateGoogleCalendarEvent(currentOrg.id, { eventId: editEvent!.id, ...fields })
+        : await createGoogleCalendarEvent(currentOrg.id, { connectionId, ...fields })
+      await onSaved(result.message ?? (mode === 'edit' ? 'Event updated' : 'Event created'))
       onClose()
     } catch (err) {
       setError((err as Error).message)
@@ -181,13 +252,22 @@ function CalendarCreateEventModal({
     }
   }
 
+  const editConnection = mode === 'edit'
+    ? connections.find((c) => c.id === editEvent?.connection_id)
+    : undefined
+  const isEdit = mode === 'edit'
+  const modalTitle = isEdit ? 'Edit event' : 'Create event'
+  const submitLabel = submitting ? (isEdit ? 'Saving…' : 'Creating…') : (isEdit ? 'Save changes' : 'Create event')
+  const testId = isEdit ? 'calendar-edit-event-modal' : 'calendar-create-event-modal'
+  const titleId = isEdit ? 'calendar-edit-event-title' : 'calendar-create-event-title'
+
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="calendar-create-event-title"
-      data-testid="calendar-create-event-modal"
+      aria-labelledby={titleId}
+      data-testid={testId}
       onClick={() => { if (!submitting) onClose() }}
     >
       <div
@@ -195,8 +275,8 @@ function CalendarCreateEventModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 mb-4">
-          <h2 id="calendar-create-event-title" className="text-lg font-semibold text-white">
-            Create event
+          <h2 id={titleId} className="text-lg font-semibold text-white">
+            {modalTitle}
           </h2>
           <button
             type="button"
@@ -209,23 +289,27 @@ function CalendarCreateEventModal({
           </button>
         </div>
 
-        {connected.length === 0 ? (
+        {mode === 'create' && connected.length === 0 ? (
           <p className="text-sm text-gray-400">Connect a Google Calendar account before creating events.</p>
         ) : (
           <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
             <div>
-              <label htmlFor="create-event-connection" className="block text-xs text-gray-500 mb-1">Calendar</label>
-              <select
-                id="create-event-connection"
-                value={connectionId}
-                onChange={(e) => setConnectionId(e.target.value)}
-                disabled={submitting}
-                className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
-              >
-                {connected.map((conn) => (
-                  <option key={conn.id} value={conn.id}>{connectionCreateEventLabel(conn)}</option>
-                ))}
-              </select>
+              <span className="block text-xs text-gray-500 mb-1">Calendar</span>
+              {isEdit && editConnection ? (
+                <p className="text-sm text-gray-200">{connectionCreateEventLabel(editConnection)}</p>
+              ) : (
+                <select
+                  id="create-event-connection"
+                  value={connectionId}
+                  onChange={(e) => setConnectionId(e.target.value)}
+                  disabled={submitting}
+                  className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                >
+                  {connected.map((conn) => (
+                    <option key={conn.id} value={conn.id}>{connectionCreateEventLabel(conn)}</option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div>
@@ -413,12 +497,12 @@ function CalendarCreateEventModal({
             <div className="flex gap-2 pt-1">
               <button
                 type="submit"
-                disabled={submitting || !title.trim() || !connectionId}
+                disabled={submitting || !title.trim() || (mode === 'create' && !connectionId)}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
-                data-testid="calendar-create-event-submit"
+                data-testid={isEdit ? 'calendar-edit-event-submit' : 'calendar-create-event-submit'}
               >
-                <Plus className="w-4 h-4" />
-                {submitting ? 'Creating…' : 'Create event'}
+                {isEdit ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                {submitLabel}
               </button>
               <button
                 type="button"
@@ -442,14 +526,22 @@ function CalendarEventDetailModal({
   conn,
   viewerUserId,
   connectionColor,
+  canManageEvent,
+  deleteBusy = false,
   onClose,
+  onEdit,
+  onDelete,
 }: {
   event: CalendarEvent
   owner: CalendarTeamMember | undefined
   conn: CalendarConnection | undefined
   viewerUserId: string | undefined
   connectionColor: string
+  canManageEvent: boolean
+  deleteBusy?: boolean
   onClose: () => void
+  onEdit: () => void
+  onDelete: () => void
 }) {
   const title = displayEventTitle(event, viewerUserId)
   const location = displayEventLocation(event, viewerUserId)
@@ -478,6 +570,8 @@ function CalendarEventDetailModal({
   const organizerLabel = showRichDetails ? formatPersonLabel(event.organizer) : null
   const creatorLabel = showRichDetails ? formatPersonLabel(event.creator) : null
   const descriptionContent = description ? renderSanitizedDescription(description) : null
+  const isGojoloEvent = event.source === 'gojolo'
+  const showManageActions = canManageEvent && isGojoloEvent
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -683,6 +777,30 @@ function CalendarEventDetailModal({
             </div>
           )}
         </dl>
+
+        {showManageActions && (
+          <div className="flex flex-wrap gap-2 mt-5 pt-4 border-t border-border">
+            <button
+              type="button"
+              onClick={onEdit}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-200 hover:bg-surface-muted"
+              data-testid="calendar-event-edit-button"
+            >
+              <Pencil className="w-4 h-4" />
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={deleteBusy}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-red-500/40 text-sm text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+              data-testid="calendar-event-delete-button"
+            >
+              <Trash2 className="w-4 h-4" />
+              {deleteBusy ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -960,6 +1078,8 @@ export default function CalendarPage() {
   const { user } = useAuth()
   const { currentOrg, isOrgAdmin } = useOrg()
   const canView = usePermission(currentOrg?.id, 'calendar.view')
+  const canManageCalendar = usePermission(currentOrg?.id, 'calendar.manage')
+  const canManageEvents = isOrgAdmin || canManageCalendar === true
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [viewMode, setViewMode] = useState<ViewMode>('week')
@@ -975,7 +1095,10 @@ export default function CalendarPage() {
   const [syncBusyIds, setSyncBusyIds] = useState<Set<string>>(new Set())
   const [disconnectBusyIds, setDisconnectBusyIds] = useState<Set<string>>(new Set())
   const [connectMessage, setConnectMessage] = useState<string | null>(null)
-  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [eventForm, setEventForm] = useState<{ mode: 'create' } | { mode: 'edit'; event: CalendarEvent } | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [showConnectedCalendars, setShowConnectedCalendars] = useState(false)
+  const [showConnectGoogle, setShowConnectGoogle] = useState(false)
 
   const range = useMemo(() => {
     if (viewMode === 'day') {
@@ -1077,6 +1200,11 @@ export default function CalendarPage() {
     [connections],
   )
 
+  const sortedFilterableConnections = useMemo(
+    () => sortConnectionsByDisplayLabel(filterableConnections),
+    [filterableConnections],
+  )
+
   const canSyncConnection = useCallback((_conn: CalendarConnection) => isOrgAdmin, [isOrgAdmin])
 
   const canDisconnectConnection = useCallback((_conn: CalendarConnection) => {
@@ -1106,13 +1234,36 @@ export default function CalendarPage() {
     [connections],
   )
 
-  const handleCreateEventSuccess = async (message: string) => {
+  const handleEventFormSuccess = async (message: string) => {
     setConnectMessage(message)
     await loadData()
   }
 
   const openCreateModal = () => {
-    setShowCreateModal(true)
+    setEventForm({ mode: 'create' })
+  }
+
+  const openEditModal = (event: CalendarEvent) => {
+    setSelectedEvent(null)
+    setEventForm({ mode: 'edit', event })
+  }
+
+  const handleDeleteEvent = async (event: CalendarEvent) => {
+    if (!currentOrg?.id || deleteBusy) return
+    const title = displayEventTitle(event, user?.id)
+    if (!window.confirm(`Delete "${title}"? This will remove the event from Google Calendar.`)) return
+    setDeleteBusy(true)
+    setConnectMessage(null)
+    try {
+      const result = await deleteGoogleCalendarEvent(currentOrg.id, { eventId: event.id })
+      setConnectMessage(result.message ?? 'Event deleted')
+      setSelectedEvent(null)
+      await loadData()
+    } catch (err) {
+      setConnectMessage((err as Error).message)
+    } finally {
+      setDeleteBusy(false)
+    }
   }
 
   const handleConnectGoogle = async () => {
@@ -1247,12 +1398,14 @@ export default function CalendarPage() {
 
   return (
     <div className="p-4 md:p-6" data-testid="calendar-page">
-      {showCreateModal && isOrgAdmin && (
-        <CalendarCreateEventModal
-          connections={filterableConnections}
+      {eventForm && canManageEvents && (
+        <CalendarEventFormModal
+          mode={eventForm.mode}
+          connections={sortedFilterableConnections}
           defaultDate={anchorDate}
-          onClose={() => setShowCreateModal(false)}
-          onCreated={handleCreateEventSuccess}
+          editEvent={eventForm.mode === 'edit' ? eventForm.event : undefined}
+          onClose={() => setEventForm(null)}
+          onSaved={handleEventFormSuccess}
         />
       )}
 
@@ -1263,7 +1416,11 @@ export default function CalendarPage() {
           conn={selectedEventDetails.conn}
           viewerUserId={user?.id}
           connectionColor={selectedEventDetails.color}
+          canManageEvent={canManageEvents}
+          deleteBusy={deleteBusy}
           onClose={() => setSelectedEvent(null)}
+          onEdit={() => openEditModal(selectedEventDetails.event)}
+          onDelete={() => void handleDeleteEvent(selectedEventDetails.event)}
         />
       )}
 
@@ -1277,7 +1434,7 @@ export default function CalendarPage() {
               </h1>
             </div>
             <div className="flex items-center gap-2">
-              {isOrgAdmin && filterableConnections.some((c) => c.status === 'connected') && (
+              {canManageEvents && sortedFilterableConnections.some((c) => c.status === 'connected') && (
                 <button
                   type="button"
                   onClick={openCreateModal}
@@ -1354,16 +1511,22 @@ export default function CalendarPage() {
           </div>
           <p className="text-xs text-gray-500 mb-4">{CALENDAR_TIMEZONE_LABEL}</p>
 
+          {connectMessage && !isOrgAdmin && (
+            <p className={`text-sm mb-4 ${connectMessage.includes('failed') || connectMessage.toLowerCase().includes('error') ? 'text-red-400' : 'text-green-400'}`}>
+              {connectMessage}
+            </p>
+          )}
+
           <div className="rounded-lg border border-border bg-surface-muted/30 p-3 mb-4">
             <div className="flex items-center gap-2 text-sm text-gray-300 mb-2">
               <Users className="w-4 h-4" />
               <span className="font-medium">Calendars</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {filterableConnections.length === 0 ? (
+              {sortedFilterableConnections.length === 0 ? (
                 <span className="text-sm text-gray-500">No connected calendars yet.</span>
               ) : (
-                filterableConnections.map((conn) => {
+                sortedFilterableConnections.map((conn) => {
                   const active = selectedConnectionIds.has(conn.id)
                   const chipLabel = connectionAccountLabel(conn)
                   const accent = getConnectionColorFromMap(conn.id, connectionColorMap)
@@ -1431,14 +1594,24 @@ export default function CalendarPage() {
             </p>
           )}
 
-          {isOrgAdmin && filterableConnections.length > 0 && (
-            <section className="rounded-lg border border-border bg-surface-muted/20 p-4">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-3">
-                <CalendarDays className="w-4 h-4" />
-                Connected calendars
-              </h2>
-              <ul className="space-y-3">
-                {filterableConnections.map((conn) => {
+          {isOrgAdmin && sortedFilterableConnections.length > 0 && (
+            <section className="rounded-lg border border-border bg-surface-muted/20 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowConnectedCalendars((open) => !open)}
+                className="w-full flex items-center justify-between gap-2 p-4 text-left hover:bg-surface-muted/40 transition-colors"
+                aria-expanded={showConnectedCalendars}
+              >
+                <span className="text-sm font-semibold text-white flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4" />
+                  Connected calendars
+                  <span className="text-xs font-normal text-gray-500">({sortedFilterableConnections.length})</span>
+                </span>
+                <ChevronDown className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${showConnectedCalendars ? 'rotate-180' : ''}`} />
+              </button>
+              {showConnectedCalendars && (
+              <ul className="space-y-3 px-4 pb-4">
+                {sortedFilterableConnections.map((conn) => {
                   const member = membersById.get(conn.user_id)
                   const cardLabel = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
                   return (
@@ -1458,17 +1631,27 @@ export default function CalendarPage() {
                   )
                 })}
               </ul>
+              )}
             </section>
           )}
 
           {isOrgAdmin && (
-            <section className="rounded-lg border border-dashed border-border bg-surface-muted/20 p-4">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2 mb-2">
-                <Link2 className="w-4 h-4" />
-                Connect Google Calendar
-              </h2>
+            <section className="rounded-lg border border-dashed border-border bg-surface-muted/20 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowConnectGoogle((open) => !open)}
+                className="w-full flex items-center justify-between gap-2 p-4 text-left hover:bg-surface-muted/40 transition-colors"
+                aria-expanded={showConnectGoogle}
+              >
+                <span className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Link2 className="w-4 h-4" />
+                  Connect Google Calendar
+                </span>
+                <ChevronDown className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${showConnectGoogle ? 'rotate-180' : ''}`} />
+              </button>
 
-              <div className="mt-4 space-y-3">
+              {showConnectGoogle && (
+              <div className="px-4 pb-4 space-y-3">
                 {googleConfigured === false && (
                   <div className="text-sm text-gray-400 space-y-2">
                     <p>Google Calendar OAuth is not configured yet. A workspace admin must set Supabase secrets:</p>
@@ -1498,6 +1681,7 @@ export default function CalendarPage() {
                       : 'Connect Google Calendar'}
                 </button>
               </div>
+              )}
             </section>
           )}
         </aside>

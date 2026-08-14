@@ -148,6 +148,38 @@ export type CreateCalendarEventResult = {
   >
 }
 
+export type MutateCalendarEventFields = {
+  title: string
+  startDate: string
+  startTime?: string
+  endDate?: string
+  endTime?: string
+  allDay?: boolean
+  description?: string
+  location?: string
+  attendees?: string[]
+  addGoogleMeet?: boolean
+  reminder?: CreateCalendarEventReminder
+  visibility?: CreateCalendarEventVisibility
+  availability?: CreateCalendarEventAvailability
+}
+
+export type UpdateCalendarEventInput = MutateCalendarEventFields & {
+  eventId: string
+}
+
+export type UpdateCalendarEventResult = CreateCalendarEventResult
+
+export type DeleteCalendarEventInput = {
+  eventId: string
+}
+
+export type DeleteCalendarEventResult = {
+  ok?: boolean
+  message?: string
+  error?: string
+}
+
 export type CalendarTeamMember = {
   user_id: string
   display_name: string | null

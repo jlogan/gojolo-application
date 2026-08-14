@@ -1,5 +1,13 @@
 import { supabase } from '@/lib/supabase'
-import type { CalendarProvider, CreateCalendarEventInput, CreateCalendarEventResult } from '@/types/calendar'
+import type {
+  CalendarProvider,
+  CreateCalendarEventInput,
+  CreateCalendarEventResult,
+  DeleteCalendarEventInput,
+  DeleteCalendarEventResult,
+  UpdateCalendarEventInput,
+  UpdateCalendarEventResult,
+} from '@/types/calendar'
 
 type CalendarSyncResponse = {
   ok?: boolean
@@ -83,6 +91,40 @@ export async function createGoogleCalendarEvent(
     body: {
       orgId,
       action: 'createEvent',
+      provider: 'google' satisfies CalendarProvider,
+      ...input,
+    },
+  })
+  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (data?.error) throw new Error(data.message ?? data.error)
+  return data ?? {}
+}
+
+export async function updateGoogleCalendarEvent(
+  orgId: string,
+  input: UpdateCalendarEventInput,
+): Promise<UpdateCalendarEventResult> {
+  const { data, error } = await supabase.functions.invoke<UpdateCalendarEventResult>('calendar-sync', {
+    body: {
+      orgId,
+      action: 'updateEvent',
+      provider: 'google' satisfies CalendarProvider,
+      ...input,
+    },
+  })
+  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (data?.error) throw new Error(data.message ?? data.error)
+  return data ?? {}
+}
+
+export async function deleteGoogleCalendarEvent(
+  orgId: string,
+  input: DeleteCalendarEventInput,
+): Promise<DeleteCalendarEventResult> {
+  const { data, error } = await supabase.functions.invoke<DeleteCalendarEventResult>('calendar-sync', {
+    body: {
+      orgId,
+      action: 'deleteEvent',
       provider: 'google' satisfies CalendarProvider,
       ...input,
     },

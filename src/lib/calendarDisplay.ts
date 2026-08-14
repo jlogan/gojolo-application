@@ -197,6 +197,22 @@ export function connectionAccountLabel(
   return conn.account_label?.trim() || conn.email?.trim() || conn.provider
 }
 
+/** Sort connections by displayed nickname/account label; tie-break by email then id. */
+export function sortConnectionsByDisplayLabel(
+  connections: CalendarConnection[],
+  labelFn: (conn: CalendarConnection) => string = connectionAccountLabel,
+): CalendarConnection[] {
+  return [...connections].sort((a, b) => {
+    const labelCmp = labelFn(a).localeCompare(labelFn(b), undefined, { sensitivity: 'base' })
+    if (labelCmp !== 0) return labelCmp
+    const emailA = (a.email?.trim() || a.id).toLowerCase()
+    const emailB = (b.email?.trim() || b.id).toLowerCase()
+    const emailCmp = emailA.localeCompare(emailB)
+    if (emailCmp !== 0) return emailCmp
+    return a.id.localeCompare(b.id)
+  })
+}
+
 /** Email shown under a custom nickname when it differs from account_label. */
 export function connectionEmailSecondary(
   conn: Pick<CalendarConnection, 'account_label' | 'email'>,
