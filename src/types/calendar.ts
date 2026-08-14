@@ -104,6 +104,21 @@ export type CalendarEvent = {
   updated_at: string
 }
 
+/** Reminder preset for create-event (maps to Google Calendar popup reminder overrides). */
+export type CreateCalendarEventReminder =
+  | 'none'
+  | 'at_time'
+  | '5'
+  | '10'
+  | '15'
+  | '30'
+  | '60'
+  | '1440'
+
+export type CreateCalendarEventVisibility = 'default' | 'public' | 'private'
+
+export type CreateCalendarEventAvailability = 'busy' | 'free'
+
 export type CreateCalendarEventInput = {
   connectionId: string
   title: string
@@ -116,6 +131,11 @@ export type CreateCalendarEventInput = {
   location?: string
   attendees?: string[]
   addGoogleMeet?: boolean
+  /** Popup reminder preset; defaults to 10 minutes before. */
+  reminder?: CreateCalendarEventReminder
+  visibility?: CreateCalendarEventVisibility
+  /** Busy (opaque) vs free (transparent) on shared calendars. */
+  availability?: CreateCalendarEventAvailability
 }
 
 export type CreateCalendarEventResult = {

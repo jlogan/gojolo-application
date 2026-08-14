@@ -81,6 +81,9 @@ import type {
   CalendarConnection,
   CalendarEvent,
   CalendarTeamMember,
+  CreateCalendarEventAvailability,
+  CreateCalendarEventReminder,
+  CreateCalendarEventVisibility,
 } from '@/types/calendar'
 
 type ViewMode = 'day' | 'week' | 'month'
@@ -133,6 +136,9 @@ function CalendarCreateEventModal({
   const [location, setLocation] = useState('')
   const [attendeesRaw, setAttendeesRaw] = useState('')
   const [addGoogleMeet, setAddGoogleMeet] = useState(true)
+  const [reminder, setReminder] = useState<CreateCalendarEventReminder>('10')
+  const [visibility, setVisibility] = useState<CreateCalendarEventVisibility>('default')
+  const [availability, setAvailability] = useState<CreateCalendarEventAvailability>('busy')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -162,6 +168,9 @@ function CalendarCreateEventModal({
         location: location.trim() || undefined,
         attendees: parseAttendeeInput(attendeesRaw),
         addGoogleMeet,
+        reminder,
+        visibility,
+        availability,
       })
       await onCreated(result.message ?? 'Event created')
       onClose()
@@ -335,6 +344,55 @@ function CalendarCreateEventModal({
                 placeholder="Emails separated by commas or new lines"
                 className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 resize-y"
               />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label htmlFor="create-event-reminder" className="block text-xs text-gray-500 mb-1">Notification</label>
+                <select
+                  id="create-event-reminder"
+                  value={reminder}
+                  onChange={(e) => setReminder(e.target.value as CreateCalendarEventReminder)}
+                  disabled={submitting}
+                  className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                >
+                  <option value="none">None</option>
+                  <option value="at_time">At time of event</option>
+                  <option value="5">5 minutes before</option>
+                  <option value="10">10 minutes before</option>
+                  <option value="15">15 minutes before</option>
+                  <option value="30">30 minutes before</option>
+                  <option value="60">1 hour before</option>
+                  <option value="1440">1 day before</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="create-event-visibility" className="block text-xs text-gray-500 mb-1">Visibility</label>
+                <select
+                  id="create-event-visibility"
+                  value={visibility}
+                  onChange={(e) => setVisibility(e.target.value as CreateCalendarEventVisibility)}
+                  disabled={submitting}
+                  className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                >
+                  <option value="default">Default</option>
+                  <option value="public">Public</option>
+                  <option value="private">Private</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="create-event-availability" className="block text-xs text-gray-500 mb-1">Availability</label>
+                <select
+                  id="create-event-availability"
+                  value={availability}
+                  onChange={(e) => setAvailability(e.target.value as CreateCalendarEventAvailability)}
+                  disabled={submitting}
+                  className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                >
+                  <option value="busy">Busy</option>
+                  <option value="free">Free</option>
+                </select>
+              </div>
             </div>
 
             <label className="inline-flex items-center gap-2 text-sm text-gray-300">

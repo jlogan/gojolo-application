@@ -23,7 +23,7 @@
 //   GET  ?action=callback&code=...&state=...   (Google redirect; no JWT)
 //   POST { action: 'sync', orgId, provider?: 'google', connectionId?: string }
 //   POST { action: 'disconnect', orgId, provider?: 'google', connectionId?: string }
-//   POST { action: 'createEvent', orgId, connectionId, title, startDate, startTime?, endDate?, endTime?, allDay?, description?, location?, attendees?, addGoogleMeet? }
+//   POST { action: 'createEvent', orgId, connectionId, title, startDate, startTime?, endDate?, endTime?, allDay?, description?, location?, attendees?, addGoogleMeet?, reminder?, visibility?, availability? }
 // Cron (pg_cron via trigger_calendar_sync_for_connected):
 //   POST { action: 'sync', orgId, connectionId, provider?: 'google' } with header x-cron-secret = CRON_SECRET
 //
@@ -1036,6 +1036,20 @@ async function handleDisconnect(
   return json({ ok: true, message: 'Calendar account disconnected' })
 }
 
+type CreateEventReminder =
+  | 'none'
+  | 'at_time'
+  | '5'
+  | '10'
+  | '15'
+  | '30'
+  | '60'
+  | '1440'
+
+type CreateEventVisibility = 'default' | 'public' | 'private'
+
+type CreateEventAvailability = 'busy' | 'free'
+
 type CreateEventBody = {
   connectionId?: string
   title?: string
@@ -1048,6 +1062,30 @@ type CreateEventBody = {
   location?: string
   attendees?: string[]
   addGoogleMeet?: boolean
+  reminder?: CreateEventReminder
+  visibility?: CreateEventVisibility
+  availability?: CreateEventAvailability
+}
+
+function buildGoogleReminders(reminder: CreateEventReminder | undefined): { useDefault: boolean; overrides: { method: string; minutes: number }[] } {
+  const preset = reminder ?? '10'
+  if (preset === 'none') {
+    return { useDefault: false, overrides: [] }
+  }
+  const minutes = preset === 'at_time' ? 0 : Number(preset)
+  return {
+    useDefault: false,
+    overrides: [{ method: 'popup', minutes }],
+  }
+}
+
+function mapCreateEventVisibility(visibility: CreateEventVisibility | undefined): string | undefined {
+  if (!visibility || visibility === 'default') return 'default'
+  return visibility
+}
+
+function mapCreateEventTransparency(availability: CreateEventAvailability | undefined): string {
+  return availability === 'free' ? 'transparent' : 'opaque'
 }
 
 function parseDateOnly(value: string | undefined): { year: number; month: number; day: number } | null {
@@ -1182,6 +1220,10 @@ async function handleCreateEvent(
       },
     }
   }
+
+  googlePayload.reminders = buildGoogleReminders(body.reminder)
+  googlePayload.visibility = mapCreateEventVisibility(body.visibility)
+  googlePayload.transparency = mapCreateEventTransparency(body.availability)
 
   const connection = await getOrgConnection(service, orgId, 'google', connectionId)
   if (!connection || connection.status !== 'connected') {
