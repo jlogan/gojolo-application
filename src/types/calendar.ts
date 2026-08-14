@@ -56,6 +56,8 @@ export type CalendarPerson = {
   self?: boolean
 }
 
+export type CalendarEventSource = 'gojolo' | null
+
 export type CalendarConnection = {
   id: string
   org_id: string
@@ -96,8 +98,34 @@ export type CalendarEvent = {
   recurring_event_id: string | null
   html_link: string | null
   provider_updated_at: string | null
+  source: CalendarEventSource
+  created_by_user_id: string | null
   created_at: string
   updated_at: string
+}
+
+export type CreateCalendarEventInput = {
+  connectionId: string
+  title: string
+  startDate: string
+  startTime?: string
+  endDate?: string
+  endTime?: string
+  allDay?: boolean
+  description?: string
+  location?: string
+  attendees?: string[]
+  addGoogleMeet?: boolean
+}
+
+export type CreateCalendarEventResult = {
+  ok?: boolean
+  message?: string
+  error?: string
+  event?: Pick<
+    CalendarEvent,
+    'id' | 'external_id' | 'title' | 'starts_at' | 'ends_at' | 'meeting_url' | 'html_link' | 'source' | 'created_by_user_id'
+  >
 }
 
 export type CalendarTeamMember = {

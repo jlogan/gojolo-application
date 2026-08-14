@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase'
-import type { CalendarProvider } from '@/types/calendar'
+import type { CalendarProvider, CreateCalendarEventInput, CreateCalendarEventResult } from '@/types/calendar'
 
 type CalendarSyncResponse = {
   ok?: boolean
@@ -73,4 +73,21 @@ export async function updateCalendarConnectionLabel(
   })
 
   if (error) throw new Error(error.message)
+}
+
+export async function createGoogleCalendarEvent(
+  orgId: string,
+  input: CreateCalendarEventInput,
+): Promise<CreateCalendarEventResult> {
+  const { data, error } = await supabase.functions.invoke<CreateCalendarEventResult>('calendar-sync', {
+    body: {
+      orgId,
+      action: 'createEvent',
+      provider: 'google' satisfies CalendarProvider,
+      ...input,
+    },
+  })
+  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (data?.error) throw new Error(data.message ?? data.error)
+  return data ?? {}
 }

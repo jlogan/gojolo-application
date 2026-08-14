@@ -23,6 +23,7 @@
 //   GET  ?action=callback&code=...&state=...   (Google redirect; no JWT)
 //   POST { action: 'sync', orgId, provider?: 'google', connectionId?: string }
 //   POST { action: 'disconnect', orgId, provider?: 'google', connectionId?: string }
+//   POST { action: 'createEvent', orgId, connectionId, title, startDate, startTime?, endDate?, endTime?, allDay?, description?, location?, attendees?, addGoogleMeet? }
 // Cron (pg_cron via trigger_calendar_sync_for_connected):
 //   POST { action: 'sync', orgId, connectionId, provider?: 'google' } with header x-cron-secret = CRON_SECRET
 //
@@ -42,13 +43,16 @@ const googleClientSecret = Deno.env.get('GOOGLE_CALENDAR_CLIENT_SECRET')
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
-// calendar.readonly for sync; openid/email/profile for userinfo (account id + email on callback)
+// calendar.events for read/write; openid/email/profile for userinfo (account id + email on callback)
 const GOOGLE_OAUTH_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
   'openid',
   'email',
   'profile',
 ].join(' ')
+
+const GOOGLE_WRITABLE_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
+const GOOGLE_FULL_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar'
 
 const SYNC_PAST_DAYS = 90
 const SYNC_FUTURE_DAYS = 180
@@ -541,6 +545,12 @@ function mapPerson(person: GoogleEvent['organizer']): Record<string, unknown> | 
   }
 }
 
+function hasWritableCalendarScope(scopes: string | null | undefined): boolean {
+  if (!scopes?.trim()) return false
+  const parts = scopes.split(/\s+/)
+  return parts.includes(GOOGLE_WRITABLE_SCOPE) || parts.includes(GOOGLE_FULL_CALENDAR_SCOPE)
+}
+
 function mapGoogleVisibility(visibility: string | undefined): 'default' | 'public' | 'private' | 'busy_only' {
   if (visibility === 'private' || visibility === 'confidential') return 'private'
   if (visibility === 'public') return 'public'
@@ -573,6 +583,50 @@ function parseGoogleEventTimes(event: GoogleEvent): { starts_at: string; ends_at
     starts_at: new Date(startRaw).toISOString(),
     ends_at: new Date(endRaw).toISOString(),
     all_day: false,
+  }
+}
+
+function googleEventToRow(
+  connection: CalendarConnectionRow,
+  event: GoogleEvent,
+  extras?: { source?: string; created_by_user_id?: string },
+): Record<string, unknown> | null {
+  const times = parseGoogleEventTimes(event)
+  if (!times) return null
+
+  const status = event.status === 'cancelled'
+    ? 'cancelled'
+    : event.status === 'tentative'
+    ? 'tentative'
+    : 'confirmed'
+
+  return {
+    org_id: connection.org_id,
+    connection_id: connection.id,
+    user_id: connection.user_id,
+    external_id: event.id,
+    title: event.summary?.trim() || null,
+    description: event.description?.trim() || null,
+    location: event.location?.trim() || null,
+    starts_at: times.starts_at,
+    ends_at: times.ends_at,
+    all_day: times.all_day,
+    visibility: mapGoogleVisibility(event.visibility),
+    status,
+    meeting_url: extractMeetingUrl(event),
+    conference_data: mapConferenceData(event),
+    attendees: mapAttendees(event),
+    attachments: mapAttachments(event),
+    reminders: mapReminders(event),
+    organizer: mapPerson(event.organizer),
+    creator: mapPerson(event.creator),
+    recurrence_rules: event.recurrence?.length ? event.recurrence : null,
+    recurring_event_id: event.recurringEventId?.trim() || null,
+    html_link: event.htmlLink?.trim() || null,
+    provider_updated_at: event.updated ? new Date(event.updated).toISOString() : null,
+    ...(extras?.source !== undefined ? { source: extras.source } : {}),
+    ...(extras?.created_by_user_id !== undefined ? { created_by_user_id: extras.created_by_user_id } : {}),
+    updated_at: new Date().toISOString(),
   }
 }
 
@@ -613,41 +667,8 @@ async function syncGoogleConnection(
       if (!event.id) continue
       seenExternalIds.add(event.id)
 
-      const times = parseGoogleEventTimes(event)
-      if (!times) continue
-
-      const status = event.status === 'cancelled'
-        ? 'cancelled'
-        : event.status === 'tentative'
-        ? 'tentative'
-        : 'confirmed'
-
-      const row = {
-        org_id: connection.org_id,
-        connection_id: connection.id,
-        user_id: connection.user_id,
-        external_id: event.id,
-        title: event.summary?.trim() || null,
-        description: event.description?.trim() || null,
-        location: event.location?.trim() || null,
-        starts_at: times.starts_at,
-        ends_at: times.ends_at,
-        all_day: times.all_day,
-        visibility: mapGoogleVisibility(event.visibility),
-        status,
-        meeting_url: extractMeetingUrl(event),
-        conference_data: mapConferenceData(event),
-        attendees: mapAttendees(event),
-        attachments: mapAttachments(event),
-        reminders: mapReminders(event),
-        organizer: mapPerson(event.organizer),
-        creator: mapPerson(event.creator),
-        recurrence_rules: event.recurrence?.length ? event.recurrence : null,
-        recurring_event_id: event.recurringEventId?.trim() || null,
-        html_link: event.htmlLink?.trim() || null,
-        provider_updated_at: event.updated ? new Date(event.updated).toISOString() : null,
-        updated_at: new Date().toISOString(),
-      }
+      const row = googleEventToRow(connection, event)
+      if (!row) continue
 
       const { error } = await service
         .from('calendar_events')
@@ -1015,6 +1036,203 @@ async function handleDisconnect(
   return json({ ok: true, message: 'Calendar account disconnected' })
 }
 
+type CreateEventBody = {
+  connectionId?: string
+  title?: string
+  startDate?: string
+  startTime?: string
+  endDate?: string
+  endTime?: string
+  allDay?: boolean
+  description?: string
+  location?: string
+  attendees?: string[]
+  addGoogleMeet?: boolean
+}
+
+function parseDateOnly(value: string | undefined): { year: number; month: number; day: number } | null {
+  if (!value?.trim()) return null
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim())
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null
+  return { year, month, day }
+}
+
+function parseTimeOnly(value: string | undefined): { hour: number; minute: number } | null {
+  if (!value?.trim()) return null
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim())
+  if (!match) return null
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
+  return { hour, minute }
+}
+
+function normalizeAttendeeEmails(attendees: string[] | undefined): string[] {
+  if (!attendees?.length) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const raw of attendees) {
+    const email = raw.trim().toLowerCase()
+    if (!email || !email.includes('@') || seen.has(email)) continue
+    seen.add(email)
+    result.push(email)
+  }
+  return result
+}
+
+async function createGoogleCalendarEvent(
+  accessToken: string,
+  calendarId: string,
+  payload: Record<string, unknown>,
+  options: { addGoogleMeet: boolean; sendUpdates: boolean },
+): Promise<GoogleEvent> {
+  const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`)
+  if (options.addGoogleMeet) url.searchParams.set('conferenceDataVersion', '1')
+  if (options.sendUpdates) url.searchParams.set('sendUpdates', 'all')
+
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.error?.message ?? 'Failed to create Google Calendar event')
+  }
+  return data as GoogleEvent
+}
+
+async function handleCreateEvent(
+  userClient: ReturnType<typeof createClient>,
+  service: ReturnType<typeof createClient>,
+  userId: string,
+  orgId: string,
+  body: CreateEventBody,
+) {
+  if (!(await isOrgAdmin(userClient, orgId))) {
+    return json({ error: 'Forbidden: org admin required' }, 403)
+  }
+
+  const connectionId = body.connectionId?.trim()
+  if (!connectionId) return json({ error: 'connectionId required' }, 400)
+
+  const title = body.title?.trim()
+  if (!title) return json({ error: 'title required' }, 400)
+
+  const startParts = parseDateOnly(body.startDate)
+  if (!startParts) return json({ error: 'startDate required (YYYY-MM-DD)' }, 400)
+
+  const allDay = body.allDay === true
+  const endParts = parseDateOnly(body.endDate) ?? startParts
+
+  let googlePayload: Record<string, unknown>
+
+  if (allDay) {
+    const endExclusive = addCalendarDaysFromIso(
+      `${endParts.year}-${String(endParts.month).padStart(2, '0')}-${String(endParts.day).padStart(2, '0')}`,
+      1,
+    )
+    googlePayload = {
+      summary: title,
+      start: {
+        date: `${startParts.year}-${String(startParts.month).padStart(2, '0')}-${String(startParts.day).padStart(2, '0')}`,
+      },
+      end: {
+        date: `${endExclusive.year}-${String(endExclusive.month).padStart(2, '0')}-${String(endExclusive.day).padStart(2, '0')}`,
+      },
+    }
+  } else {
+    const startTime = parseTimeOnly(body.startTime) ?? { hour: 9, minute: 0 }
+    const endTime = parseTimeOnly(body.endTime) ?? { hour: startTime.hour + 1, minute: startTime.minute }
+
+    const startIso = `${startParts.year}-${String(startParts.month).padStart(2, '0')}-${String(startParts.day).padStart(2, '0')}T${String(startTime.hour).padStart(2, '0')}:${String(startTime.minute).padStart(2, '0')}:00`
+    const endIso = `${endParts.year}-${String(endParts.month).padStart(2, '0')}-${String(endParts.day).padStart(2, '0')}T${String(endTime.hour).padStart(2, '0')}:${String(endTime.minute).padStart(2, '0')}:00`
+
+    googlePayload = {
+      summary: title,
+      start: { dateTime: startIso, timeZone: CALENDAR_TIMEZONE },
+      end: { dateTime: endIso, timeZone: CALENDAR_TIMEZONE },
+    }
+  }
+
+  const description = body.description?.trim()
+  if (description) googlePayload.description = description
+
+  const location = body.location?.trim()
+  if (location) googlePayload.location = location
+
+  const attendeeEmails = normalizeAttendeeEmails(body.attendees)
+  if (attendeeEmails.length > 0) {
+    googlePayload.attendees = attendeeEmails.map((email) => ({ email }))
+  }
+
+  const addGoogleMeet = body.addGoogleMeet !== false
+  if (addGoogleMeet) {
+    googlePayload.conferenceData = {
+      createRequest: {
+        requestId: crypto.randomUUID(),
+        conferenceSolutionKey: { type: 'hangoutsMeet' },
+      },
+    }
+  }
+
+  const connection = await getOrgConnection(service, orgId, 'google', connectionId)
+  if (!connection || connection.status !== 'connected') {
+    return json({ error: 'No connected calendar found for this account' }, 400)
+  }
+
+  const pair = await getConnectionWithTokens(service, connection)
+  if (!pair?.tokens.access_token_encrypted) {
+    return json({ error: 'Calendar connection has no stored tokens. Reconnect Google Calendar.' }, 400)
+  }
+
+  if (!hasWritableCalendarScope(pair.tokens.scopes)) {
+    return json({
+      error: 'reconnect_required',
+      message: 'This calendar was connected with read-only access. Disconnect and reconnect Google Calendar to enable event creation.',
+    }, 400)
+  }
+
+  const accessToken = await getValidAccessToken(service, pair.connection, pair.tokens)
+  const calendarId = pair.connection.primary_calendar_id ?? 'primary'
+
+  const created = await createGoogleCalendarEvent(
+    accessToken,
+    calendarId,
+    googlePayload,
+    { addGoogleMeet, sendUpdates: attendeeEmails.length > 0 },
+  )
+
+  if (!created.id) throw new Error('Google did not return an event id')
+
+  const row = googleEventToRow(pair.connection, created, {
+    source: 'gojolo',
+    created_by_user_id: userId,
+  })
+  if (!row) throw new Error('Failed to map created event')
+
+  const { data: upserted, error: upsertError } = await service
+    .from('calendar_events')
+    .upsert(row, { onConflict: 'connection_id,external_id' })
+    .select('id, external_id, title, starts_at, ends_at, meeting_url, html_link, source, created_by_user_id')
+    .single()
+
+  if (upsertError) throw new Error(upsertError.message)
+
+  return json({
+    ok: true,
+    message: 'Event created',
+    event: upserted,
+  })
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
@@ -1045,6 +1263,16 @@ Deno.serve(async (req: Request) => {
       provider?: Provider
       returnPath?: string
       connectionId?: string
+      title?: string
+      startDate?: string
+      startTime?: string
+      endDate?: string
+      endTime?: string
+      allDay?: boolean
+      description?: string
+      location?: string
+      attendees?: string[]
+      addGoogleMeet?: boolean
     }
 
     if (isCron) {
@@ -1077,6 +1305,9 @@ Deno.serve(async (req: Request) => {
     }
     if (action === 'disconnect') {
       return await handleDisconnect(userClient, service, authData.user.id, orgId, provider, body.connectionId)
+    }
+    if (action === 'createEvent') {
+      return await handleCreateEvent(userClient, service, authData.user.id, orgId, body)
     }
 
     const googleConfigured = !!(googleClientId && googleClientSecret)

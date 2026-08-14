@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Bell,
@@ -10,6 +10,7 @@ import {
   Link2,
   Paperclip,
   Phone,
+  Plus,
   RefreshCw,
   Unlink,
   User,
@@ -22,6 +23,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
 import {
   disconnectGoogleCalendar,
+  createGoogleCalendarEvent,
   fetchCalendarSyncStatus,
   startGoogleCalendarConnect,
   syncGoogleCalendar,
@@ -66,6 +68,7 @@ import {
   formatCalendarDayHeading,
   formatCalendarDayLabel,
   formatCalendarMonthLabel,
+  getPartsInCalendarTz,
   nowInCalendarTz,
   sameCalendarDay,
   startOfCalendarDay,
@@ -88,6 +91,295 @@ function ConnectionColorDot({ color, className = 'w-2 h-2' }: { color: string; c
       style={{ backgroundColor: color }}
       aria-hidden
     />
+  )
+}
+
+function formatDateInputValue(date: Date): string {
+  const parts = getPartsInCalendarTz(date)
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
+function parseAttendeeInput(raw: string): string[] {
+  return raw
+    .split(/[\n,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+function CalendarCreateEventModal({
+  connections,
+  membersById,
+  defaultDate,
+  onClose,
+  onCreated,
+}: {
+  connections: CalendarConnection[]
+  membersById: Map<string, CalendarTeamMember>
+  defaultDate: Date
+  onClose: () => void
+  onCreated: (message: string) => Promise<void>
+}) {
+  const { currentOrg } = useOrg()
+  const connected = connections.filter((c) => c.status === 'connected')
+  const defaultDateStr = formatDateInputValue(defaultDate)
+
+  const [connectionId, setConnectionId] = useState(connected[0]?.id ?? '')
+  const [title, setTitle] = useState('')
+  const [startDate, setStartDate] = useState(defaultDateStr)
+  const [startTime, setStartTime] = useState('09:00')
+  const [endDate, setEndDate] = useState(defaultDateStr)
+  const [endTime, setEndTime] = useState('10:00')
+  const [allDay, setAllDay] = useState(false)
+  const [description, setDescription] = useState('')
+  const [location, setLocation] = useState('')
+  const [attendeesRaw, setAttendeesRaw] = useState('')
+  const [addGoogleMeet, setAddGoogleMeet] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !submitting) onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [submitting, onClose])
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!currentOrg?.id || !connectionId || !title.trim() || submitting) return
+    setError(null)
+    setSubmitting(true)
+    try {
+      const result = await createGoogleCalendarEvent(currentOrg.id, {
+        connectionId,
+        title: title.trim(),
+        startDate,
+        startTime: allDay ? undefined : startTime,
+        endDate: endDate || startDate,
+        endTime: allDay ? undefined : endTime,
+        allDay,
+        description: description.trim() || undefined,
+        location: location.trim() || undefined,
+        attendees: parseAttendeeInput(attendeesRaw),
+        addGoogleMeet,
+      })
+      await onCreated(result.message ?? 'Event created')
+      onClose()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="calendar-create-event-title"
+      data-testid="calendar-create-event-modal"
+      onClick={() => { if (!submitting) onClose() }}
+    >
+      <div
+        className="bg-surface-elevated border border-border rounded-xl max-w-lg w-full p-5 shadow-xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <h2 id="calendar-create-event-title" className="text-lg font-semibold text-white">
+            Create event
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted shrink-0 disabled:opacity-50"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {connected.length === 0 ? (
+          <p className="text-sm text-gray-400">Connect a Google Calendar account before creating events.</p>
+        ) : (
+          <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+            <div>
+              <label htmlFor="create-event-connection" className="block text-xs text-gray-500 mb-1">Calendar</label>
+              <select
+                id="create-event-connection"
+                value={connectionId}
+                onChange={(e) => setConnectionId(e.target.value)}
+                disabled={submitting}
+                className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+              >
+                {connected.map((conn) => {
+                  const member = membersById.get(conn.user_id)
+                  const label = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
+                  return (
+                    <option key={conn.id} value={conn.id}>{label}</option>
+                  )
+                })}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="create-event-title" className="block text-xs text-gray-500 mb-1">Title</label>
+              <input
+                id="create-event-title"
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                disabled={submitting}
+                required
+                placeholder="Meeting title"
+                className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+              />
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={allDay}
+                onChange={(e) => setAllDay(e.target.checked)}
+                disabled={submitting}
+                className="rounded border-border"
+              />
+              All day
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="create-event-start-date" className="block text-xs text-gray-500 mb-1">Start date</label>
+                <input
+                  id="create-event-start-date"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  disabled={submitting}
+                  required
+                  className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                />
+              </div>
+              {!allDay && (
+                <div>
+                  <label htmlFor="create-event-start-time" className="block text-xs text-gray-500 mb-1">Start time</label>
+                  <input
+                    id="create-event-start-time"
+                    type="time"
+                    value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)}
+                    disabled={submitting}
+                    required
+                    className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                  />
+                </div>
+              )}
+              <div>
+                <label htmlFor="create-event-end-date" className="block text-xs text-gray-500 mb-1">End date</label>
+                <input
+                  id="create-event-end-date"
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  disabled={submitting}
+                  className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                />
+              </div>
+              {!allDay && (
+                <div>
+                  <label htmlFor="create-event-end-time" className="block text-xs text-gray-500 mb-1">End time</label>
+                  <input
+                    id="create-event-end-time"
+                    type="time"
+                    value={endTime}
+                    onChange={(e) => setEndTime(e.target.value)}
+                    disabled={submitting}
+                    required
+                    className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label htmlFor="create-event-location" className="block text-xs text-gray-500 mb-1">Location</label>
+              <input
+                id="create-event-location"
+                type="text"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                disabled={submitting}
+                placeholder="Optional"
+                className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="create-event-description" className="block text-xs text-gray-500 mb-1">Notes</label>
+              <textarea
+                id="create-event-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                disabled={submitting}
+                rows={3}
+                placeholder="Optional description"
+                className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 resize-y"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="create-event-attendees" className="block text-xs text-gray-500 mb-1">Attendees</label>
+              <textarea
+                id="create-event-attendees"
+                value={attendeesRaw}
+                onChange={(e) => setAttendeesRaw(e.target.value)}
+                disabled={submitting}
+                rows={2}
+                placeholder="Emails separated by commas or new lines"
+                className="w-full rounded-lg border border-border bg-surface-muted px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50 resize-y"
+              />
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={addGoogleMeet}
+                onChange={(e) => setAddGoogleMeet(e.target.checked)}
+                disabled={submitting}
+                className="rounded border-border"
+              />
+              Add Google Meet link
+            </label>
+
+            {error && (
+              <p className="text-sm text-red-400">{error}</p>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="submit"
+                disabled={submitting || !title.trim() || !connectionId}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                data-testid="calendar-create-event-submit"
+              >
+                <Plus className="w-4 h-4" />
+                {submitting ? 'Creating…' : 'Create event'}
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={submitting}
+                className="px-4 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -630,6 +922,7 @@ export default function CalendarPage() {
   const [syncBusyIds, setSyncBusyIds] = useState<Set<string>>(new Set())
   const [disconnectBusyIds, setDisconnectBusyIds] = useState<Set<string>>(new Set())
   const [connectMessage, setConnectMessage] = useState<string | null>(null)
+  const [showCreateModal, setShowCreateModal] = useState(false)
 
   const range = useMemo(() => {
     if (viewMode === 'day') {
@@ -759,6 +1052,15 @@ export default function CalendarPage() {
     ),
     [connections],
   )
+
+  const handleCreateEventSuccess = async (message: string) => {
+    setConnectMessage(message)
+    await loadData()
+  }
+
+  const openCreateModal = () => {
+    setShowCreateModal(true)
+  }
 
   const handleConnectGoogle = async () => {
     if (!currentOrg?.id) return
@@ -892,6 +1194,16 @@ export default function CalendarPage() {
 
   return (
     <div className="p-4 md:p-6" data-testid="calendar-page">
+      {showCreateModal && isOrgAdmin && (
+        <CalendarCreateEventModal
+          connections={filterableConnections}
+          membersById={membersById}
+          defaultDate={anchorDate}
+          onClose={() => setShowCreateModal(false)}
+          onCreated={handleCreateEventSuccess}
+        />
+      )}
+
       {selectedEventDetails && (
         <CalendarEventDetailModal
           event={selectedEventDetails.event}
@@ -913,6 +1225,17 @@ export default function CalendarPage() {
               </h1>
             </div>
             <div className="flex items-center gap-2">
+              {isOrgAdmin && filterableConnections.some((c) => c.status === 'connected') && (
+                <button
+                  type="button"
+                  onClick={openCreateModal}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90"
+                  data-testid="calendar-create-event-button"
+                >
+                  <Plus className="w-4 h-4" />
+                  Create event
+                </button>
+              )}
               <div className="flex rounded-lg bg-surface-muted p-1">
                 <button
                   type="button"
