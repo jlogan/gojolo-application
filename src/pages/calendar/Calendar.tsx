@@ -989,9 +989,8 @@ export default function CalendarPage() {
                 <span className="text-sm text-gray-500">No connected calendars yet.</span>
               ) : (
                 filterableConnections.map((conn) => {
-                  const member = membersById.get(conn.user_id)
                   const active = selectedConnectionIds.has(conn.id)
-                  const chipLabel = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
+                  const chipLabel = connectionAccountLabel(conn)
                   const accent = getConnectionColorFromMap(conn.id, connectionColorMap)
                   return (
                     <button
