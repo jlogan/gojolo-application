@@ -220,6 +220,17 @@ export function formatEventTimeRange(
   return formatCalendarEventTime(event.starts_at, event.ends_at, event.all_day)
 }
 
+export function connectionCreateEventLabel(
+  conn: Pick<CalendarConnection, 'account_label' | 'email' | 'provider'>,
+): string {
+  const nickname = conn.account_label?.trim()
+  const email = conn.email?.trim()
+  if (nickname && (!email || nickname.toLowerCase() !== email.toLowerCase())) {
+    return email ? `${nickname} (${email})` : nickname
+  }
+  return email || conn.provider
+}
+
 export function connectionFilterLabel(
   member: CalendarTeamMember,
   conn: CalendarConnection,

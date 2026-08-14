@@ -33,6 +33,7 @@ import { usePermission } from '@/lib/usePermission'
 import {
   buildConnectionColorMap,
   connectionAccountLabel,
+  connectionCreateEventLabel,
   connectionEmailSecondary,
   connectionFilterLabel,
   connectionStatusLabel,
@@ -108,13 +109,11 @@ function parseAttendeeInput(raw: string): string[] {
 
 function CalendarCreateEventModal({
   connections,
-  membersById,
   defaultDate,
   onClose,
   onCreated,
 }: {
   connections: CalendarConnection[]
-  membersById: Map<string, CalendarTeamMember>
   defaultDate: Date
   onClose: () => void
   onCreated: (message: string) => Promise<void>
@@ -214,13 +213,9 @@ function CalendarCreateEventModal({
                 disabled={submitting}
                 className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
               >
-                {connected.map((conn) => {
-                  const member = membersById.get(conn.user_id)
-                  const label = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
-                  return (
-                    <option key={conn.id} value={conn.id}>{label}</option>
-                  )
-                })}
+                {connected.map((conn) => (
+                  <option key={conn.id} value={conn.id}>{connectionCreateEventLabel(conn)}</option>
+                ))}
               </select>
             </div>
 
@@ -1197,7 +1192,6 @@ export default function CalendarPage() {
       {showCreateModal && isOrgAdmin && (
         <CalendarCreateEventModal
           connections={filterableConnections}
-          membersById={membersById}
           defaultDate={anchorDate}
           onClose={() => setShowCreateModal(false)}
           onCreated={handleCreateEventSuccess}
