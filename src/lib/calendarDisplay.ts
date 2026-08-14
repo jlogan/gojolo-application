@@ -169,6 +169,50 @@ export function canViewEventRichDetails(
   return !isEventMasked(event.visibility, event.user_id, viewerUserId)
 }
 
+function normalizeCalendarEmail(email: string | null | undefined): string | null {
+  const trimmed = email?.trim().toLowerCase()
+  return trimmed || null
+}
+
+/** True when the connected Google account appears to have organized/created the event. */
+export function eventOrganizedByConnection(
+  event: Pick<CalendarEvent, 'organizer' | 'creator'>,
+  connection: Pick<CalendarConnection, 'email' | 'provider_account_id' | 'status'>,
+): boolean {
+  if (connection.status !== 'connected') return false
+
+  if (event.organizer?.self === true || event.creator?.self === true) return true
+
+  const connectionEmails = new Set<string>()
+  const connEmail = normalizeCalendarEmail(connection.email)
+  if (connEmail) connectionEmails.add(connEmail)
+  const accountId = connection.provider_account_id?.trim()
+  if (accountId?.includes('@')) {
+    connectionEmails.add(accountId.toLowerCase())
+  }
+  if (connectionEmails.size === 0) return false
+
+  const organizerEmail = normalizeCalendarEmail(event.organizer?.email)
+  const creatorEmail = normalizeCalendarEmail(event.creator?.email)
+  if (organizerEmail && connectionEmails.has(organizerEmail)) return true
+  if (creatorEmail && connectionEmails.has(creatorEmail)) return true
+
+  return false
+}
+
+/** Whether account managers may edit/delete this event in the UI. */
+export function canManageCalendarEvent(
+  event: Pick<CalendarEvent, 'visibility' | 'user_id' | 'organizer' | 'creator' | 'connection_id'>,
+  connection: CalendarConnection | undefined,
+  viewerUserId: string | undefined,
+  canManageEvents: boolean,
+): boolean {
+  if (!canManageEvents) return false
+  if (!canViewEventRichDetails(event, viewerUserId)) return false
+  if (!connection) return false
+  return eventOrganizedByConnection(event, connection)
+}
+
 export function displayEventMeetingUrl(
   event: Pick<CalendarEvent, 'meeting_url' | 'visibility' | 'user_id'>,
   viewerUserId: string | undefined,

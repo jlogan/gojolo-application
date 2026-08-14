@@ -21,11 +21,31 @@ type CalendarSyncResponse = {
   redirectUri?: string | null
 }
 
-function parseInvokeError(error: unknown, data: CalendarSyncResponse | null): string {
-  if (data?.error) return data.error
-  if (data?.message && data.ok === false) return data.message
-  if (error && typeof error === 'object' && 'message' in error) {
-    return String((error as { message: string }).message)
+function messageFromResponseBody(body: CalendarSyncResponse | null | undefined): string | null {
+  if (!body) return null
+  if (body.message?.trim()) return body.message.trim()
+  if (body.error?.trim()) return body.error.trim()
+  return null
+}
+
+async function parseInvokeError(error: unknown, data: CalendarSyncResponse | null): Promise<string> {
+  const fromData = messageFromResponseBody(data)
+  if (fromData) return fromData
+
+  if (error && typeof error === 'object') {
+    if ('context' in error && error.context instanceof Response) {
+      try {
+        const body = await error.context.clone().json() as CalendarSyncResponse
+        const fromBody = messageFromResponseBody(body)
+        if (fromBody) return fromBody
+      } catch {
+        // ignore non-JSON error bodies
+      }
+    }
+    if ('message' in error) {
+      const msg = String((error as { message: string }).message)
+      if (msg && msg !== 'Edge Function returned a non-2xx status code') return msg
+    }
   }
   return 'Calendar request failed'
 }
@@ -34,7 +54,7 @@ export async function fetchCalendarSyncStatus(orgId: string): Promise<CalendarSy
   const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
     body: { orgId, action: 'status' },
   })
-  if (error) throw new Error(parseInvokeError(error, data))
+  if (error) throw new Error(await parseInvokeError(error, data))
   return data ?? {}
 }
 
@@ -48,7 +68,7 @@ export async function startGoogleCalendarConnect(orgId: string): Promise<string>
     },
   })
   if (error || !data?.authUrl) {
-    throw new Error(parseInvokeError(error, data ?? null))
+    throw new Error(await parseInvokeError(error, data ?? null))
   }
   return data.authUrl
 }
@@ -57,7 +77,7 @@ export async function syncGoogleCalendar(orgId: string, connectionId?: string): 
   const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
     body: { orgId, action: 'sync', provider: 'google', ...(connectionId ? { connectionId } : {}) },
   })
-  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   return data ?? {}
 }
 
@@ -65,7 +85,7 @@ export async function disconnectGoogleCalendar(orgId: string, connectionId?: str
   const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
     body: { orgId, action: 'disconnect', provider: 'google', ...(connectionId ? { connectionId } : {}) },
   })
-  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   return data ?? {}
 }
 
@@ -95,7 +115,7 @@ export async function createGoogleCalendarEvent(
       ...input,
     },
   })
-  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   if (data?.error) throw new Error(data.message ?? data.error)
   return data ?? {}
 }
@@ -112,7 +132,7 @@ export async function updateGoogleCalendarEvent(
       ...input,
     },
   })
-  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   if (data?.error) throw new Error(data.message ?? data.error)
   return data ?? {}
 }
@@ -129,7 +149,7 @@ export async function deleteGoogleCalendarEvent(
       ...input,
     },
   })
-  if (error) throw new Error(parseInvokeError(error, data ?? null))
+  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   if (data?.error) throw new Error(data.message ?? data.error)
   return data ?? {}
 }

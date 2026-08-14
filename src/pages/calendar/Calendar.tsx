@@ -55,6 +55,7 @@ import {
   getConnectionColorFromMap,
   getConnectionEventCardStyles,
   canViewEventRichDetails,
+  canManageCalendarEvent,
   sortConnectionsByDisplayLabel,
   type ConnectionColorMap,
 } from '@/lib/calendarDisplay'
@@ -68,7 +69,6 @@ import {
 } from '@/lib/calendarDescription'
 import {
   addCalendarDays,
-  CALENDAR_TIMEZONE,
   CALENDAR_TIMEZONE_LABEL,
   calendarDayKeyFromDate,
   endOfCalendarMonth,
@@ -76,13 +76,15 @@ import {
   formatCalendarDayHeading,
   formatCalendarDayLabel,
   formatCalendarMonthLabel,
-  getPartsInCalendarTz,
   nowInCalendarTz,
   sameCalendarDay,
   startOfCalendarDay,
   startOfCalendarMonth,
   startOfCalendarWeek,
   calendarDaysInMonth,
+  formatCalendarDateInputValue,
+  formatCalendarTimeInputValue,
+  resolveCalendarEventEndInstant,
 } from '@/lib/calendarTimezone'
 import type {
   CalendarConnection,
@@ -106,9 +108,26 @@ function ConnectionColorDot({ color, className = 'w-2 h-2' }: { color: string; c
   )
 }
 
-function formatDateInputValue(date: Date): string {
-  const parts = getPartsInCalendarTz(date)
-  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+function buildEditEventDefaults(editEvent: CalendarEvent) {
+  const endInstant = editEvent.all_day
+    ? new Date(editEvent.ends_at)
+    : resolveCalendarEventEndInstant(editEvent.starts_at, editEvent.ends_at)
+
+  return {
+    title: editEvent.title ?? '',
+    startDate: formatCalendarDateInputValue(new Date(editEvent.starts_at)),
+    endDate: formatCalendarDateInputValue(endInstant),
+    startTime: formatCalendarTimeInputValue(editEvent.starts_at),
+    endTime: formatCalendarTimeInputValue(endInstant.toISOString()),
+    allDay: editEvent.all_day,
+    description: editEvent.description ?? '',
+    location: editEvent.location ?? '',
+    attendeesRaw: attendeesToRaw(editEvent.attendees),
+    addGoogleMeet: Boolean(editEvent.meeting_url || editEvent.conference_data?.entryPoints?.length),
+    reminder: reminderFromEvent(editEvent.reminders),
+    visibility: visibilityFromEvent(editEvent.visibility),
+    availability: 'busy' as CreateCalendarEventAvailability,
+  }
 }
 
 function parseAttendeeInput(raw: string): string[] {
@@ -116,17 +135,6 @@ function parseAttendeeInput(raw: string): string[] {
     .split(/[\n,;]+/)
     .map((s) => s.trim())
     .filter(Boolean)
-}
-
-function formatTimeInputValue(iso: string): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: CALENDAR_TIMEZONE,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(iso))
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00'
-  return `${get('hour')}:${get('minute')}`
 }
 
 function reminderFromEvent(reminders: CalendarReminders | null): CreateCalendarEventReminder {
@@ -173,22 +181,8 @@ function CalendarEventFormModal({
     () => sortConnectionsByDisplayLabel(connections.filter((c) => c.status === 'connected')),
     [connections],
   )
-  const defaultDateStr = formatDateInputValue(defaultDate)
-  const editDefaults = editEvent ? {
-    title: editEvent.title ?? '',
-    startDate: formatDateInputValue(new Date(editEvent.starts_at)),
-    endDate: formatDateInputValue(new Date(editEvent.ends_at)),
-    startTime: formatTimeInputValue(editEvent.starts_at),
-    endTime: formatTimeInputValue(editEvent.ends_at),
-    allDay: editEvent.all_day,
-    description: editEvent.description ?? '',
-    location: editEvent.location ?? '',
-    attendeesRaw: attendeesToRaw(editEvent.attendees),
-    addGoogleMeet: Boolean(editEvent.meeting_url || editEvent.conference_data?.entryPoints?.length),
-    reminder: reminderFromEvent(editEvent.reminders),
-    visibility: visibilityFromEvent(editEvent.visibility),
-    availability: 'busy' as CreateCalendarEventAvailability,
-  } : null
+  const defaultDateStr = formatCalendarDateInputValue(defaultDate)
+  const editDefaults = editEvent ? buildEditEventDefaults(editEvent) : null
 
   const [connectionId, setConnectionId] = useState(
     mode === 'edit' && editEvent ? editEvent.connection_id : (connected[0]?.id ?? ''),
@@ -570,8 +564,7 @@ function CalendarEventDetailModal({
   const organizerLabel = showRichDetails ? formatPersonLabel(event.organizer) : null
   const creatorLabel = showRichDetails ? formatPersonLabel(event.creator) : null
   const descriptionContent = description ? renderSanitizedDescription(description) : null
-  const isGojoloEvent = event.source === 'gojolo'
-  const showManageActions = canManageEvent && isGojoloEvent
+  const showManageActions = canManageCalendarEvent(event, conn, viewerUserId, canManageEvent)
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {

@@ -591,7 +591,7 @@ function parseGoogleEventTimes(event: GoogleEvent): { starts_at: string; ends_at
 function googleEventToRow(
   connection: CalendarConnectionRow,
   event: GoogleEvent,
-  extras?: { source?: string; created_by_user_id?: string },
+  extras?: { source?: string | null; created_by_user_id?: string },
 ): Record<string, unknown> | null {
   const times = parseGoogleEventTimes(event)
   if (!times) return null
@@ -1103,6 +1103,42 @@ type CalendarEventRow = {
   meeting_url: string | null
   created_by_user_id: string | null
   attendees: Array<{ email?: string }> | null
+  organizer: CalendarPersonJson | null
+  creator: CalendarPersonJson | null
+}
+
+type CalendarPersonJson = {
+  email?: string | null
+  displayName?: string | null
+  self?: boolean
+}
+
+function normalizeCalendarEmail(email: string | null | undefined): string | null {
+  const trimmed = email?.trim().toLowerCase()
+  return trimmed || null
+}
+
+function isEventOrganizedByConnection(
+  event: { organizer?: CalendarPersonJson | null; creator?: CalendarPersonJson | null },
+  connection: CalendarConnectionRow,
+): boolean {
+  if (event.organizer?.self === true || event.creator?.self === true) return true
+
+  const connectionEmails = new Set<string>()
+  const connEmail = normalizeCalendarEmail(connection.email)
+  if (connEmail) connectionEmails.add(connEmail)
+  const accountId = connection.provider_account_id?.trim()
+  if (accountId?.includes('@')) {
+    connectionEmails.add(accountId.toLowerCase())
+  }
+  if (connectionEmails.size === 0) return false
+
+  const organizerEmail = normalizeCalendarEmail(event.organizer?.email)
+  const creatorEmail = normalizeCalendarEmail(event.creator?.email)
+  if (organizerEmail && connectionEmails.has(organizerEmail)) return true
+  if (creatorEmail && connectionEmails.has(creatorEmail)) return true
+
+  return false
 }
 
 function buildGoogleReminders(reminder: CreateEventReminder | undefined): { useDefault: boolean; overrides: { method: string; minutes: number }[] } {
@@ -1141,8 +1177,9 @@ function parseTimeOnly(value: string | undefined): { hour: number; minute: numbe
   if (!value?.trim()) return null
   const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim())
   if (!match) return null
-  const hour = Number(match[1])
+  const hourRaw = Number(match[1])
   const minute = Number(match[2])
+  const hour = hourRaw === 24 ? 0 : hourRaw
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null
   return { hour, minute }
 }
@@ -1233,7 +1270,7 @@ function buildGoogleEventPayload(body: CreateEventBody): {
   return { payload: googlePayload, attendeeEmails, addGoogleMeet, title }
 }
 
-async function getGojoloEventContext(
+async function getWritableEventContext(
   service: ReturnType<typeof createClient>,
   orgId: string,
   eventId: string,
@@ -1243,20 +1280,25 @@ async function getGojoloEventContext(
 > {
   const { data: event, error } = await service
     .from('calendar_events')
-    .select('id, org_id, connection_id, user_id, external_id, source, meeting_url, created_by_user_id, attendees')
+    .select('id, org_id, connection_id, user_id, external_id, source, meeting_url, created_by_user_id, attendees, organizer, creator')
     .eq('id', eventId)
     .eq('org_id', orgId)
     .maybeSingle()
 
   if (error) throw new Error(error.message)
   if (!event) return { error: 'not_found', status: 404, message: 'Event not found' }
-  if (event.source !== 'gojolo') {
-    return { error: 'forbidden', status: 403, message: 'Only GoJoLo-created events can be modified' }
-  }
 
   const connection = await getOrgConnection(service, orgId, 'google', event.connection_id)
   if (!connection || connection.status !== 'connected') {
     return { error: 'no_connection', status: 400, message: 'No connected calendar found for this event' }
+  }
+
+  if (!isEventOrganizedByConnection(event as CalendarEventRow, connection)) {
+    return {
+      error: 'forbidden',
+      status: 403,
+      message: 'This event was not organized by the connected Google account and cannot be modified',
+    }
   }
 
   const pair = await getConnectionWithTokens(service, connection)
@@ -1439,7 +1481,7 @@ async function handleUpdateEvent(
   const built = buildGoogleEventPayload(body)
   if ('error' in built) return json({ error: built.error }, built.status)
 
-  const context = await getGojoloEventContext(service, orgId, eventId)
+  const context = await getWritableEventContext(service, orgId, eventId)
   if ('error' in context && 'status' in context) {
     return json({ error: context.error, message: context.message }, context.status)
   }
@@ -1448,7 +1490,7 @@ async function handleUpdateEvent(
   const { payload: googlePayload, attendeeEmails, addGoogleMeet } = built
 
   const hasExistingMeet = Boolean(event.meeting_url?.trim())
-  const shouldAddMeet = addGoogleMeet && !hasExistingMeet
+  const shouldAddMeet = addGoogleMeet === true && !hasExistingMeet
   if (!shouldAddMeet) {
     delete googlePayload.conferenceData
   }
@@ -1467,8 +1509,8 @@ async function handleUpdateEvent(
   if (!updated.id) throw new Error('Google did not return an event id')
 
   const row = googleEventToRow(connection, updated, {
-    source: 'gojolo',
-    created_by_user_id: event.created_by_user_id ?? undefined,
+    source: event.source,
+    ...(event.created_by_user_id != null ? { created_by_user_id: event.created_by_user_id } : {}),
   })
   if (!row) throw new Error('Failed to map updated event')
 
@@ -1501,7 +1543,7 @@ async function handleDeleteEvent(
   const eventId = body.eventId?.trim()
   if (!eventId) return json({ error: 'eventId required' }, 400)
 
-  const context = await getGojoloEventContext(service, orgId, eventId)
+  const context = await getWritableEventContext(service, orgId, eventId)
   if ('error' in context && 'status' in context) {
     return json({ error: context.error, message: context.message }, context.status)
   }

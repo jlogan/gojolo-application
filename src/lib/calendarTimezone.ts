@@ -204,3 +204,35 @@ export function eventCalendarDayKey(startsAt: string, allDay = false): string {
   if (allDay) return startsAt.slice(0, 10)
   return calendarDayKeyFromDate(new Date(startsAt))
 }
+
+/** Value for `<input type="date">` in the calendar timezone. */
+export function formatCalendarDateInputValue(date: Date): string {
+  const parts = getPartsInCalendarTz(date)
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
+/** Value for `<input type="time">` in the calendar timezone (24-hour HH:mm). */
+export function formatCalendarTimeInputValue(iso: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: CALENDAR_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(iso))
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00'
+  let hour = get('hour')
+  const minute = get('minute')
+  // Some Intl implementations emit "24" at midnight instead of "00".
+  if (hour === '24') hour = '00'
+  return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
+}
+
+export function resolveCalendarEventEndInstant(startsAt: string, endsAt: string): Date {
+  const start = new Date(startsAt)
+  const end = new Date(endsAt)
+  if (Number.isNaN(start.getTime())) return new Date()
+  if (Number.isNaN(end.getTime()) || end.getTime() <= start.getTime()) {
+    return new Date(start.getTime() + 60 * 60 * 1000)
+  }
+  return end
+}
