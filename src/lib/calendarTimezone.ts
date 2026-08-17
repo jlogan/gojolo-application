@@ -9,6 +9,9 @@ export type CalendarDateParts = {
   day: number
 }
 
+/** US calendar weeks start on Sunday (0 = Sun … 6 = Sat). */
+export const CALENDAR_WEEK_START_DAY = 0 as const
+
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -114,10 +117,13 @@ function dayOfWeekInCalendarTz(date: Date): number {
   return WEEKDAY_INDEX[weekday] ?? 0
 }
 
+/** Start of the calendar week containing `date` (weeks begin Sunday). */
 export function startOfCalendarWeek(date: Date): Date {
   const parts = getPartsInCalendarTz(date)
   const anchor = zonedTimeToUtc(parts.year, parts.month, parts.day, 12)
-  return addCalendarDays(anchor, -dayOfWeekInCalendarTz(anchor))
+  const weekday = dayOfWeekInCalendarTz(anchor)
+  const daysFromWeekStart = (weekday - CALENDAR_WEEK_START_DAY + 7) % 7
+  return addCalendarDays(anchor, -daysFromWeekStart)
 }
 
 export function startOfCalendarMonth(date: Date): Date {

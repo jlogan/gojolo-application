@@ -145,6 +145,28 @@ function sanitizeReturnPath(path: string | undefined): string {
   return path.split('?')[0] || '/calendar'
 }
 
+function encodeOAuthState(connectionId: string, nonce: string, returnPath: string): string {
+  const pathB64 = btoa(returnPath).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return `${connectionId}.${nonce}.${pathB64}`
+}
+
+function parseOAuthState(state: string): { connectionId: string; nonce: string; returnPath: string } {
+  const parts = state.split('.')
+  const connectionId = parts[0] ?? ''
+  const nonce = parts[1] ?? ''
+  let returnPath = '/calendar'
+  if (parts.length >= 3 && parts[2]) {
+    try {
+      const padded = parts[2].replace(/-/g, '+').replace(/_/g, '/')
+      const padLen = (4 - (padded.length % 4)) % 4
+      returnPath = sanitizeReturnPath(atob(padded + '='.repeat(padLen)))
+    } catch {
+      // keep default return path for legacy state values
+    }
+  }
+  return { connectionId, nonce, returnPath }
+}
+
 function appRedirect(path: string, params: Record<string, string>): string {
   const url = new URL(path, appBaseUrl())
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
@@ -294,7 +316,8 @@ async function handleStart(
 
   const connection = await createPendingConnection(service, orgId, userId, provider)
   const nonce = randomNonce()
-  const state = `${connection.id}.${nonce}`
+  const safeReturnPath = sanitizeReturnPath(returnPath)
+  const state = encodeOAuthState(connection.id, nonce, safeReturnPath)
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
 
   const { error: tokenError } = await service.from('calendar_connection_tokens').upsert({
@@ -319,7 +342,7 @@ async function handleStart(
     ok: true,
     authUrl: authUrl.toString(),
     connectionId: connection.id,
-    returnPath: sanitizeReturnPath(returnPath),
+    returnPath: safeReturnPath,
   })
 }
 
@@ -588,6 +611,33 @@ function parseGoogleEventTimes(event: GoogleEvent): { starts_at: string; ends_at
   }
 }
 
+function connectionEmails(connection: CalendarConnectionRow): Set<string> {
+  const emails = new Set<string>()
+  const connEmail = normalizeCalendarEmail(connection.email)
+  if (connEmail) emails.add(connEmail)
+  const accountId = connection.provider_account_id?.trim()
+  if (accountId?.includes('@')) {
+    emails.add(accountId.toLowerCase())
+  }
+  return emails
+}
+
+function isEventDeclinedByConnection(event: GoogleEvent, connection: CalendarConnectionRow): boolean {
+  const attendees = event.attendees
+  if (!attendees?.length) return false
+
+  const emails = connectionEmails(connection)
+
+  for (const attendee of attendees) {
+    if (attendee.responseStatus !== 'declined') continue
+    if (attendee.self === true) return true
+    const email = normalizeCalendarEmail(attendee.email)
+    if (email && emails.has(email)) return true
+  }
+
+  return false
+}
+
 function googleEventToRow(
   connection: CalendarConnectionRow,
   event: GoogleEvent,
@@ -684,6 +734,16 @@ async function syncGoogleConnection(
     const items = (data.items ?? []) as GoogleEvent[]
     for (const event of items) {
       if (!event.id) continue
+
+      if (isEventDeclinedByConnection(event, connection)) {
+        await service
+          .from('calendar_events')
+          .delete()
+          .eq('connection_id', connection.id)
+          .eq('external_id', event.id)
+        continue
+      }
+
       seenExternalIds.add(event.id)
 
       const row = googleEventToRow(connection, event)
@@ -738,17 +798,19 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
   const code = url.searchParams.get('code')
   const state = url.searchParams.get('state')
   const oauthError = url.searchParams.get('error')
+  const parsedState = state ? parseOAuthState(state) : null
+  const returnPath = parsedState?.returnPath ?? '/calendar'
 
   if (oauthError) {
-    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message: oauthError }))
+    return htmlRedirect(appRedirect(returnPath, { calendar: 'error', message: oauthError }))
   }
-  if (!code || !state) {
-    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message: 'missing_code_or_state' }))
+  if (!code || !state || !parsedState) {
+    return htmlRedirect(appRedirect(returnPath, { calendar: 'error', message: 'missing_code_or_state' }))
   }
 
-  const [connectionId, nonce] = state.split('.')
+  const { connectionId, nonce } = parsedState
   if (!connectionId || !nonce) {
-    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message: 'invalid_state' }))
+    return htmlRedirect(appRedirect(returnPath, { calendar: 'error', message: 'invalid_state' }))
   }
 
   try {
@@ -854,7 +916,7 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
     }
     await syncGoogleConnection(service, targetConnection, updatedTokens)
 
-    return htmlRedirect(appRedirect('/calendar', { calendar: 'connected', provider: 'google' }))
+    return htmlRedirect(appRedirect(returnPath, { calendar: 'connected', provider: 'google' }))
   } catch (err) {
     const message = encodeURIComponent((err as Error).message)
     if (connectionId) {
@@ -864,7 +926,7 @@ async function handleCallback(service: ReturnType<typeof createClient>, req: Req
         updated_at: new Date().toISOString(),
       }).eq('id', connectionId)
     }
-    return htmlRedirect(appRedirect('/calendar', { calendar: 'error', message }))
+    return htmlRedirect(appRedirect(returnPath, { calendar: 'error', message }))
   }
 }
 

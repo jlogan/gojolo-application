@@ -20,7 +20,9 @@ import {
   Hash,
   FileText,
   CreditCard,
+  CalendarDays,
 } from 'lucide-react'
+import AdminCalendarsSection from '@/pages/admin/AdminCalendarsSection'
 
 type Role = { id: string; name: string }
 type Invitation = {
@@ -72,11 +74,12 @@ type SlackConfig = {
   notify_on_mention: boolean; notify_on_thread_close: boolean
   notify_on_task_created?: boolean; notify_on_task_status_change?: boolean; notify_on_task_comment?: boolean
 }
-type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'resume_templates' | 'payments' | 'settings'
+type AdminSection = 'users' | 'imap' | 'phone_numbers' | 'slack' | 'resume_templates' | 'payments' | 'calendars' | 'settings'
 
 const SECTIONS: { id: AdminSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'users', label: 'Users & Roles', icon: Users },
   { id: 'imap', label: 'Email accounts', icon: Inbox },
+  { id: 'calendars', label: 'Calendars', icon: CalendarDays },
   { id: 'slack', label: 'Slack', icon: Hash },
   { id: 'phone_numbers', label: 'Phone numbers', icon: Phone },
   { id: 'resume_templates', label: 'Resume Templates', icon: FileText },
@@ -227,9 +230,14 @@ Bank Address: 210 E Main St, Rogersville TN 37857`)
       return
     }
     if (location.pathname === '/admin') {
+      const calendarResult = new URLSearchParams(location.search).get('calendar')
+      if (calendarResult) {
+        setSection('calendars')
+        return
+      }
       setSection((prev) => (prev === 'resume_templates' ? 'users' : prev))
     }
-  }, [location.pathname])
+  }, [location.pathname, location.search])
 
   const loadSlackUsersAndMappings = useCallback(async () => {
     if (!currentOrg?.id) return
@@ -1768,6 +1776,10 @@ Bank Address: 210 E Main St, Rogersville TN 37857`)
 
           {section === 'resume_templates' && (
             <ResumeTemplatesPage embeddedInAdmin />
+          )}
+
+          {section === 'calendars' && (
+            <AdminCalendarsSection />
           )}
 
           {section === 'payments' && (

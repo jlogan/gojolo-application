@@ -58,13 +58,16 @@ export async function fetchCalendarSyncStatus(orgId: string): Promise<CalendarSy
   return data ?? {}
 }
 
-export async function startGoogleCalendarConnect(orgId: string): Promise<string> {
+export async function startGoogleCalendarConnect(
+  orgId: string,
+  returnPath = '/calendar',
+): Promise<string> {
   const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
     body: {
       orgId,
       action: 'start',
       provider: 'google' satisfies CalendarProvider,
-      returnPath: '/calendar',
+      returnPath,
     },
   })
   if (error || !data?.authUrl) {

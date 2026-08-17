@@ -4,7 +4,6 @@ import {
   Bell,
   CalendarDays,
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
@@ -13,9 +12,7 @@ import {
   Pencil,
   Phone,
   Plus,
-  RefreshCw,
   Trash2,
-  Unlink,
   User,
   Users,
   Video,
@@ -25,13 +22,10 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useOrg } from '@/contexts/OrgContext'
 import { supabase } from '@/lib/supabase'
 import {
-  disconnectGoogleCalendar,
   createGoogleCalendarEvent,
   deleteGoogleCalendarEvent,
   fetchCalendarSyncStatus,
   startGoogleCalendarConnect,
-  syncGoogleCalendar,
-  updateCalendarConnectionLabel,
   updateGoogleCalendarEvent,
 } from '@/lib/calendarSync'
 import { usePermission } from '@/lib/usePermission'
@@ -39,9 +33,6 @@ import {
   buildConnectionColorMap,
   connectionAccountLabel,
   connectionCreateEventLabel,
-  connectionEmailSecondary,
-  connectionFilterLabel,
-  connectionStatusLabel,
   displayEventDescription,
   displayEventHtmlLink,
   displayEventLocation,
@@ -50,12 +41,12 @@ import {
   eventOwnerLabel,
   formatEventStartTime,
   formatEventTimeRange,
-  formatLastSynced,
   getConnectionChipActiveStyles,
   getConnectionColorFromMap,
   getConnectionEventCardStyles,
   canViewEventRichDetails,
   canManageCalendarEvent,
+  isEventDeclinedByConnection,
   sortConnectionsByDisplayLabel,
   type ConnectionColorMap,
 } from '@/lib/calendarDisplay'
@@ -929,164 +920,6 @@ function CalendarDayCard({
   )
 }
 
-function ConnectedCalendarCard({
-  conn,
-  accent,
-  syncBusy,
-  disconnectBusy,
-  canEditLabel,
-  canSync,
-  canDisconnect,
-  onSync,
-  onDisconnect,
-  onLabelSaved,
-}: {
-  conn: CalendarConnection
-  accent: string
-  syncBusy: boolean
-  disconnectBusy: boolean
-  canEditLabel: boolean
-  canSync: boolean
-  canDisconnect: boolean
-  onSync: () => void
-  onDisconnect: (label: string) => void
-  onLabelSaved: () => Promise<void>
-}) {
-  const { currentOrg } = useOrg()
-  const [editingLabel, setEditingLabel] = useState(false)
-  const [labelDraft, setLabelDraft] = useState('')
-  const [labelBusy, setLabelBusy] = useState(false)
-  const [labelMessage, setLabelMessage] = useState<string | null>(null)
-
-  const label = connectionAccountLabel(conn)
-  const emailSecondary = connectionEmailSecondary(conn)
-
-  const startEdit = () => {
-    setLabelDraft(label)
-    setLabelMessage(null)
-    setEditingLabel(true)
-  }
-
-  const cancelEdit = () => {
-    setEditingLabel(false)
-    setLabelDraft('')
-    setLabelMessage(null)
-  }
-
-  const saveLabel = async () => {
-    if (!currentOrg?.id) return
-    setLabelBusy(true)
-    setLabelMessage(null)
-    try {
-      await updateCalendarConnectionLabel(currentOrg.id, conn.id, labelDraft)
-      setEditingLabel(false)
-      setLabelMessage('Nickname saved')
-      await onLabelSaved()
-    } catch (err) {
-      setLabelMessage((err as Error).message)
-    } finally {
-      setLabelBusy(false)
-    }
-  }
-
-  return (
-    <li className="rounded-lg border border-border bg-surface-muted/40 p-3">
-      {editingLabel ? (
-        <div className="space-y-2">
-          <input
-            type="text"
-            value={labelDraft}
-            onChange={(e) => setLabelDraft(e.target.value)}
-            disabled={labelBusy}
-            placeholder="Calendar nickname"
-            className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void saveLabel()
-              if (e.key === 'Escape') cancelEdit()
-            }}
-          />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => void saveLabel()}
-              disabled={labelBusy}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50"
-            >
-              <Check className="w-3.5 h-3.5" />
-              {labelBusy ? 'Saving…' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={cancelEdit}
-              disabled={labelBusy}
-              className="px-2.5 py-1.5 rounded-lg border border-border text-xs text-gray-300 hover:bg-surface-muted disabled:opacity-50"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <div className="flex items-start gap-2">
-            <ConnectionColorDot color={accent} className="w-2 h-2 mt-1.5" />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-white truncate">{label}</p>
-              {emailSecondary && (
-                <p className="text-xs text-gray-500 truncate mt-0.5">{emailSecondary}</p>
-              )}
-            </div>
-          </div>
-          {canEditLabel && (
-            <button
-              type="button"
-              onClick={startEdit}
-              className="text-xs text-accent hover:underline"
-            >
-              Edit nickname
-            </button>
-          )}
-        </div>
-      )}
-      <p className="text-xs text-gray-400 mt-2">
-        {connectionStatusLabel(conn.status)} · Last synced: {formatLastSynced(conn.last_synced_at)}
-      </p>
-      {conn.sync_error && (
-        <p className="text-xs text-red-400 mt-0.5 truncate">{conn.sync_error}</p>
-      )}
-      {labelMessage && (
-        <p className={`text-xs mt-1 ${labelMessage.includes('saved') ? 'text-green-400' : 'text-red-400'}`}>
-          {labelMessage}
-        </p>
-      )}
-      <div className="flex flex-wrap gap-2 mt-3">
-        {canSync && (
-          <button
-            type="button"
-            onClick={onSync}
-            disabled={syncBusy}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
-          >
-            <RefreshCw className={`w-4 h-4 ${syncBusy ? 'animate-spin' : ''}`} />
-            {syncBusy ? 'Syncing…' : 'Sync now'}
-          </button>
-        )}
-        {canDisconnect && (
-          <button
-            type="button"
-            onClick={() => onDisconnect(label)}
-            disabled={disconnectBusy}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm text-gray-300 hover:bg-surface-muted disabled:opacity-50"
-          >
-            <Unlink className="w-4 h-4" />
-            {disconnectBusy ? 'Disconnecting…' : 'Disconnect'}
-          </button>
-        )}
-      </div>
-    </li>
-  )
-}
-
 export default function CalendarPage() {
   const { user } = useAuth()
   const { currentOrg, isOrgAdmin } = useOrg()
@@ -1105,13 +938,9 @@ export default function CalendarPage() {
   const [loading, setLoading] = useState(true)
   const [googleConfigured, setGoogleConfigured] = useState<boolean | null>(null)
   const [connectBusy, setConnectBusy] = useState(false)
-  const [syncBusyIds, setSyncBusyIds] = useState<Set<string>>(new Set())
-  const [disconnectBusyIds, setDisconnectBusyIds] = useState<Set<string>>(new Set())
   const [connectMessage, setConnectMessage] = useState<string | null>(null)
   const [eventForm, setEventForm] = useState<{ mode: 'create' } | { mode: 'edit'; event: CalendarEvent } | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
-  const [showConnectedCalendars, setShowConnectedCalendars] = useState(false)
-  const [showConnectGoogle, setShowConnectGoogle] = useState(false)
 
   const range = useMemo(() => {
     if (viewMode === 'day') {
@@ -1218,16 +1047,6 @@ export default function CalendarPage() {
     [filterableConnections],
   )
 
-  const canSyncConnection = useCallback((_conn: CalendarConnection) => isOrgAdmin, [isOrgAdmin])
-
-  const canDisconnectConnection = useCallback((_conn: CalendarConnection) => {
-    return isOrgAdmin
-  }, [isOrgAdmin])
-
-  const canEditConnectionLabel = useCallback((_conn: CalendarConnection) => {
-    return isOrgAdmin
-  }, [isOrgAdmin])
-
   const membersById = useMemo(() => {
     const map = new Map<string, CalendarTeamMember>()
     for (const member of teamMembers) map.set(member.user_id, member)
@@ -1292,53 +1111,14 @@ export default function CalendarPage() {
     }
   }
 
-  const handleSyncGoogle = async (connectionId: string) => {
-    if (!currentOrg?.id) return
-    setSyncBusyIds((prev) => new Set(prev).add(connectionId))
-    setConnectMessage(null)
-    try {
-      const result = await syncGoogleCalendar(currentOrg.id, connectionId)
-      setConnectMessage(result.message ?? `Synced ${result.synced ?? 0} events`)
-      await loadData()
-    } catch (err) {
-      setConnectMessage((err as Error).message)
-    } finally {
-      setSyncBusyIds((prev) => {
-        const next = new Set(prev)
-        next.delete(connectionId)
-        return next
-      })
-    }
-  }
-
-  const handleDisconnectGoogle = async (connectionId: string, accountLabel: string) => {
-    if (!currentOrg?.id) return
-    if (!window.confirm(`Disconnect ${accountLabel}? Synced events for this account will be removed.`)) return
-    setDisconnectBusyIds((prev) => new Set(prev).add(connectionId))
-    setConnectMessage(null)
-    try {
-      const result = await disconnectGoogleCalendar(currentOrg.id, connectionId)
-      setConnectMessage(result.message ?? 'Calendar disconnected')
-      setSelectedConnectionIds((prev) => {
-        const next = new Set(prev)
-        next.delete(connectionId)
-        return next
-      })
-      await loadData()
-    } catch (err) {
-      setConnectMessage((err as Error).message)
-    } finally {
-      setDisconnectBusyIds((prev) => {
-        const next = new Set(prev)
-        next.delete(connectionId)
-        return next
-      })
-    }
-  }
-
   const filteredEvents = useMemo(
-    () => events.filter((e) => selectedConnectionIds.has(e.connection_id)),
-    [events, selectedConnectionIds],
+    () => events.filter((e) => {
+      if (!selectedConnectionIds.has(e.connection_id)) return false
+      const conn = connectionsById.get(e.connection_id)
+      if (conn && isEventDeclinedByConnection(e, conn)) return false
+      return true
+    }),
+    [events, selectedConnectionIds, connectionsById],
   )
 
   const eventsByDay = useMemo(() => {
@@ -1437,8 +1217,8 @@ export default function CalendarPage() {
         />
       )}
 
-      <div className="flex flex-col lg:flex-row lg:items-start gap-6">
-        <div className="flex-1 min-w-0">
+      <div>
+        <div className="max-w-full">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
             <div>
               <h1 className="text-xl font-semibold text-white flex items-center gap-2">
@@ -1524,17 +1304,40 @@ export default function CalendarPage() {
           </div>
           <p className="text-xs text-gray-500 mb-4">{CALENDAR_TIMEZONE_LABEL}</p>
 
-          {connectMessage && !isOrgAdmin && (
+          {connectMessage && (
             <p className={`text-sm mb-4 ${connectMessage.includes('failed') || connectMessage.toLowerCase().includes('error') ? 'text-red-400' : 'text-green-400'}`}>
               {connectMessage}
             </p>
           )}
 
           <div className="rounded-lg border border-border bg-surface-muted/30 p-3 mb-4">
-            <div className="flex items-center gap-2 text-sm text-gray-300 mb-2">
-              <Users className="w-4 h-4" />
-              <span className="font-medium">Calendars</span>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2 text-sm text-gray-300">
+                <Users className="w-4 h-4" />
+                <span className="font-medium">Calendars</span>
+              </div>
+              {isOrgAdmin && googleConfigured === true && (
+                <button
+                  type="button"
+                  onClick={() => void handleConnectGoogle()}
+                  disabled={connectBusy}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-border text-xs font-medium text-gray-300 hover:bg-surface-muted disabled:opacity-50 shrink-0"
+                  data-testid="connect-google-calendar"
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  {connectBusy
+                    ? 'Redirecting…'
+                    : myConnections.some((c) => c.status === 'connected' || c.status === 'error')
+                      ? 'Connect another Google account'
+                      : 'Connect Google Calendar'}
+                </button>
+              )}
             </div>
+            {isOrgAdmin && googleConfigured === false && (
+              <p className="text-xs text-gray-500 mb-2">
+                Google Calendar OAuth is not configured. Connect accounts in Admin → Calendars once secrets are set.
+              </p>
+            )}
             <div className="flex flex-wrap gap-2">
               {sortedFilterableConnections.length === 0 ? (
                 <span className="text-sm text-gray-500">No connected calendars yet.</span>
@@ -1598,107 +1401,6 @@ export default function CalendarPage() {
             </div>
           )}
         </div>
-
-        {isOrgAdmin && (
-        <aside className="w-full lg:w-80 shrink-0 space-y-4">
-          {connectMessage && (
-            <p className={`text-sm ${connectMessage.includes('failed') ? 'text-red-400' : 'text-green-400'}`}>
-              {connectMessage}
-            </p>
-          )}
-
-          {isOrgAdmin && sortedFilterableConnections.length > 0 && (
-            <section className="rounded-lg border border-border bg-surface-muted/20 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setShowConnectedCalendars((open) => !open)}
-                className="w-full flex items-center justify-between gap-2 p-4 text-left hover:bg-surface-muted/40 transition-colors"
-                aria-expanded={showConnectedCalendars}
-              >
-                <span className="text-sm font-semibold text-white flex items-center gap-2">
-                  <CalendarDays className="w-4 h-4" />
-                  Connected calendars
-                  <span className="text-xs font-normal text-gray-500">({sortedFilterableConnections.length})</span>
-                </span>
-                <ChevronDown className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${showConnectedCalendars ? 'rotate-180' : ''}`} />
-              </button>
-              {showConnectedCalendars && (
-              <ul className="space-y-3 px-4 pb-4">
-                {sortedFilterableConnections.map((conn) => {
-                  const member = membersById.get(conn.user_id)
-                  const cardLabel = member ? connectionFilterLabel(member, conn) : connectionAccountLabel(conn)
-                  return (
-                    <ConnectedCalendarCard
-                      key={conn.id}
-                      conn={conn}
-                      accent={getConnectionColorFromMap(conn.id, connectionColorMap)}
-                      syncBusy={syncBusyIds.has(conn.id)}
-                      disconnectBusy={disconnectBusyIds.has(conn.id)}
-                      canEditLabel={canEditConnectionLabel(conn)}
-                      canSync={canSyncConnection(conn)}
-                      canDisconnect={canDisconnectConnection(conn)}
-                      onSync={() => void handleSyncGoogle(conn.id)}
-                      onDisconnect={() => void handleDisconnectGoogle(conn.id, cardLabel)}
-                      onLabelSaved={loadData}
-                    />
-                  )
-                })}
-              </ul>
-              )}
-            </section>
-          )}
-
-          {isOrgAdmin && (
-            <section className="rounded-lg border border-dashed border-border bg-surface-muted/20 overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setShowConnectGoogle((open) => !open)}
-                className="w-full flex items-center justify-between gap-2 p-4 text-left hover:bg-surface-muted/40 transition-colors"
-                aria-expanded={showConnectGoogle}
-              >
-                <span className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Link2 className="w-4 h-4" />
-                  Connect Google Calendar
-                </span>
-                <ChevronDown className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${showConnectGoogle ? 'rotate-180' : ''}`} />
-              </button>
-
-              {showConnectGoogle && (
-              <div className="px-4 pb-4 space-y-3">
-                {googleConfigured === false && (
-                  <div className="text-sm text-gray-400 space-y-2">
-                    <p>Google Calendar OAuth is not configured yet. A workspace admin must set Supabase secrets:</p>
-                    <ul className="list-disc list-inside text-xs text-gray-500 space-y-1">
-                      <li><code>GOOGLE_CALENDAR_CLIENT_ID</code> and <code>GOOGLE_CALENDAR_CLIENT_SECRET</code></li>
-                      <li><code>ENCRYPTION_KEY</code> (64 hex chars — same as IMAP vault)</li>
-                    </ul>
-                    <p className="text-xs text-gray-500">
-                      In Google Cloud Console, add redirect URI:
-                      {' '}
-                      <code className="break-all">https://YOUR_PROJECT_REF.supabase.co/functions/v1/calendar-sync?action=callback</code>
-                    </p>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={handleConnectGoogle}
-                  disabled={connectBusy || googleConfigured !== true}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
-                  data-testid="connect-google-calendar"
-                >
-                  <Link2 className="w-4 h-4" />
-                  {connectBusy
-                    ? 'Redirecting…'
-                    : myConnections.some((c) => c.status === 'connected' || c.status === 'error')
-                      ? 'Connect another Google account'
-                      : 'Connect Google Calendar'}
-                </button>
-              </div>
-              )}
-            </section>
-          )}
-        </aside>
-        )}
       </div>
     </div>
   )

@@ -174,6 +174,39 @@ function normalizeCalendarEmail(email: string | null | undefined): string | null
   return trimmed || null
 }
 
+function connectionEmails(
+  connection: Pick<CalendarConnection, 'email' | 'provider_account_id'>,
+): Set<string> {
+  const emails = new Set<string>()
+  const connEmail = normalizeCalendarEmail(connection.email)
+  if (connEmail) emails.add(connEmail)
+  const accountId = connection.provider_account_id?.trim()
+  if (accountId?.includes('@')) {
+    emails.add(accountId.toLowerCase())
+  }
+  return emails
+}
+
+/** True when the connected account declined this event (attendee self or email match). */
+export function isEventDeclinedByConnection(
+  event: Pick<CalendarEvent, 'attendees'>,
+  connection: Pick<CalendarConnection, 'email' | 'provider_account_id'>,
+): boolean {
+  const attendees = event.attendees
+  if (!attendees?.length) return false
+
+  const emails = connectionEmails(connection)
+
+  for (const attendee of attendees) {
+    if (attendee.responseStatus !== 'declined') continue
+    if (attendee.self === true) return true
+    const email = normalizeCalendarEmail(attendee.email)
+    if (email && emails.has(email)) return true
+  }
+
+  return false
+}
+
 /** True when the connected Google account appears to have organized/created the event. */
 export function eventOrganizedByConnection(
   event: Pick<CalendarEvent, 'organizer' | 'creator'>,
