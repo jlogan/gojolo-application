@@ -4,7 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
-import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
+import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, invoiceEmailActionButtonClass, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
 import { Plus, FileText, Search, Send, Pencil, CircleStop, Clock } from 'lucide-react'
 
 type InvoiceRow = {
@@ -109,10 +109,6 @@ function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
 
 function invoiceSendLabel(inv: InvoiceRow): string {
   return getInvoiceEmailActionLabels(resolveInvoiceEmailKind(inv)).short
-}
-
-function invoiceSendLabelLong(inv: InvoiceRow): string {
-  return getInvoiceEmailActionLabels(resolveInvoiceEmailKind(inv)).long
 }
 
 function SortHeader({
@@ -458,17 +454,17 @@ export default function InvoicesList() {
                           <Link
                             to={getInvoiceSendPath(inv)}
                             onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                            className={invoiceEmailActionButtonClass('send')}
                           >
-                            <Send className="w-3.5 h-3.5" /> {invoiceSendLabel(inv)}
+                            <Send className="w-3.5 h-3.5 shrink-0" /> {invoiceSendLabel(inv)}
                           </Link>
                           {getInvoiceFollowUpPath(inv) && (
                             <Link
                               to={getInvoiceFollowUpPath(inv)!}
                               onClick={(e) => e.stopPropagation()}
-                              className="inline-flex items-center gap-1 rounded-lg bg-red-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                              className={invoiceEmailActionButtonClass('followup')}
                             >
-                              <Clock className="w-3.5 h-3.5" /> Follow Up
+                              <Clock className="w-3.5 h-3.5 shrink-0" /> Follow Up
                             </Link>
                           )}
                         </>
@@ -523,17 +519,17 @@ export default function InvoicesList() {
                         <Link
                           to={getInvoiceSendPath(inv)}
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                          className={invoiceEmailActionButtonClass('send')}
                         >
-                          <Send className="w-3.5 h-3.5" /> {invoiceSendLabelLong(inv)}
+                          <Send className="w-3.5 h-3.5 shrink-0" /> {invoiceSendLabel(inv)}
                         </Link>
                         {getInvoiceFollowUpPath(inv) && (
                           <Link
                             to={getInvoiceFollowUpPath(inv)!}
                             onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 rounded-lg bg-red-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                            className={invoiceEmailActionButtonClass('followup')}
                           >
-                            <Clock className="w-3.5 h-3.5" /> Follow Up on Overdue Invoice
+                            <Clock className="w-3.5 h-3.5 shrink-0" /> Follow Up
                           </Link>
                         )}
                       </div>

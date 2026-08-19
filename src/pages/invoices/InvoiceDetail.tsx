@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
-import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
+import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, invoiceEmailActionButtonClass, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
 import DateInput from '@/components/DateInput'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
@@ -497,18 +497,18 @@ export default function InvoiceDetail() {
         {canSendInvoice && (
           <Link
             to={getInvoiceSendPath(invoice)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
+            className={invoiceEmailActionButtonClass('send')}
           >
-            <Send size={14} /> {sendLabels.long}
+            <Send className="w-3.5 h-3.5 shrink-0" /> {sendLabels.short}
           </Link>
         )}
 
         {followUpPath && (
           <Link
             to={followUpPath}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700"
+            className={invoiceEmailActionButtonClass('followup')}
           >
-            <Clock size={14} /> Follow Up on Overdue Invoice
+            <Clock className="w-3.5 h-3.5 shrink-0" /> Follow Up
           </Link>
         )}
 

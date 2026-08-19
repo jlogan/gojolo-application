@@ -252,13 +252,13 @@ export default function Inbox() {
       }, () => setFilter('all'))
   }, [urlThreadId, threads, currentOrg?.id])
 
-  // Update browser URL when thread selection changes
+  // Update browser URL when thread selection changes (preserve query params e.g. invoice draft deep links)
   useEffect(() => {
     const currentPath = window.location.pathname
     const targetPath = selectedThreadId ? `/inbox/${selectedThreadId}` : '/inbox'
     if (currentPath !== targetPath) {
       console.log('[Inbox:nav] navigate()', { from: currentPath, to: targetPath, selectedThreadId })
-      navigate(targetPath, { replace: true })
+      navigate({ pathname: targetPath, search: window.location.search }, { replace: true })
     }
   }, [selectedThreadId, navigate])
   const [messages, setMessages] = useState<InboxMessage[]>([])
@@ -345,6 +345,7 @@ export default function Inbox() {
   /** When set (from /inbox/:threadId?resendInvoice=... or ?followUpInvoice=...), a successful send updates invoice email_sent_at. */
   const invoiceInboxDraftContextRef = useRef<{ invoiceId: string } | null>(null)
   const invoiceInboxDraftProcessedRef = useRef<string | null>(null)
+  const invoiceInboxDraftExpandIdRef = useRef<string | null>(null)
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -578,9 +579,10 @@ export default function Inbox() {
     setReplyAttachments([])
   }, [])
 
-  const fetchMessages = useCallback(async (tid: string) => {
-    debugLog('fetchMessages', { event: 'START', threadId: tid }, tid)
-    setMessagesLoading(true)
+  const fetchMessages = useCallback(async (tid: string, options?: { background?: boolean }) => {
+    const background = options?.background ?? false
+    debugLog('fetchMessages', { event: 'START', threadId: tid, background }, tid)
+    if (!background) setMessagesLoading(true)
     let msgs: InboxMessage[] = []
     const { data, error: queryError } = await supabase.from('inbox_messages')
       .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, is_draft')
@@ -639,8 +641,15 @@ export default function Inbox() {
     }
 
     setMessages(msgs)
-    setMessagesLoading(false)
-    setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+    if (!background) setMessagesLoading(false)
+
+    const expandDraftId = invoiceInboxDraftExpandIdRef.current
+    if (expandDraftId && msgs.some((m) => m.id === expandDraftId)) {
+      setExpandedMsgs((prev) => new Set([...prev, expandDraftId]))
+      setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+    } else if (!background) {
+      setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+    }
 
     // Mark as read
     if (userId) {
@@ -934,7 +943,7 @@ export default function Inbox() {
         fetchThreadsRef.current()
         const changedId = (payload.new as { id?: string })?.id
         if (changedId && changedId === selectedThreadIdRef.current) {
-          fetchMessagesRef.current(selectedThreadIdRef.current)
+          fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
       })
       .on('postgres_changes', {
@@ -944,7 +953,7 @@ export default function Inbox() {
         debugLogRef.current('realtime', { event: 'inbox_messages_INSERT', threadId: tid, payload }, tid)
         fetchThreadsRef.current()
         if (tid === selectedThreadIdRef.current) {
-          fetchMessagesRef.current(selectedThreadIdRef.current)
+          fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
       })
       .on('postgres_changes', {
@@ -955,7 +964,7 @@ export default function Inbox() {
         debugLogRef.current('realtime', { event: 'inbox_messages_UPDATE', threadId: tid, payload }, tid)
         fetchThreadsRef.current()
         if (tid && tid === selectedThreadIdRef.current) {
-          fetchMessagesRef.current(selectedThreadIdRef.current)
+          fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
       })
       .on('postgres_changes', {
@@ -965,7 +974,7 @@ export default function Inbox() {
         debugLogRef.current('realtime', { event: 'inbox_messages_DELETE', threadId: tid, payload }, tid)
         fetchThreadsRef.current()
         if (tid && tid === selectedThreadIdRef.current) {
-          fetchMessagesRef.current(selectedThreadIdRef.current)
+          fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
       })
       .on('postgres_changes', {
@@ -993,6 +1002,11 @@ export default function Inbox() {
     }, realtimeConnected ? 60_000 : 15_000)
     return () => clearInterval(interval)
   }, [fetchThreads, realtimeConnected])
+
+  useEffect(() => {
+    invoiceInboxDraftProcessedRef.current = null
+    invoiceInboxDraftExpandIdRef.current = null
+  }, [selectedThreadId])
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -1172,6 +1186,7 @@ export default function Inbox() {
 
       invoiceInboxDraftProcessedRef.current = processKey
       invoiceInboxDraftContextRef.current = { invoiceId: payload.invoiceId }
+      invoiceInboxDraftExpandIdRef.current = savedDraft!.id
       setExpandedMsgs((prev) => new Set([...prev, savedDraft!.id]))
 
       const { data: { session } } = await supabase.auth.getSession()
@@ -1188,6 +1203,7 @@ export default function Inbox() {
       }
 
       toast(invoiceInboxDraftToastMessage(payload.kind, Boolean(existingDraft)))
+      setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 150)
       clearDraftParam()
     })()
 
@@ -2810,7 +2826,7 @@ export default function Inbox() {
                       }
                       const m = item.data
                       const isDraftMsg = !!m.is_draft
-                      const isExpanded = m.id === lastMsgId || expandedMsgs.has(m.id)
+                      const isExpanded = isDraftMsg || m.id === lastMsgId || expandedMsgs.has(m.id)
                       const messageFetchStatus = bodyFetchStatus[m.id] ?? (isUnavailableBodyText(m.body) ? 'unavailable' : null)
                       const bodyDisplay = isExpanded ? cleanMessageBody(m, messageFetchStatus) : { html: false, content: '', loading: false, failed: false, unavailable: false }
                       const { html, content, loading: bodyLoading, failed: bodyFailed, unavailable: bodyUnavailable } = bodyDisplay
