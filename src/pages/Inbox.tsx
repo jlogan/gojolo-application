@@ -22,7 +22,12 @@ import {
   invoiceInboxDraftToastMessage,
   loadInvoiceInboxDraftPayload,
 } from '@/lib/invoiceResendDraft'
-import { INVOICE_INBOX_DRAFT_QUERY_PARAMS, type InvoiceInboxDraftKind } from '@/lib/invoiceEmailContent'
+import { INVOICE_INBOX_DRAFT_QUERY_PARAMS, getInvoiceComposePath, type InvoiceInboxDraftKind } from '@/lib/invoiceEmailContent'
+import {
+  cleanupThreadAfterDraftRemoved,
+  clearStaleInvoiceSentThreadLink,
+  resolveUsableInvoiceSentThreadId,
+} from '@/lib/invoiceEmailThread'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
@@ -579,6 +584,22 @@ export default function Inbox() {
     setReplyAttachments([])
   }, [])
 
+  const maybeCleanupThreadAfterDraftDeletes = useCallback(async (threadId: string, deletedIds: Set<string>) => {
+    if (deletedIds.size === 0) return
+    const invoiceId = invoiceInboxDraftContextRef.current?.invoiceId ?? null
+    const removedInvoiceDraft = invoiceInboxDraftExpandIdRef.current
+      && deletedIds.has(invoiceInboxDraftExpandIdRef.current)
+    if (removedInvoiceDraft) {
+      invoiceInboxDraftContextRef.current = null
+      invoiceInboxDraftExpandIdRef.current = null
+    }
+    const threadRemoved = await cleanupThreadAfterDraftRemoved(threadId, { invoiceId })
+    if (threadRemoved && selectedThreadIdRef.current === threadId) {
+      setSelectedThreadId(null)
+      void fetchThreadsRef.current()
+    }
+  }, [])
+
   const fetchMessages = useCallback(async (tid: string, options?: { background?: boolean }) => {
     const background = options?.background ?? false
     debugLog('fetchMessages', { event: 'START', threadId: tid, background }, tid)
@@ -712,6 +733,7 @@ export default function Inbox() {
             if (result.messages?.length || deletedIds.size > 0 || !res.ok) {
               if (selectedThreadIdRef.current !== tid) return // user switched thread, don't update
               clearComposeIfDraftDeleted(deletedIds)
+              void maybeCleanupThreadAfterDraftDeletes(tid, deletedIds)
               const stillEmptyAfter = msgs.filter((pm) => {
                 if (deletedIds.has(pm.id)) return false
                 const b = bodyMap.get(pm.id)
@@ -760,6 +782,7 @@ export default function Inbox() {
                     const retryDeleted = new Set<string>((r.deletedMessageIds ?? []) as string[])
                     if (r.messages?.length || retryDeleted.size > 0 || !res.ok) {
                       clearComposeIfDraftDeleted(retryDeleted)
+                      void maybeCleanupThreadAfterDraftDeletes(tid, retryDeleted)
                       const m = new Map<string, BodyEntry>((r.messages ?? []).map((x: { id: string; body: string | null; htmlBody: string | null; from_identifier?: string | null; to_identifier?: string | null; cc?: string | null; bodyUnavailable?: boolean }) => [x.id, {
                         body: x.body,
                         html_body: x.htmlBody,
@@ -804,7 +827,7 @@ export default function Inbox() {
       console.log('[Inbox] Skipping fetch-thread-bodies: no messages', { threadId: tid })
       debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_messages', threadId: tid }, tid)
     }
-  }, [userId, fetchAttachments, debugLog, clearComposeIfDraftDeleted, markMessagesBodyLoading, syncBodyFetchStatus])
+  }, [userId, fetchAttachments, debugLog, clearComposeIfDraftDeleted, maybeCleanupThreadAfterDraftDeletes, markMessagesBodyLoading, syncBodyFetchStatus])
 
   const fetchComments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
@@ -1096,7 +1119,17 @@ export default function Inbox() {
         return
       }
 
-      const thread = threads.find((t) => t.id === selectedThreadId) ?? selectedThreadFallback
+      const usableThreadId = await resolveUsableInvoiceSentThreadId(selectedThreadId)
+      if (!usableThreadId) {
+        invoiceInboxDraftProcessedRef.current = processKey
+        await clearStaleInvoiceSentThreadLink(payload.invoiceId, selectedThreadId)
+        toast('No sent email thread found for this invoice — opening compose instead.')
+        clearDraftParam()
+        navigate(getInvoiceComposePath({ id: payload.invoiceId }), { replace: true })
+        return
+      }
+
+      const thread = threads.find((t) => t.id === usableThreadId) ?? (selectedThreadFallback?.id === usableThreadId ? selectedThreadFallback : null)
       let fromAddress: { accountId: string; email: string } | null = null
       const mailbox = thread?.mailbox_address?.trim().toLowerCase()
       if (mailbox) {
@@ -1133,10 +1166,10 @@ export default function Inbox() {
         subject: payload.subject,
         last_message_at: now,
         updated_at: now,
-      }).eq('id', selectedThreadId)
+      }).eq('id', usableThreadId)
 
       const draftPayload = {
-        thread_id: selectedThreadId,
+        thread_id: usableThreadId,
         channel: 'email' as const,
         direction: 'outbound' as const,
         from_identifier: fromAddress.email,
@@ -1218,6 +1251,7 @@ export default function Inbox() {
     selectedThreadFallback,
     imapAccounts,
     messages,
+    navigate,
   ])
 
   const isUnread = (t: InboxThread) => {
@@ -1705,7 +1739,7 @@ export default function Inbox() {
     setSendingReply(false)
     if (data?.error) { toast(data.error); return }
 
-    const sentThreadId = selectedThreadId
+    const sentThreadId = selectedThreadId ?? (data.threadId as string | undefined) ?? null
     const draftMsg = draftIdToRemove ? messages.find((msg) => msg.id === draftIdToRemove) : undefined
     const draftExternalUid = draftMsg?.external_uid ?? null
     const draftImapAccountId = draftMsg?.imap_account_id ?? null
@@ -1836,7 +1870,8 @@ export default function Inbox() {
 
   const handleDeleteDraft = async (m: InboxMessage) => {
     if (!confirm('Delete this draft message?')) return
-    const wasOnlyMessage = messages.length === 1 && messages[0].id === m.id
+    const threadId = m.thread_id
+    const invoiceId = invoiceInboxDraftContextRef.current?.invoiceId ?? null
     const externalUid = m.external_uid ?? null
     const imapAccountId = m.imap_account_id ?? null
     const messageId = m.id
@@ -1855,9 +1890,16 @@ export default function Inbox() {
       setReplyHtml('')
       setReplyAttachments([])
     }
-    if (wasOnlyMessage) {
-      setSelectedThreadId(null)
+    if (invoiceId) {
+      invoiceInboxDraftContextRef.current = null
+      invoiceInboxDraftExpandIdRef.current = null
     }
+
+    const threadRemoved = await cleanupThreadAfterDraftRemoved(threadId, { invoiceId })
+    if (threadRemoved) {
+      if (selectedThreadId === threadId) setSelectedThreadId(null)
+    }
+
     void fetchThreads()
 
     if (externalUid != null && imapAccountId) {

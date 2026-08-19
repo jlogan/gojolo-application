@@ -70,18 +70,29 @@ export function resolveInvoiceEmailKind(
   return 'initial'
 }
 
+export function hasInvoiceSentThreadId(
+  inv: Pick<InvoiceEmailRow, 'email_sent_thread_id'>,
+): boolean {
+  return Boolean(inv.email_sent_thread_id)
+}
+
 export function getInvoiceInboxDraftPath(
   inv: Pick<InvoiceEmailRow, 'id' | 'email_sent_thread_id'>,
   kind: InvoiceInboxDraftKind,
 ): string | null {
-  if (!inv.email_sent_thread_id) return null
+  if (!hasInvoiceSentThreadId(inv)) return null
   const param = INVOICE_INBOX_DRAFT_QUERY_PARAMS[kind]
   return `/inbox/${inv.email_sent_thread_id}?${param}=${inv.id}`
 }
 
+/** Inbox-thread resend path when a sent thread id exists; callers must verify the thread has real sent/received messages. */
 export function getInvoiceSendPath(inv: Pick<InvoiceEmailRow, 'id' | 'email_sent_at' | 'email_sent_thread_id' | 'status'>): string {
   const inboxPath = getInvoiceInboxDraftPath(inv, 'resend')
   if (isInvoiceResend(inv) && inboxPath) return inboxPath
+  return `/invoices/${inv.id}/send`
+}
+
+export function getInvoiceComposePath(inv: Pick<InvoiceEmailRow, 'id'>): string {
   return `/invoices/${inv.id}/send`
 }
 

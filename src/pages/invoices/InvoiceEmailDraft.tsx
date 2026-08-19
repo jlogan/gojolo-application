@@ -8,7 +8,7 @@ import EmailComposeForm from '@/components/inbox/EmailComposeForm'
 import {
   buildInvoiceEmailContent,
   finalizeInvoiceEmailHtml,
-  getInvoiceSendPath,
+  getInvoiceInboxDraftPath,
   invoiceNumberFromRow,
   isInvoiceResend,
   resolveInvoiceEmailKind,
@@ -17,6 +17,10 @@ import {
   DEFAULT_INVOICE_EMAIL_SIGNATURE,
   type InvoiceEmailRow,
 } from '@/lib/invoiceEmailContent'
+import {
+  clearStaleInvoiceSentThreadLink,
+  resolveUsableInvoiceSentThreadId,
+} from '@/lib/invoiceEmailThread'
 
 type Invoice = InvoiceEmailRow & {
   org_id: string
@@ -99,6 +103,7 @@ export default function InvoiceEmailDraft() {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successThreadId, setSuccessThreadId] = useState<string | null>(null)
+  const [usableSentThreadId, setUsableSentThreadId] = useState<string | null>(null)
 
   const sendableAddresses = useMemo<SendableAddress[]>(() => {
     return accounts.flatMap((account) => {
@@ -121,7 +126,9 @@ export default function InvoiceEmailDraft() {
   const payUrl = invoice?.hash ? `${window.location.origin}/invoice/${invoice.hash}` : ''
   const emailKind = invoice ? resolveInvoiceEmailKind(invoice) : 'initial'
   const actionLabels = getInvoiceEmailActionLabels(emailKind)
-  const resendThreadId = isInvoiceResend(invoice ?? { email_sent_at: null, status: 'draft' }) ? invoice?.email_sent_thread_id ?? null : null
+  const resendThreadId = isInvoiceResend(invoice ?? { email_sent_at: null, status: 'draft' })
+    ? usableSentThreadId
+    : null
 
   const load = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -159,8 +166,19 @@ export default function InvoiceEmailDraft() {
 
     const readyInvoice = ensured.invoice
     if (isInvoiceResend(readyInvoice) && readyInvoice.email_sent_thread_id) {
-      navigate(getInvoiceSendPath(readyInvoice), { replace: true })
-      return
+      const usableThreadId = await resolveUsableInvoiceSentThreadId(readyInvoice.email_sent_thread_id)
+      if (usableThreadId) {
+        const inboxDraftPath = getInvoiceInboxDraftPath({ ...readyInvoice, email_sent_thread_id: usableThreadId }, 'resend')
+        if (inboxDraftPath) {
+          navigate(inboxDraftPath, { replace: true })
+          return
+        }
+      }
+      await clearStaleInvoiceSentThreadLink(readyInvoice.id, readyInvoice.email_sent_thread_id)
+      readyInvoice.email_sent_thread_id = null
+      setUsableSentThreadId(null)
+    } else {
+      setUsableSentThreadId(null)
     }
 
     let loadedContact: ContactInfo | null = null
