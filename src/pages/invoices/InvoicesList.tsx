@@ -4,6 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
+import { getInvoiceSendPath, isInvoiceResend } from '@/lib/invoiceEmailContent'
 import { Plus, FileText, Search, Send, Pencil, CircleStop } from 'lucide-react'
 
 type InvoiceRow = {
@@ -106,8 +107,12 @@ function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
     && !['paid', 'cancelled'].includes(inv.status)
 }
 
-function isInvoiceResend(inv: InvoiceRow): boolean {
-  return Boolean(inv.email_sent_at) || !['draft', 'paid', 'cancelled'].includes(inv.status)
+function invoiceSendLabel(inv: InvoiceRow): string {
+  return isInvoiceResend(inv) ? 'Resend' : 'Send'
+}
+
+function invoiceSendLabelLong(inv: InvoiceRow): string {
+  return isInvoiceResend(inv) ? 'Resend Invoice To Client' : 'Send Invoice To Client'
 }
 
 function SortHeader({
@@ -450,11 +455,11 @@ export default function InvoicesList() {
                         </>
                       ) : canSendInvoice(inv, isVendor) && (
                         <Link
-                          to={`/invoices/${inv.id}/send`}
+                          to={getInvoiceSendPath(inv)}
                           onClick={(e) => e.stopPropagation()}
                           className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
                         >
-                          <Send className="w-3.5 h-3.5" /> {isInvoiceResend(inv) ? 'Resend' : 'Send'}
+                          <Send className="w-3.5 h-3.5" /> {invoiceSendLabel(inv)}
                         </Link>
                       )}
                     </span>
@@ -504,11 +509,11 @@ export default function InvoicesList() {
                       </div>
                     ) : canSendInvoice(inv, isVendor) && (
                       <Link
-                        to={`/invoices/${inv.id}/send`}
+                        to={getInvoiceSendPath(inv)}
                         onClick={(e) => e.stopPropagation()}
                         className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
                       >
-                        <Send className="w-3.5 h-3.5" /> {isInvoiceResend(inv) ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
+                        <Send className="w-3.5 h-3.5" /> {invoiceSendLabelLong(inv)}
                       </Link>
                     )}
                   </div>

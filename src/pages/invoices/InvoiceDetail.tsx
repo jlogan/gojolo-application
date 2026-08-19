@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
+import { getInvoiceSendPath, isInvoiceResend } from '@/lib/invoiceEmailContent'
 import DateInput from '@/components/DateInput'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
@@ -441,7 +442,7 @@ export default function InvoiceDetail() {
   const showStripeButton = isVendor && invoice.direction === 'inbound' && !['paid', 'cancelled'].includes(invoice.status)
   const canRecordPayment = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
   const canSendInvoice = !isVendor && invoice.direction === 'outbound' && !['paid', 'cancelled'].includes(invoice.status) && !invoice.is_recurring
-  const isInvoiceResend = Boolean(invoice.email_sent_at) || !['draft', 'paid', 'cancelled'].includes(invoice.status)
+  const resend = isInvoiceResend(invoice)
   const canStopRecurrence = !isVendor && Boolean(invoice.is_recurring)
 
   return (
@@ -494,10 +495,10 @@ export default function InvoiceDetail() {
 
         {canSendInvoice && (
           <Link
-            to={`/invoices/${invoice.id}/send`}
+            to={getInvoiceSendPath(invoice)}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
           >
-            <Send size={14} /> {isInvoiceResend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
+            <Send size={14} /> {resend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
           </Link>
         )}
 

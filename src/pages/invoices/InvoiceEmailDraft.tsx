@@ -1,28 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Mail, CheckCircle, AlertCircle } from 'lucide-react'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
+import {
+  buildInvoiceEmailContent,
+  finalizeInvoiceEmailHtml,
+  getInvoiceSendPath,
+  invoiceNumberFromRow,
+  isInvoiceResend,
+  splitContactName,
+  DEFAULT_INVOICE_EMAIL_SIGNATURE,
+  type InvoiceEmailRow,
+} from '@/lib/invoiceEmailContent'
 
-type Invoice = {
-  id: string
+type Invoice = InvoiceEmailRow & {
   org_id: string
   direction: 'outbound' | 'inbound'
-  number: number | null
-  prefix: string | null
-  status: string
   company_id: string | null
   contact_id: string | null
-  issue_date: string | null
-  due_date: string | null
-  amount_due: number | null
+  is_recurring?: boolean | null
   email_sent_at: string | null
   email_sent_thread_id: string | null
-  total: number | null
-  hash: string | null
-  is_recurring?: boolean | null
 }
 
 type ContactInfo = { id: string; name: string | null; email: string | null; company_id?: string | null }
@@ -30,22 +31,6 @@ type CompanyInfo = { id: string; name: string | null }
 type RecipientOption = { name: string; email: string }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null }
 type SendableAddress = { accountId: string; email: string; label: string }
-
-function fmtCurrency(value: number | null | undefined): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value ?? 0)
-}
-
-function fmtDate(date: string | null | undefined): string {
-  if (!date) return '—'
-  return new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
-function invoiceNumber(inv: Invoice | null): string {
-  if (!inv) return ''
-  const prefix = (inv.prefix ?? 'INV-').replace(/-+$/, '')
-  if (!inv.number) return `${prefix}-DRAFT`
-  return `${prefix}-${String(inv.number).padStart(4, '0')}`
-}
 
 async function ensureInvoiceNumber(inv: Invoice, orgId: string): Promise<{ invoice: Invoice; error?: string }> {
   if (inv.is_recurring) {
@@ -77,43 +62,6 @@ async function ensureInvoiceNumber(inv: Invoice, orgId: string): Promise<{ invoi
   return { invoice: updated as Invoice }
 }
 
-function buildInvoiceEmailContent(args: {
-  invoiceRow: Invoice
-  contactName: string
-  signature: string
-}) {
-  const number = invoiceNumber(args.invoiceRow)
-  return {
-    number,
-    subject: `Invoice - ${number} from Brogrammers Agency`,
-    message: buildDefaultInvoiceMessage({
-      contactName: args.contactName,
-      invoiceAmountDue: fmtCurrency(args.invoiceRow.amount_due ?? args.invoiceRow.total ?? 0),
-      invoiceNumber: number,
-      invoiceDate: fmtDate(args.invoiceRow.issue_date),
-      dueDate: fmtDate(args.invoiceRow.due_date),
-      payUrl: args.invoiceRow.hash ? `${window.location.origin}/invoice/${args.invoiceRow.hash}` : '',
-      signature: args.signature,
-    }),
-  }
-}
-
-function splitContactName(name: string | null | undefined): { first: string; last: string } {
-  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
-  if (parts.length === 0) return { first: 'there', last: '' }
-  if (parts.length === 1) return { first: parts[0], last: '' }
-  return { first: parts[0], last: parts.slice(1).join(' ') }
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-}
-
 function normalizeRecipientOptions(contacts: ContactInfo[]): RecipientOption[] {
   const seen = new Set<string>()
   return contacts
@@ -129,78 +77,9 @@ function normalizeRecipientOptions(contacts: ContactInfo[]): RecipientOption[] {
     })
 }
 
-function buildDefaultInvoiceMessage(args: {
-  contactName: string
-  invoiceAmountDue: string
-  invoiceNumber: string
-  invoiceDate: string
-  dueDate: string
-  payUrl: string
-  signature: string
-}) {
-  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
-  const payUrl = escapeHtml(args.payUrl)
-  return [
-    '<h2>Invoice from Brogrammers Agency</h2>',
-    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
-    '<p>Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.</p>',
-    '<h3>INVOICE AMOUNT</h3>',
-    `<p><strong>${escapeHtml(args.invoiceAmountDue)}</strong></p>`,
-    `<p><span>Invoice No</span><strong>${escapeHtml(args.invoiceNumber)}</strong></p>`,
-    `<p><span>Invoice Date</span><strong>${escapeHtml(args.invoiceDate)}</strong></p>`,
-    `<p><span>Due Date</span><strong>${escapeHtml(args.dueDate)}</strong></p>`,
-    `<p><a href="${payUrl}"><strong>PAY NOW</strong></a></p>`,
-    '<p>Please contact us for more information.</p>',
-    `<p>Kind Regards,<br />${signatureHtml}</p>`,
-  ].join('')
-}
-
-function buildEmailMetaRow(label: string, value: string): string {
-  return [
-    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border-top:1px solid #e5e7eb;">',
-    '<tr>',
-    `<td style="padding:12px 0;color:#6b7280;font-size:13px;font-weight:700;">${label}</td>`,
-    `<td align="right" style="padding:12px 0;color:#111827;font-size:14px;font-weight:700;">${value}</td>`,
-    '</tr>',
-    '</table>',
-  ].join('')
-}
-
-function finalizeInvoiceEmailHtml(html: string): string {
-  let out = html
-
-  out = out.replace(/<h2>(.*?)<\/h2>/gis, (_match, title: string) => (
-    `<h2 style="margin:0 0 20px;color:#111827;font-size:22px;line-height:1.3;font-weight:800;">${title}</h2>`
-  ))
-
-  out = out.replace(/<h3>\s*INVOICE AMOUNT\s*<\/h3>\s*<p>\s*<strong>(.*?)<\/strong>\s*<\/p>/is, (_match, amount: string) => ([
-    '<div style="margin:24px 0 18px;padding:18px 20px;border-radius:14px;background:#f3f6fb;border:1px solid #dbe4f0;">',
-    '<div style="margin:0 0 8px;color:#475569;font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">Invoice Amount</div>',
-    `<div style="color:#111827;font-size:24px;line-height:1.2;font-weight:800;">${amount}</div>`,
-    '</div>',
-  ].join('')))
-
-  out = out.replace(/<p>\s*(?:<span>)?\s*(Invoice No|Invoice Date|Due Date)\s*(?:<\/span>)?\s*<strong>(.*?)<\/strong>\s*<\/p>/gis, (_match, label: string, value: string) => (
-    buildEmailMetaRow(label, value)
-  ))
-
-  out = out.replace(/<p>\s*<a\s+href="([^"]+)"[^>]*>\s*(?:<strong>)?\s*PAY NOW\s*(?:<\/strong>)?\s*<\/a>\s*<\/p>/is, (_match, href: string) => (
-    `<p style="margin:24px 0;"><a href="${href}" style="display:inline-block;padding:13px 28px;border-radius:999px;background:#2563eb;color:#ffffff;text-decoration:none;font-size:13px;font-weight:800;letter-spacing:0.04em;">PAY NOW</a></p>`
-  ))
-
-  out = out.replace(/<p>/gi, '<p style="margin:0 0 14px;color:#111827;font-size:14px;line-height:1.65;">')
-
-  return [
-    '<div style="margin:0;padding:0;background:#ffffff;">',
-    '<div style="max-width:680px;margin:0;padding:32px 28px;font-family:Arial,Helvetica,sans-serif;color:#111827;">',
-    out,
-    '</div>',
-    '</div>',
-  ].join('')
-}
-
 export default function InvoiceEmailDraft() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { currentOrg, isVendor } = useOrg()
   const { user } = useAuth()
 
@@ -212,7 +91,7 @@ export default function InvoiceEmailDraft() {
   const [selectedFrom, setSelectedFrom] = useState('')
   const [subject, setSubject] = useState('')
   const [to, setTo] = useState('')
-  const signature = 'Jay Logan\nBrogrammers Agency'
+  const signature = DEFAULT_INVOICE_EMAIL_SIGNATURE
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
@@ -236,9 +115,10 @@ export default function InvoiceEmailDraft() {
     sendableAddresses.find((a) => a.email.toLowerCase() === selectedFrom.toLowerCase()) ?? sendableAddresses[0]
   ), [sendableAddresses, selectedFrom])
 
-  const invNum = invoiceNumber(invoice)
+  const invNum = invoiceNumberFromRow(invoice)
   const payUrl = invoice?.hash ? `${window.location.origin}/invoice/${invoice.hash}` : ''
-  const isResend = Boolean(invoice?.email_sent_at) || (invoice != null && !['draft', 'paid', 'cancelled'].includes(invoice.status))
+  const resend = invoice ? isInvoiceResend(invoice) : false
+  const resendThreadId = resend ? invoice?.email_sent_thread_id ?? null : null
 
   const load = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -275,6 +155,11 @@ export default function InvoiceEmailDraft() {
     }
 
     const readyInvoice = ensured.invoice
+    if (isInvoiceResend(readyInvoice) && readyInvoice.email_sent_thread_id) {
+      navigate(getInvoiceSendPath(readyInvoice), { replace: true })
+      return
+    }
+
     let loadedContact: ContactInfo | null = null
     let loadedCompany: CompanyInfo | null = null
     setInvoice(readyInvoice)
@@ -357,7 +242,7 @@ export default function InvoiceEmailDraft() {
     setMessage(emailContent.message)
 
     setLoading(false)
-  }, [currentOrg?.id, id])
+  }, [currentOrg?.id, id, navigate, signature])
 
   useEffect(() => { load() }, [load])
 
@@ -400,7 +285,7 @@ export default function InvoiceEmailDraft() {
       setMessage(sendMessage)
     }
 
-    const sendNum = invoiceNumber(sendInvoice)
+    const sendNum = invoiceNumberFromRow(sendInvoice)
     if (!sendInvoice.number) {
       setSending(false)
       setError('This invoice does not have an invoice number yet.')
@@ -415,6 +300,7 @@ export default function InvoiceEmailDraft() {
     }
 
     const sendHtml = finalizeInvoiceEmailHtml(sendMessage)
+    const useExistingThread = Boolean(resendThreadId)
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: {
@@ -423,7 +309,7 @@ export default function InvoiceEmailDraft() {
         apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
       },
       body: JSON.stringify({
-        compose: true,
+        ...(useExistingThread ? { threadId: resendThreadId } : { compose: true }),
         to: recipients.join(', '),
         subject: sendSubject || `Invoice - ${sendNum} from Brogrammers Agency`,
         body: sendHtml,
@@ -488,10 +374,10 @@ export default function InvoiceEmailDraft() {
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-white flex items-center gap-2">
-            <Mail size={24} className="text-gray-400" /> {isResend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
+            <Mail size={24} className="text-gray-400" /> {resend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Compose and {isResend ? 'resend' : 'send'} {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
+            Compose and {resend ? 'resend' : 'send'} {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
           </p>
         </div>
         {successThreadId && (
@@ -544,4 +430,8 @@ export default function InvoiceEmailDraft() {
       </div>
     </div>
   )
+}
+
+function fmtCurrency(value: number | null | undefined): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value ?? 0)
 }
