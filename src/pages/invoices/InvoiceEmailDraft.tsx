@@ -11,6 +11,8 @@ import {
   getInvoiceSendPath,
   invoiceNumberFromRow,
   isInvoiceResend,
+  resolveInvoiceEmailKind,
+  getInvoiceEmailActionLabels,
   splitContactName,
   DEFAULT_INVOICE_EMAIL_SIGNATURE,
   type InvoiceEmailRow,
@@ -117,8 +119,9 @@ export default function InvoiceEmailDraft() {
 
   const invNum = invoiceNumberFromRow(invoice)
   const payUrl = invoice?.hash ? `${window.location.origin}/invoice/${invoice.hash}` : ''
-  const resend = invoice ? isInvoiceResend(invoice) : false
-  const resendThreadId = resend ? invoice?.email_sent_thread_id ?? null : null
+  const emailKind = invoice ? resolveInvoiceEmailKind(invoice) : 'initial'
+  const actionLabels = getInvoiceEmailActionLabels(emailKind)
+  const resendThreadId = isInvoiceResend(invoice ?? { email_sent_at: null, status: 'draft' }) ? invoice?.email_sent_thread_id ?? null : null
 
   const load = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -237,6 +240,7 @@ export default function InvoiceEmailDraft() {
       invoiceRow: readyInvoice,
       contactName: loadedContactName || 'there',
       signature,
+      kind: resolveInvoiceEmailKind(readyInvoice),
     })
     setSubject(emailContent.subject)
     setMessage(emailContent.message)
@@ -278,6 +282,7 @@ export default function InvoiceEmailDraft() {
         invoiceRow: sendInvoice,
         contactName: loadedContactName || 'there',
         signature,
+        kind: resolveInvoiceEmailKind(sendInvoice),
       })
       sendSubject = emailContent.subject
       sendMessage = emailContent.message
@@ -374,10 +379,10 @@ export default function InvoiceEmailDraft() {
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-white flex items-center gap-2">
-            <Mail size={24} className="text-gray-400" /> {resend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
+            <Mail size={24} className="text-gray-400" /> {actionLabels.composeTitle}
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Compose and {resend ? 'resend' : 'send'} {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
+            Compose and {emailKind === 'initial' ? 'send' : emailKind === 'resend' ? 'resend' : 'follow up on'} {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
           </p>
         </div>
         {successThreadId && (

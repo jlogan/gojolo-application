@@ -4,8 +4,8 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
-import { getInvoiceSendPath, isInvoiceResend } from '@/lib/invoiceEmailContent'
-import { Plus, FileText, Search, Send, Pencil, CircleStop } from 'lucide-react'
+import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
+import { Plus, FileText, Search, Send, Pencil, CircleStop, Clock } from 'lucide-react'
 
 type InvoiceRow = {
   id: string
@@ -108,11 +108,11 @@ function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
 }
 
 function invoiceSendLabel(inv: InvoiceRow): string {
-  return isInvoiceResend(inv) ? 'Resend' : 'Send'
+  return getInvoiceEmailActionLabels(resolveInvoiceEmailKind(inv)).short
 }
 
 function invoiceSendLabelLong(inv: InvoiceRow): string {
-  return isInvoiceResend(inv) ? 'Resend Invoice To Client' : 'Send Invoice To Client'
+  return getInvoiceEmailActionLabels(resolveInvoiceEmailKind(inv)).long
 }
 
 function SortHeader({
@@ -454,13 +454,24 @@ export default function InvoicesList() {
                           </button>
                         </>
                       ) : canSendInvoice(inv, isVendor) && (
-                        <Link
-                          to={getInvoiceSendPath(inv)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-                        >
-                          <Send className="w-3.5 h-3.5" /> {invoiceSendLabel(inv)}
-                        </Link>
+                        <>
+                          <Link
+                            to={getInvoiceSendPath(inv)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                          >
+                            <Send className="w-3.5 h-3.5" /> {invoiceSendLabel(inv)}
+                          </Link>
+                          {getInvoiceFollowUpPath(inv) && (
+                            <Link
+                              to={getInvoiceFollowUpPath(inv)!}
+                              onClick={(e) => e.stopPropagation()}
+                              className="inline-flex items-center gap-1 rounded-lg bg-red-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                            >
+                              <Clock className="w-3.5 h-3.5" /> Follow Up
+                            </Link>
+                          )}
+                        </>
                       )}
                     </span>
                   </div>
@@ -508,13 +519,24 @@ export default function InvoicesList() {
                         </button>
                       </div>
                     ) : canSendInvoice(inv, isVendor) && (
-                      <Link
-                        to={getInvoiceSendPath(inv)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-                      >
-                        <Send className="w-3.5 h-3.5" /> {invoiceSendLabelLong(inv)}
-                      </Link>
+                      <div className="flex flex-wrap gap-2">
+                        <Link
+                          to={getInvoiceSendPath(inv)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 rounded-lg bg-blue-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                        >
+                          <Send className="w-3.5 h-3.5" /> {invoiceSendLabelLong(inv)}
+                        </Link>
+                        {getInvoiceFollowUpPath(inv) && (
+                          <Link
+                            to={getInvoiceFollowUpPath(inv)!}
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 rounded-lg bg-red-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                          >
+                            <Clock className="w-3.5 h-3.5" /> Follow Up on Overdue Invoice
+                          </Link>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>

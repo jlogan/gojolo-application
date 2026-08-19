@@ -17,7 +17,12 @@ import {
   isMessageBodyEmpty,
   type BodyFetchStatus,
 } from '@/lib/inboxBodyUnavailable'
-import { loadInvoiceResendDraftPayload } from '@/lib/invoiceResendDraft'
+import {
+  invoiceInboxDraftFailureMessage,
+  invoiceInboxDraftToastMessage,
+  loadInvoiceInboxDraftPayload,
+} from '@/lib/invoiceResendDraft'
+import { INVOICE_INBOX_DRAFT_QUERY_PARAMS, type InvoiceInboxDraftKind } from '@/lib/invoiceEmailContent'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
@@ -337,9 +342,9 @@ export default function Inbox() {
   const phantomHealDoneForThreadRef = useRef<string | null>(null)
   /** When set (from /inbox?compose=1&leadId=...), a successful send logs a lead_attempt for that lead. */
   const leadComposeContextRef = useRef<{ leadId: string; contactId: string | null } | null>(null)
-  /** When set (from /inbox/:threadId?resendInvoice=...), a successful send updates invoice email_sent_at. */
-  const invoiceResendContextRef = useRef<{ invoiceId: string } | null>(null)
-  const invoiceResendProcessedRef = useRef<string | null>(null)
+  /** When set (from /inbox/:threadId?resendInvoice=... or ?followUpInvoice=...), a successful send updates invoice email_sent_at. */
+  const invoiceInboxDraftContextRef = useRef<{ invoiceId: string } | null>(null)
+  const invoiceInboxDraftProcessedRef = useRef<string | null>(null)
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -1042,29 +1047,38 @@ export default function Inbox() {
   const toast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), 3000) }
 
   useEffect(() => {
-    const invoiceId = searchParams.get('resendInvoice')
-    if (!invoiceId || !selectedThreadId || !currentOrg?.id || messagesLoading) return
+    let draftKind: InvoiceInboxDraftKind | null = null
+    let invoiceId: string | null = null
+    for (const kind of Object.keys(INVOICE_INBOX_DRAFT_QUERY_PARAMS) as InvoiceInboxDraftKind[]) {
+      const param = searchParams.get(INVOICE_INBOX_DRAFT_QUERY_PARAMS[kind])
+      if (param) {
+        draftKind = kind
+        invoiceId = param
+        break
+      }
+    }
+    if (!draftKind || !invoiceId || !selectedThreadId || !currentOrg?.id || messagesLoading) return
     if (imapAccounts.length === 0) return
 
-    const processKey = `${selectedThreadId}:${invoiceId}`
-    if (invoiceResendProcessedRef.current === processKey) return
+    const processKey = `${draftKind}:${selectedThreadId}:${invoiceId}`
+    if (invoiceInboxDraftProcessedRef.current === processKey) return
 
     let cancelled = false
 
     void (async () => {
-      const { payload, error } = await loadInvoiceResendDraftPayload(invoiceId, currentOrg.id)
+      const { payload, error } = await loadInvoiceInboxDraftPayload(invoiceId!, currentOrg.id, draftKind!)
       if (cancelled) return
 
-      const clearResendParam = () => {
+      const clearDraftParam = () => {
         const next = new URLSearchParams(searchParams)
-        next.delete('resendInvoice')
+        next.delete(INVOICE_INBOX_DRAFT_QUERY_PARAMS[draftKind!])
         setSearchParams(next, { replace: true })
       }
 
       if (error || !payload) {
-        invoiceResendProcessedRef.current = processKey
-        toast(error ?? 'Could not prepare invoice resend draft')
-        clearResendParam()
+        invoiceInboxDraftProcessedRef.current = processKey
+        toast(error ?? invoiceInboxDraftFailureMessage(draftKind!))
+        clearDraftParam()
         return
       }
 
@@ -1094,9 +1108,9 @@ export default function Inbox() {
         fromAddress = { accountId: imapAccounts[0].id, email: imapAccounts[0].email.trim() }
       }
       if (!fromAddress) {
-        invoiceResendProcessedRef.current = processKey
-        toast('No active inbox email account is available for this resend draft.')
-        clearResendParam()
+        invoiceInboxDraftProcessedRef.current = processKey
+        toast('No active inbox email account is available for this invoice draft.')
+        clearDraftParam()
         return
       }
 
@@ -1132,9 +1146,9 @@ export default function Inbox() {
           .single()
         if (cancelled) return
         if (updateErr || !data) {
-          invoiceResendProcessedRef.current = processKey
-          toast(updateErr?.message ?? 'Could not update invoice resend draft')
-          clearResendParam()
+          invoiceInboxDraftProcessedRef.current = processKey
+          toast(updateErr?.message ?? `Could not update invoice ${draftKind === 'overdue_followup' ? 'follow-up' : 'resend'} draft`)
+          clearDraftParam()
           return
         }
         savedDraft = data as InboxMessage
@@ -1147,17 +1161,17 @@ export default function Inbox() {
           .single()
         if (cancelled) return
         if (insertErr || !data) {
-          invoiceResendProcessedRef.current = processKey
-          toast(insertErr?.message ?? 'Could not create invoice resend draft')
-          clearResendParam()
+          invoiceInboxDraftProcessedRef.current = processKey
+          toast(insertErr?.message ?? `Could not create invoice ${draftKind === 'overdue_followup' ? 'follow-up' : 'resend'} draft`)
+          clearDraftParam()
           return
         }
         savedDraft = data as InboxMessage
         setMessages((prev) => [...prev, savedDraft!])
       }
 
-      invoiceResendProcessedRef.current = processKey
-      invoiceResendContextRef.current = { invoiceId: payload.invoiceId }
+      invoiceInboxDraftProcessedRef.current = processKey
+      invoiceInboxDraftContextRef.current = { invoiceId: payload.invoiceId }
       setExpandedMsgs((prev) => new Set([...prev, savedDraft!.id]))
 
       const { data: { session } } = await supabase.auth.getSession()
@@ -1173,8 +1187,8 @@ export default function Inbox() {
         }).catch(() => {})
       }
 
-      toast(existingDraft ? 'Invoice resend draft updated in this thread' : 'Invoice resend draft created in this thread')
-      clearResendParam()
+      toast(invoiceInboxDraftToastMessage(payload.kind, Boolean(existingDraft)))
+      clearDraftParam()
     })()
 
     return () => { cancelled = true }
@@ -1723,20 +1737,20 @@ export default function Inbox() {
         .eq('org_id', currentOrg.id)
     }
 
-    const invoiceResendCtx = invoiceResendContextRef.current
-    if (invoiceResendCtx?.invoiceId && sentThreadId) {
-      invoiceResendContextRef.current = null
+    const invoiceInboxDraftCtx = invoiceInboxDraftContextRef.current
+    if (invoiceInboxDraftCtx?.invoiceId && sentThreadId) {
+      invoiceInboxDraftContextRef.current = null
       const sentUpdate: Record<string, string> = {
         updated_at: new Date().toISOString(),
         email_sent_at: new Date().toISOString(),
         email_sent_thread_id: sentThreadId,
       }
-      await supabase.from('invoices').update(sentUpdate).eq('id', invoiceResendCtx.invoiceId)
+      await supabase.from('invoices').update(sentUpdate).eq('id', invoiceInboxDraftCtx.invoiceId)
       if (userId) {
         await supabase
           .from('inbox_thread_invoices')
           .upsert(
-            { thread_id: sentThreadId, invoice_id: invoiceResendCtx.invoiceId, created_by: userId },
+            { thread_id: sentThreadId, invoice_id: invoiceInboxDraftCtx.invoiceId, created_by: userId },
             { onConflict: 'thread_id,invoice_id' },
           )
       }

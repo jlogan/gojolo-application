@@ -5,12 +5,12 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
-import { getInvoiceSendPath, isInvoiceResend } from '@/lib/invoiceEmailContent'
+import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
 import DateInput from '@/components/DateInput'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
   Plus, ChevronUp, FileText, DollarSign, Calendar,
-  Building2, User, Hash, Link2, CheckCheck, Mail, CircleStop,
+  Building2, User, Hash, Link2, CheckCheck, Mail, CircleStop, Clock,
 } from 'lucide-react'
 
 /* ------------------------------------------------------------------ */
@@ -442,7 +442,8 @@ export default function InvoiceDetail() {
   const showStripeButton = isVendor && invoice.direction === 'inbound' && !['paid', 'cancelled'].includes(invoice.status)
   const canRecordPayment = !isVendor && !['paid', 'cancelled'].includes(invoice.status)
   const canSendInvoice = !isVendor && invoice.direction === 'outbound' && !['paid', 'cancelled'].includes(invoice.status) && !invoice.is_recurring
-  const resend = isInvoiceResend(invoice)
+  const sendLabels = getInvoiceEmailActionLabels(resolveInvoiceEmailKind(invoice))
+  const followUpPath = getInvoiceFollowUpPath(invoice)
   const canStopRecurrence = !isVendor && Boolean(invoice.is_recurring)
 
   return (
@@ -498,7 +499,16 @@ export default function InvoiceDetail() {
             to={getInvoiceSendPath(invoice)}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700"
           >
-            <Send size={14} /> {resend ? 'Resend Invoice To Client' : 'Send Invoice To Client'}
+            <Send size={14} /> {sendLabels.long}
+          </Link>
+        )}
+
+        {followUpPath && (
+          <Link
+            to={followUpPath}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700"
+          >
+            <Clock size={14} /> Follow Up on Overdue Invoice
           </Link>
         )}
 

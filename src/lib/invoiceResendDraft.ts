@@ -2,8 +2,13 @@ import { supabase } from '@/lib/supabase'
 import {
   buildFinalizedInvoiceEmailHtml,
   buildInvoiceEmailContent,
+  getInvoiceEmailActionLabels,
+  isInvoiceOverdue,
+  isInvoiceResend,
+  resolveInvoiceEmailKind,
   splitContactName,
   type InvoiceEmailRow,
+  type InvoiceInboxDraftKind,
 } from '@/lib/invoiceEmailContent'
 
 type ContactInfo = { name: string | null; email: string | null }
@@ -57,21 +62,55 @@ async function loadInvoiceRecipients(invoiceId: string, orgId: string, invoiceRo
   return rows
 }
 
-export type InvoiceResendDraftPayload = {
+export type InvoiceInboxDraftPayload = {
   invoiceId: string
+  kind: InvoiceInboxDraftKind
   to: string
   subject: string
   html: string
   contactName: string
 }
 
-export async function loadInvoiceResendDraftPayload(
+/** @deprecated Use InvoiceInboxDraftPayload */
+export type InvoiceResendDraftPayload = InvoiceInboxDraftPayload
+
+function validateInvoiceForInboxDraft(
+  invoiceRow: LoadedInvoice & { org_id: string; is_recurring?: boolean | null; direction: string },
+  kind: InvoiceInboxDraftKind,
+): string | null {
+  if (invoiceRow.is_recurring) {
+    return 'Recurring invoice templates cannot be sent to clients.'
+  }
+  if (invoiceRow.direction !== 'outbound') {
+    return 'Only outbound invoices can be sent to clients.'
+  }
+  if (['paid', 'cancelled'].includes(invoiceRow.status)) {
+    return kind === 'overdue_followup'
+      ? 'Paid or cancelled invoices cannot receive overdue follow-ups.'
+      : 'Paid or cancelled invoices cannot be resent.'
+  }
+  if (!invoiceRow.hash) {
+    return 'This invoice does not have a public payment link yet.'
+  }
+  if (kind === 'overdue_followup') {
+    if (!isInvoiceOverdue(invoiceRow)) {
+      return 'This invoice is not overdue yet.'
+    }
+    if (!isInvoiceResend(invoiceRow)) {
+      return 'Overdue follow-ups are only available after the invoice has been sent.'
+    }
+  }
+  return null
+}
+
+export async function loadInvoiceInboxDraftPayload(
   invoiceId: string,
   orgId: string,
-): Promise<{ payload?: InvoiceResendDraftPayload; error?: string }> {
+  kind: InvoiceInboxDraftKind,
+): Promise<{ payload?: InvoiceInboxDraftPayload; error?: string }> {
   const { data: inv, error: invErr } = await supabase
     .from('invoices')
-    .select('id, org_id, prefix, number, status, issue_date, due_date, amount_due, total, hash, contact_id, company_id, is_recurring, direction')
+    .select('id, org_id, prefix, number, status, issue_date, due_date, amount_due, total, hash, contact_id, company_id, is_recurring, direction, email_sent_at')
     .eq('id', invoiceId)
     .eq('org_id', orgId)
     .single()
@@ -80,26 +119,17 @@ export async function loadInvoiceResendDraftPayload(
     return { error: invErr?.message ?? 'Invoice not found' }
   }
 
-  type LoadedInvoice = InvoiceEmailRow & {
+  type LoadedInvoiceWithMeta = LoadedInvoice & {
     org_id: string
-    contact_id: string | null
-    company_id: string | null
     is_recurring?: boolean | null
     direction: string
+    email_sent_at?: string | null
   }
-  const invoiceRow = inv as LoadedInvoice
+  const invoiceRow = inv as LoadedInvoiceWithMeta
 
-  if (invoiceRow.is_recurring) {
-    return { error: 'Recurring invoice templates cannot be sent to clients.' }
-  }
-  if (invoiceRow.direction !== 'outbound') {
-    return { error: 'Only outbound invoices can be sent to clients.' }
-  }
-  if (['paid', 'cancelled'].includes(invoiceRow.status)) {
-    return { error: 'Paid or cancelled invoices cannot be resent.' }
-  }
-  if (!invoiceRow.hash) {
-    return { error: 'This invoice does not have a public payment link yet.' }
+  const validationError = validateInvoiceForInboxDraft(invoiceRow, kind)
+  if (validationError) {
+    return { error: validationError }
   }
 
   const recipients = await loadInvoiceRecipients(invoiceId, orgId, invoiceRow)
@@ -110,18 +140,39 @@ export async function loadInvoiceResendDraftPayload(
 
   const contactNameParts = splitContactName(recipients[0]?.name)
   const contactName = [contactNameParts.first, contactNameParts.last].filter(Boolean).join(' ') || 'there'
+  const emailKind = resolveInvoiceEmailKind(invoiceRow, kind)
   const emailContent = buildInvoiceEmailContent({
     invoiceRow,
     contactName,
+    kind: emailKind,
   })
 
   return {
     payload: {
       invoiceId,
+      kind,
       to,
       subject: emailContent.subject,
-      html: buildFinalizedInvoiceEmailHtml({ invoiceRow, contactName }),
+      html: buildFinalizedInvoiceEmailHtml({ invoiceRow, contactName, kind: emailKind }),
       contactName,
     },
   }
+}
+
+export async function loadInvoiceResendDraftPayload(
+  invoiceId: string,
+  orgId: string,
+): Promise<{ payload?: InvoiceInboxDraftPayload; error?: string }> {
+  return loadInvoiceInboxDraftPayload(invoiceId, orgId, 'resend')
+}
+
+export function invoiceInboxDraftToastMessage(kind: InvoiceInboxDraftKind, updated: boolean): string {
+  const labels = getInvoiceEmailActionLabels(kind)
+  return updated ? labels.draftUpdatedToast : labels.draftCreatedToast
+}
+
+export function invoiceInboxDraftFailureMessage(kind: InvoiceInboxDraftKind): string {
+  return kind === 'overdue_followup'
+    ? 'Could not prepare overdue invoice follow-up draft'
+    : 'Could not prepare invoice resend draft'
 }

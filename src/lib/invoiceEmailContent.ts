@@ -12,6 +12,16 @@ export type InvoiceEmailRow = {
   email_sent_thread_id?: string | null
 }
 
+/** How the invoice email should be worded when composing or drafting. */
+export type InvoiceEmailKind = 'initial' | 'resend' | 'overdue_followup'
+
+export type InvoiceInboxDraftKind = Extract<InvoiceEmailKind, 'resend' | 'overdue_followup'>
+
+export const INVOICE_INBOX_DRAFT_QUERY_PARAMS: Record<InvoiceInboxDraftKind, string> = {
+  resend: 'resendInvoice',
+  overdue_followup: 'followUpInvoice',
+}
+
 export function fmtInvoiceCurrency(value: number | null | undefined): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value ?? 0)
 }
@@ -32,11 +42,93 @@ export function isInvoiceResend(inv: Pick<InvoiceEmailRow, 'email_sent_at' | 'st
   return Boolean(inv.email_sent_at) || !['draft', 'paid', 'cancelled'].includes(inv.status)
 }
 
+function startOfTodayLocal(): Date {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return today
+}
+
+export function isInvoiceOverdue(inv: Pick<InvoiceEmailRow, 'due_date' | 'status'>): boolean {
+  if (!inv.due_date) return false
+  if (['paid', 'cancelled', 'draft'].includes(inv.status)) return false
+  const dueDate = new Date(`${inv.due_date}T00:00:00`)
+  return dueDate < startOfTodayLocal()
+}
+
+export function canFollowUpOverdueInvoice(
+  inv: Pick<InvoiceEmailRow, 'due_date' | 'status' | 'email_sent_at' | 'email_sent_thread_id'>,
+): boolean {
+  return isInvoiceOverdue(inv) && isInvoiceResend(inv) && Boolean(inv.email_sent_thread_id)
+}
+
+export function resolveInvoiceEmailKind(
+  inv: Pick<InvoiceEmailRow, 'due_date' | 'status' | 'email_sent_at'>,
+  preferred?: InvoiceInboxDraftKind,
+): InvoiceEmailKind {
+  if (preferred === 'overdue_followup' && isInvoiceOverdue(inv)) return 'overdue_followup'
+  if (preferred === 'resend' || isInvoiceResend(inv)) return 'resend'
+  return 'initial'
+}
+
+export function getInvoiceInboxDraftPath(
+  inv: Pick<InvoiceEmailRow, 'id' | 'email_sent_thread_id'>,
+  kind: InvoiceInboxDraftKind,
+): string | null {
+  if (!inv.email_sent_thread_id) return null
+  const param = INVOICE_INBOX_DRAFT_QUERY_PARAMS[kind]
+  return `/inbox/${inv.email_sent_thread_id}?${param}=${inv.id}`
+}
+
 export function getInvoiceSendPath(inv: Pick<InvoiceEmailRow, 'id' | 'email_sent_at' | 'email_sent_thread_id' | 'status'>): string {
-  if (isInvoiceResend(inv) && inv.email_sent_thread_id) {
-    return `/inbox/${inv.email_sent_thread_id}?resendInvoice=${inv.id}`
-  }
+  const inboxPath = getInvoiceInboxDraftPath(inv, 'resend')
+  if (isInvoiceResend(inv) && inboxPath) return inboxPath
   return `/invoices/${inv.id}/send`
+}
+
+export function getInvoiceFollowUpPath(
+  inv: Pick<InvoiceEmailRow, 'id' | 'due_date' | 'status' | 'email_sent_at' | 'email_sent_thread_id'>,
+): string | null {
+  if (!canFollowUpOverdueInvoice(inv)) return null
+  return getInvoiceInboxDraftPath(inv, 'overdue_followup')
+}
+
+export function getInvoiceEmailActionLabels(kind: InvoiceEmailKind): {
+  short: string
+  long: string
+  composeTitle: string
+  composeDescription: string
+  draftCreatedToast: string
+  draftUpdatedToast: string
+} {
+  switch (kind) {
+    case 'resend':
+      return {
+        short: 'Resend',
+        long: 'Resend Invoice To Client',
+        composeTitle: 'Resend Invoice To Client',
+        composeDescription: 'Compose and resend this invoice through the Inbox module.',
+        draftCreatedToast: 'Invoice resend draft created in this thread',
+        draftUpdatedToast: 'Invoice resend draft updated in this thread',
+      }
+    case 'overdue_followup':
+      return {
+        short: 'Follow Up',
+        long: 'Follow Up on Overdue Invoice',
+        composeTitle: 'Follow Up on Overdue Invoice',
+        composeDescription: 'Compose a payment reminder for this overdue invoice in the existing Inbox thread.',
+        draftCreatedToast: 'Overdue invoice follow-up draft created in this thread',
+        draftUpdatedToast: 'Overdue invoice follow-up draft updated in this thread',
+      }
+    default:
+      return {
+        short: 'Send',
+        long: 'Send Invoice To Client',
+        composeTitle: 'Send Invoice To Client',
+        composeDescription: 'Compose and send this invoice through the Inbox module.',
+        draftCreatedToast: 'Invoice draft created in this thread',
+        draftUpdatedToast: 'Invoice draft updated in this thread',
+      }
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -59,7 +151,7 @@ function buildEmailMetaRow(label: string, value: string): string {
   ].join('')
 }
 
-function buildDefaultInvoiceMessage(args: {
+type InvoiceMessageFields = {
   contactName: string
   invoiceAmountDue: string
   invoiceNumber: string
@@ -67,22 +159,77 @@ function buildDefaultInvoiceMessage(args: {
   dueDate: string
   payUrl: string
   signature: string
-}) {
-  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
+}
+
+function buildInvoiceDetailsBlock(args: InvoiceMessageFields): string {
   const payUrl = escapeHtml(args.payUrl)
   return [
-    '<h2>Invoice from Brogrammers Agency</h2>',
-    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
-    '<p>Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.</p>',
     '<h3>INVOICE AMOUNT</h3>',
     `<p><strong>${escapeHtml(args.invoiceAmountDue)}</strong></p>`,
     `<p><span>Invoice No</span><strong>${escapeHtml(args.invoiceNumber)}</strong></p>`,
     `<p><span>Invoice Date</span><strong>${escapeHtml(args.invoiceDate)}</strong></p>`,
     `<p><span>Due Date</span><strong>${escapeHtml(args.dueDate)}</strong></p>`,
     `<p><a href="${payUrl}"><strong>PAY NOW</strong></a></p>`,
+  ].join('')
+}
+
+function buildInitialInvoiceMessage(args: InvoiceMessageFields): string {
+  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
+  return [
+    '<h2>Invoice from Brogrammers Agency</h2>',
+    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
+    '<p>Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.</p>',
+    buildInvoiceDetailsBlock(args),
     '<p>Please contact us for more information.</p>',
     `<p>Kind Regards,<br />${signatureHtml}</p>`,
   ].join('')
+}
+
+function buildResendInvoiceMessage(args: InvoiceMessageFields): string {
+  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
+  return [
+    '<h2>Invoice Reminder from Brogrammers Agency</h2>',
+    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
+    `<p>This is a friendly reminder regarding invoice <strong>${escapeHtml(args.invoiceNumber)}</strong>. We are resending it here for your records. You can view, print, or download the invoice as a PDF from the link below, and pay online if you prefer.</p>`,
+    buildInvoiceDetailsBlock(args),
+    '<p>If you have already sent payment, please disregard this message. Otherwise, let us know if you have any questions.</p>',
+    `<p>Kind Regards,<br />${signatureHtml}</p>`,
+  ].join('')
+}
+
+function buildOverdueFollowUpMessage(args: InvoiceMessageFields): string {
+  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
+  return [
+    '<h2>Overdue Invoice Follow-Up</h2>',
+    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
+    `<p>Our records show that invoice <strong>${escapeHtml(args.invoiceNumber)}</strong> was due on <strong>${escapeHtml(args.dueDate)}</strong> and remains unpaid.</p>`,
+    '<p>Please review the invoice details below and submit payment at your earliest convenience. If payment has already been sent, or if you need more time, reply to this email and we will update our records.</p>',
+    buildInvoiceDetailsBlock(args),
+    '<p>Thank you for your prompt attention to this matter.</p>',
+    `<p>Kind Regards,<br />${signatureHtml}</p>`,
+  ].join('')
+}
+
+function buildInvoiceMessage(kind: InvoiceEmailKind, args: InvoiceMessageFields): string {
+  switch (kind) {
+    case 'resend':
+      return buildResendInvoiceMessage(args)
+    case 'overdue_followup':
+      return buildOverdueFollowUpMessage(args)
+    default:
+      return buildInitialInvoiceMessage(args)
+  }
+}
+
+function buildInvoiceSubject(kind: InvoiceEmailKind, invoiceNumber: string): string {
+  switch (kind) {
+    case 'resend':
+      return `Reminder: Invoice - ${invoiceNumber} from Brogrammers Agency`
+    case 'overdue_followup':
+      return `Overdue: Invoice - ${invoiceNumber} from Brogrammers Agency`
+    default:
+      return `Invoice - ${invoiceNumber} from Brogrammers Agency`
+  }
 }
 
 export function finalizeInvoiceEmailHtml(html: string): string {
@@ -132,21 +279,26 @@ export function buildInvoiceEmailContent(args: {
   contactName: string
   signature?: string
   origin?: string
+  kind?: InvoiceEmailKind
 }) {
+  const kind = args.kind ?? resolveInvoiceEmailKind(args.invoiceRow)
   const number = invoiceNumberFromRow(args.invoiceRow)
   const payOrigin = args.origin ?? (typeof window !== 'undefined' ? window.location.origin : '')
+  const messageFields: InvoiceMessageFields = {
+    contactName: args.contactName,
+    invoiceAmountDue: fmtInvoiceCurrency(args.invoiceRow.amount_due ?? args.invoiceRow.total ?? 0),
+    invoiceNumber: number,
+    invoiceDate: fmtInvoiceDate(args.invoiceRow.issue_date),
+    dueDate: fmtInvoiceDate(args.invoiceRow.due_date),
+    payUrl: args.invoiceRow.hash ? `${payOrigin}/invoice/${args.invoiceRow.hash}` : '',
+    signature: args.signature ?? DEFAULT_INVOICE_EMAIL_SIGNATURE,
+  }
+
   return {
+    kind,
     number,
-    subject: `Invoice - ${number} from Brogrammers Agency`,
-    message: buildDefaultInvoiceMessage({
-      contactName: args.contactName,
-      invoiceAmountDue: fmtInvoiceCurrency(args.invoiceRow.amount_due ?? args.invoiceRow.total ?? 0),
-      invoiceNumber: number,
-      invoiceDate: fmtInvoiceDate(args.invoiceRow.issue_date),
-      dueDate: fmtInvoiceDate(args.invoiceRow.due_date),
-      payUrl: args.invoiceRow.hash ? `${payOrigin}/invoice/${args.invoiceRow.hash}` : '',
-      signature: args.signature ?? DEFAULT_INVOICE_EMAIL_SIGNATURE,
-    }),
+    subject: buildInvoiceSubject(kind, number),
+    message: buildInvoiceMessage(kind, messageFields),
   }
 }
 
