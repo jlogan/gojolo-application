@@ -69,7 +69,6 @@ type Attachment = { id: string; message_id: string | null; thread_id: string; fi
 type TimelineItem = { kind: 'message'; data: InboxMessage; ts: string } | { kind: 'comment'; data: InboxComment; ts: string }
 type InboxUser = { user_id: string; display_name: string | null; email: string | null; avatar_url?: string | null }
 type ImapAccount = { id: string; email: string; label: string | null; addresses: string[] | null; host: string }
-type GmailLabelFilterMode = 'default' | 'include' | 'exclude'
 type GmailLabelOption = { label: string; thread_count: number | string }
 type ContactMatch = { contact_id: string; name: string; email: string | null }
 type InvoiceOption = { id: string; prefix: string | null; number: number | null; status: string; companyName?: string | null }
@@ -334,10 +333,8 @@ export default function Inbox() {
   const [searchQuery, setSearchQuery] = useState('')
   const [mailboxFilterId, setMailboxFilterId] = useState<string | null>(null)
   const [mailboxFilterOpen, setMailboxFilterOpen] = useState(false)
-  const [gmailLabelMode, setGmailLabelMode] = useState<GmailLabelFilterMode>('default')
-  const [gmailLabelName, setGmailLabelName] = useState<string | null>(null)
+  const [selectedGmailLabel, setSelectedGmailLabel] = useState<string | null>(null)
   const [gmailLabelOptions, setGmailLabelOptions] = useState<GmailLabelOption[]>([])
-  const [gmailLabelFilterOpen, setGmailLabelFilterOpen] = useState(false)
   const [hasMoreThreads, setHasMoreThreads] = useState(false)
   const [loadingMoreThreads, setLoadingMoreThreads] = useState(false)
 
@@ -534,33 +531,29 @@ export default function Inbox() {
   const initialLoadDone = useRef(false)
   const fetchFilterRef = useRef<InboxFilter>(filter)
   const fetchMailboxFilterRef = useRef<string | null>(mailboxFilterId)
-  const fetchGmailLabelModeRef = useRef<GmailLabelFilterMode>(gmailLabelMode)
-  const fetchGmailLabelNameRef = useRef<string | null>(gmailLabelName)
+  const fetchSelectedGmailLabelRef = useRef<string | null>(selectedGmailLabel)
+
+  const applyGmailLabelFilter = useCallback((label: string | null) => {
+    setSelectedGmailLabel(label)
+    setThreads([])
+    setHasMoreThreads(false)
+    initialLoadDone.current = false
+  }, [])
 
   // Data fetching — paginated and server-side searchable so older/unloaded threads can be found.
   const fetchThreadsPage = useCallback(async (offset = 0, append = false) => {
     fetchFilterRef.current = filter
     fetchMailboxFilterRef.current = mailboxFilterId
-    fetchGmailLabelModeRef.current = gmailLabelMode
-    fetchGmailLabelNameRef.current = gmailLabelName
+    fetchSelectedGmailLabelRef.current = selectedGmailLabel
     if (!currentOrg?.id || !userId) {
       debugLog('fetchThreads', { event: 'SKIP', orgId: currentOrg?.id, userId })
-      return
-    }
-    if ((gmailLabelMode === 'include' || gmailLabelMode === 'exclude') && !gmailLabelName) {
-      if (!append) {
-        setThreads([])
-        setHasMoreThreads(false)
-        initialLoadDone.current = true
-        setLoading(false)
-      }
       return
     }
     if (append) setLoadingMoreThreads(true)
     else if (!initialLoadDone.current) setLoading(true)
     try {
       const query = searchQuery.trim()
-      debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, mailboxFilterId, gmailLabelMode, gmailLabelName, pageSize, offset, append, query })
+      debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, mailboxFilterId, selectedGmailLabel, pageSize, offset, append, query })
 
       const { data, error } = await supabase.rpc('search_inbox_threads', {
         p_org_id: currentOrg.id,
@@ -570,8 +563,8 @@ export default function Inbox() {
         p_limit: pageSize,
         p_offset: offset,
         p_imap_account_id: mailboxFilterId,
-        p_gmail_label: gmailLabelMode === 'default' ? null : gmailLabelName,
-        p_gmail_label_mode: gmailLabelMode === 'default' ? null : gmailLabelMode,
+        p_gmail_label: selectedGmailLabel,
+        p_gmail_label_mode: selectedGmailLabel ? 'include' : null,
       })
 
       if (error) {
@@ -595,8 +588,7 @@ export default function Inbox() {
       if (
         fetchFilterRef.current !== filter
         || fetchMailboxFilterRef.current !== mailboxFilterId
-        || fetchGmailLabelModeRef.current !== gmailLabelMode
-        || fetchGmailLabelNameRef.current !== gmailLabelName
+        || fetchSelectedGmailLabelRef.current !== selectedGmailLabel
       ) {
         debugLog('fetchThreads', {
           event: 'SKIP_stale',
@@ -604,10 +596,8 @@ export default function Inbox() {
           currentFilter: filter,
           fetchedMailboxFilterId: fetchMailboxFilterRef.current,
           currentMailboxFilterId: mailboxFilterId,
-          fetchedGmailLabelMode: fetchGmailLabelModeRef.current,
-          currentGmailLabelMode: gmailLabelMode,
-          fetchedGmailLabelName: fetchGmailLabelNameRef.current,
-          currentGmailLabelName: gmailLabelName,
+          fetchedGmailLabel: fetchSelectedGmailLabelRef.current,
+          currentGmailLabel: selectedGmailLabel,
         })
         return
       }
@@ -625,8 +615,7 @@ export default function Inbox() {
         !append
         && fetchFilterRef.current === filter
         && fetchMailboxFilterRef.current === mailboxFilterId
-        && fetchGmailLabelModeRef.current === gmailLabelMode
-        && fetchGmailLabelNameRef.current === gmailLabelName
+        && fetchSelectedGmailLabelRef.current === selectedGmailLabel
         && !initialLoadDone.current
       ) setThreads([])
       setHasMoreThreads(false)
@@ -634,7 +623,7 @@ export default function Inbox() {
       if (append) setLoadingMoreThreads(false)
       else setLoading(false)
     }
-  }, [currentOrg?.id, filter, mailboxFilterId, gmailLabelMode, gmailLabelName, userId, debugLog, pageSize, searchQuery])
+  }, [currentOrg?.id, filter, mailboxFilterId, selectedGmailLabel, userId, debugLog, pageSize, searchQuery])
 
   const fetchThreads = useCallback(() => fetchThreadsPage(0, false), [fetchThreadsPage])
 
@@ -964,9 +953,7 @@ export default function Inbox() {
   useEffect(() => {
     setMailboxFilterId(null)
     setMailboxFilterOpen(false)
-    setGmailLabelMode('default')
-    setGmailLabelName(null)
-    setGmailLabelFilterOpen(false)
+    setSelectedGmailLabel(null)
   }, [currentOrg?.id])
 
   useEffect(() => {
@@ -1217,10 +1204,8 @@ export default function Inbox() {
   // Filter by current tab so we never show trash in All or non-trash in Trash (handles stale threads during filter switch)
   const threadMatchesFilter = (t: InboxThread) => {
     if (mailboxFilterId && t.imap_account_id !== mailboxFilterId) return false
-    if (gmailLabelMode === 'include' && gmailLabelName) {
-      if (!t.gmail_labels?.includes(gmailLabelName)) return false
-    } else if (gmailLabelMode === 'exclude' && gmailLabelName) {
-      if (t.gmail_labels?.includes(gmailLabelName)) return false
+    if (selectedGmailLabel) {
+      if (!t.gmail_labels?.includes(selectedGmailLabel)) return false
     } else if (filter === 'inbox' && t.in_gmail_inbox === false) {
       return false
     }
@@ -2467,6 +2452,28 @@ export default function Inbox() {
               <f.icon className="w-3.5 h-3.5" /> {f.label}
             </button>
           ))}
+          {hasGmailAccounts && (
+            <div className="inline-flex items-center gap-1.5 pl-1 border-l border-border shrink-0">
+              <Tag className={`w-3.5 h-3.5 shrink-0 ${selectedGmailLabel ? 'text-accent' : 'text-gray-400'}`} />
+              <select
+                value={selectedGmailLabel ?? ''}
+                onChange={e => applyGmailLabelFilter(e.target.value || null)}
+                title="Filter by Gmail label"
+                className={`rounded-lg border px-2 py-1.5 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-accent max-w-[11rem] truncate ${
+                  selectedGmailLabel
+                    ? 'border-accent/60 bg-accent/15 text-accent'
+                    : 'border-border bg-surface-muted text-gray-300'
+                }`}
+              >
+                <option value="">Labels</option>
+                {gmailLabelOptions.map(opt => (
+                  <option key={opt.label} value={opt.label}>
+                    {opt.label} ({Number(opt.thread_count)})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {selectedIds.size > 0 && (
             <div className="inline-flex items-center gap-1.5 pl-1 border-l border-border">
               <User className="w-3.5 h-3.5 text-gray-400 shrink-0" />
@@ -2555,69 +2562,6 @@ export default function Inbox() {
                     </option>
                   ))}
                 </select>
-              </div>
-            )}
-            {hasGmailAccounts && (
-              <div className="px-2 pb-2 border-t border-border/60">
-                <button
-                  type="button"
-                  onClick={() => setGmailLabelFilterOpen(open => !open)}
-                  title="Filter by Gmail label"
-                  className={`mb-2 inline-flex items-center gap-1.5 h-8 rounded border px-2 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-accent ${
-                    gmailLabelMode !== 'default' && gmailLabelName
-                      ? 'border-accent/60 bg-accent/15 text-accent'
-                      : gmailLabelFilterOpen
-                        ? 'border-border bg-surface-muted text-gray-200 ring-1 ring-accent/40'
-                        : 'border-border bg-surface-muted text-gray-400 hover:text-gray-200'
-                  }`}
-                >
-                  <Tag className="w-3.5 h-3.5 shrink-0" />
-                  {gmailLabelMode !== 'default' && gmailLabelName
-                    ? `${gmailLabelMode === 'include' ? 'Include' : 'Exclude'}: ${gmailLabelName}`
-                    : 'Gmail label'}
-                </button>
-                {gmailLabelFilterOpen && (
-                  <div className="flex flex-col gap-2">
-                    <select
-                      value={gmailLabelMode}
-                      onChange={e => {
-                        const mode = e.target.value as GmailLabelFilterMode
-                        setGmailLabelMode(mode)
-                        if (mode === 'default') setGmailLabelName(null)
-                        setThreads([])
-                        setHasMoreThreads(false)
-                        initialLoadDone.current = false
-                      }}
-                      className="w-full h-9 rounded border border-border bg-surface-muted px-2 text-xs font-medium text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
-                    >
-                      <option value="default">Default (hide out-of-Gmail Inbox)</option>
-                      <option value="include">Include label…</option>
-                      <option value="exclude">Exclude label…</option>
-                    </select>
-                    {gmailLabelMode !== 'default' && (
-                      <select
-                        value={gmailLabelName ?? ''}
-                        onChange={e => {
-                          setGmailLabelName(e.target.value || null)
-                          setThreads([])
-                          setHasMoreThreads(false)
-                          initialLoadDone.current = false
-                        }}
-                        className="w-full h-9 rounded border border-border bg-surface-muted px-2 text-xs font-medium text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
-                      >
-                        <option value="">Select label…</option>
-                        {gmailLabelOptions.map(opt => (
-                          <option key={opt.label} value={opt.label}>
-                            {opt.label} ({Number(opt.thread_count)})
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    {gmailLabelMode !== 'default' && gmailLabelOptions.length === 0 && (
-                      <p className="text-[11px] text-gray-500">Sync email to populate Gmail labels.</p>
-                    )}
-                  </div>
-                )}
               </div>
             )}
           </div>
