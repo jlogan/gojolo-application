@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { prepareDraftHtmlForDisplay } from '@/lib/emailSanitizer'
 import { linkInvoiceToThread } from '@/lib/invoiceEmailThread'
 import {
   buildFinalizedInvoiceEmailHtml,
@@ -7,6 +8,7 @@ import {
   isInvoiceOverdue,
   isInvoiceResend,
   resolveInvoiceEmailKind,
+  resolveInvoiceDraftDisplayKind,
   splitContactName,
   type InvoiceEmailKind,
   type InvoiceEmailRow,
@@ -229,6 +231,30 @@ export async function loadInvoiceResendDraftPayload(
   orgId: string,
 ): Promise<{ payload?: InvoiceInboxDraftPayload; error?: string }> {
   return loadInvoiceInboxDraftPayload(invoiceId, orgId, 'resend')
+}
+
+/** Regenerate canonical invoice draft subject/HTML for the inbox composer (correct resend/overdue copy). */
+export async function refreshInvoiceInboxDraftEditorContent(args: {
+  invoiceId: string
+  orgId: string
+  kind: InvoiceEmailKind
+}): Promise<{ subject: string; html: string; storageHtml: string } | null> {
+  const preferredKind = args.kind === 'initial' ? undefined : args.kind
+  const { payload, error } = await loadInvoiceInboxDraftPayload(args.invoiceId, args.orgId, preferredKind)
+  if (error || !payload) return null
+  return {
+    subject: payload.subject,
+    storageHtml: payload.html,
+    html: prepareDraftHtmlForDisplay(payload.html),
+  }
+}
+
+export function resolveKindForInvoiceDraftEditor(args: {
+  contextKind?: InvoiceEmailKind | null
+  subject?: string | null
+  html?: string | null
+}): InvoiceEmailKind {
+  return resolveInvoiceDraftDisplayKind(args)
 }
 
 /** Creates a new inbox thread + draft message for send/resend/overdue (never reuses the initial sent thread). */

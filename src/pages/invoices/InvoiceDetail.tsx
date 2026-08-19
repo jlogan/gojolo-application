@@ -496,7 +496,7 @@ export default function InvoiceDetail() {
 
         {canSendInvoice && (
           <Link
-            to={getInvoiceSendPath(invoice)}
+            to={getInvoiceSendPath(invoice, resolveInvoiceEmailKind(invoice) === 'resend' ? 'resend' : undefined)}
             className={invoiceEmailActionButtonClass('send')}
             aria-label={sendLabels.long}
             title={sendLabels.long}

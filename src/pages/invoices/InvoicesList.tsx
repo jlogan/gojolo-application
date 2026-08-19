@@ -108,14 +108,15 @@ function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
 }
 
 function InvoiceListEmailActions({ inv }: { inv: InvoiceRow }) {
-  const sendLabels = getInvoiceEmailActionLabels(resolveInvoiceEmailKind(inv))
+  const emailKind = resolveInvoiceEmailKind(inv)
+  const sendLabels = getInvoiceEmailActionLabels(emailKind)
   const followUpPath = getInvoiceFollowUpPath(inv)
   const followUpLabels = getInvoiceEmailActionLabels('overdue_followup')
 
   return (
     <>
       <Link
-        to={getInvoiceSendPath(inv)}
+        to={getInvoiceSendPath(inv, emailKind === 'resend' ? 'resend' : undefined)}
         onClick={(e) => e.stopPropagation()}
         className={invoiceEmailActionIconButtonClass('send')}
         aria-label={sendLabels.long}

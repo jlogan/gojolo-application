@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { ChevronDown, Paperclip, Save, Send } from 'lucide-react'
 import RichTextEditor from '@/components/inbox/RichTextEditor'
+import { buildEmailSrcDoc, sanitizeEmailHtml } from '@/lib/emailSanitizer'
 
 export type SendableAddress = { accountId: string; email: string; label: string }
 export type ContactSuggestion = { name: string; email: string }
@@ -51,6 +52,10 @@ type Props = {
   minHeight?: string
   /** When true, omit the rich-text body editor (e.g. invoice emails with iframe preview). */
   hideBodyEditor?: boolean
+  /** Formatted HTML preview shown when hideBodyEditor is true (invoice drafts). */
+  bodyPreviewHtml?: string
+  onEditBody?: () => void
+  editBodyLabel?: string
 }
 
 export default function EmailComposeForm({
@@ -97,6 +102,9 @@ export default function EmailComposeForm({
   autofocus = true,
   minHeight = 'min-h-[240px]',
   hideBodyEditor = false,
+  bodyPreviewHtml = '',
+  onEditBody,
+  editBodyLabel = 'Edit message',
 }: Props) {
   const [isDragging, setIsDragging] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -317,6 +325,35 @@ export default function EmailComposeForm({
       {!hideBodyEditor && (
         <RichTextEditor content={html} onChange={onHtmlChange} placeholder="Write your message…" autofocus={autofocus} minHeight={minHeight} />
       )}
+
+      {hideBodyEditor && bodyPreviewHtml.trim() && (() => {
+        const sanitized = sanitizeEmailHtml(bodyPreviewHtml)
+        const { srcDoc } = buildEmailSrcDoc(sanitized)
+        return (
+          <div className="rounded-lg border border-border overflow-hidden bg-white">
+            {onEditBody && (
+              <div className="flex justify-end px-2 py-1.5 border-b border-border bg-surface-elevated/50">
+                <button type="button" onClick={onEditBody} className="text-xs font-medium text-accent hover:underline">
+                  {editBodyLabel}
+                </button>
+              </div>
+            )}
+            <iframe
+              title="Invoice email preview"
+              srcDoc={srcDoc}
+              className="w-full border-0"
+              sandbox="allow-same-origin allow-popups allow-top-navigation-by-user-activation"
+              onLoad={(e) => {
+                const frame = e.target as HTMLIFrameElement
+                if (frame.contentDocument?.body) {
+                  frame.style.height = `${Math.max(200, frame.contentDocument.body.scrollHeight + 24)}px`
+                }
+              }}
+              style={{ minHeight: '200px', background: '#fff' }}
+            />
+          </div>
+        )
+      })()}
 
       {attachments.length > 0 && (
         <div className="px-1 py-2 space-y-1.5">

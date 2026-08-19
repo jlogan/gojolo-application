@@ -24,10 +24,16 @@ import {
 import {
   INVOICE_INBOX_DRAFT_QUERY_PARAMS,
   getInvoiceSendPath,
+  isInvoiceEmailHtml,
+  shouldPreferExistingInvoiceDraftHtml,
   type InvoiceEmailKind,
   type InvoiceInboxDraftKind,
 } from '@/lib/invoiceEmailContent'
-import { invoiceInboxDraftToastMessage } from '@/lib/invoiceResendDraft'
+import {
+  invoiceInboxDraftToastMessage,
+  refreshInvoiceInboxDraftEditorContent,
+  resolveKindForInvoiceDraftEditor,
+} from '@/lib/invoiceResendDraft'
 import type { InvoiceDraftNavigationState } from '@/pages/invoices/InvoiceEmailDraft'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -166,6 +172,36 @@ function resolveEmail(email: string, contacts: ContactMatch[]): { name: string |
 function formatInvoiceNumber(inv: { prefix: string | null; number: number | null }): string {
   const prefix = (inv.prefix ?? 'INV-').replace(/-+$/, '')
   return inv.number ? `${prefix}-${String(inv.number).padStart(4, '0')}` : 'Invoice'
+}
+
+type DraftBodyFetchEntry = {
+  body: string | null
+  html_body: string | null
+  from_identifier?: string | null
+  to_identifier?: string | null
+  cc?: string | null
+  is_draft?: boolean | null
+}
+
+function mergeDraftMessageBodyFromFetch(
+  pm: InboxMessage,
+  entry: DraftBodyFetchEntry,
+  threadSubject: string | null | undefined,
+): InboxMessage {
+  const keepExistingHtml = !!pm.is_draft && shouldPreferExistingInvoiceDraftHtml({
+    existingHtml: pm.html_body,
+    incomingHtml: entry.html_body,
+    threadSubject,
+  })
+  return {
+    ...pm,
+    body: keepExistingHtml ? (pm.body ?? entry.body) : (entry.body ?? pm.body),
+    html_body: keepExistingHtml ? pm.html_body : (entry.html_body ?? pm.html_body),
+    from_identifier: entry.from_identifier ?? pm.from_identifier,
+    to_identifier: entry.to_identifier ?? pm.to_identifier,
+    cc: entry.cc ?? pm.cc,
+    is_draft: entry.is_draft != null ? entry.is_draft : pm.is_draft,
+  }
 }
 
 export default function Inbox() {
@@ -312,6 +348,8 @@ export default function Inbox() {
   const [selectedFromAddress, setSelectedFromAddress] = useState('')
   const [replyAttachments, setReplyAttachments] = useState<File[]>([])
   const [savingDraft, setSavingDraft] = useState(false)
+  /** When false, invoice drafts show formatted iframe preview instead of TipTap (preserves layout). */
+  const [invoiceDraftEditBody, setInvoiceDraftEditBody] = useState(false)
 
   // Comment
   const [commentText, setCommentText] = useState('')
@@ -612,6 +650,9 @@ export default function Inbox() {
       console.error('[Inbox] inbox_messages query failed:', queryError.message, queryError)
     }
 
+    const { data: threadMeta } = await supabase.from('inbox_threads').select('subject').eq('id', tid).maybeSingle()
+    const threadSubject = (threadMeta as { subject?: string | null } | null)?.subject ?? null
+
     // If thread has no messages, trigger IMAP backfill (orphan thread recovery). imap_account_id may be null — pick any active account for the org.
     if (msgs.length === 0) {
       debugLog('fetchMessages', { event: 'backfill_trigger', threadId: tid }, tid)
@@ -752,15 +793,7 @@ export default function Inbox() {
                   .map(pm => {
                     const b = bodyMap.get(pm.id)
                     if (!b) return pm
-                    return {
-                      ...pm,
-                      body: b.body ?? pm.body,
-                      html_body: b.html_body ?? pm.html_body,
-                      from_identifier: b.from_identifier ?? pm.from_identifier,
-                      to_identifier: b.to_identifier ?? pm.to_identifier,
-                      cc: b.cc ?? pm.cc,
-                      is_draft: b.is_draft != null ? b.is_draft : pm.is_draft,
-                    }
+                    return mergeDraftMessageBodyFromFetch(pm, b, threadSubject)
                   })
                 return merged.sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
               })
@@ -791,14 +824,7 @@ export default function Inbox() {
                         .map(p => {
                           const entry = m.get(p.id)
                           if (!entry) return p
-                          return {
-                            ...p,
-                            body: entry.body ?? p.body,
-                            html_body: entry.html_body ?? p.html_body,
-                            from_identifier: entry.from_identifier ?? p.from_identifier,
-                            to_identifier: entry.to_identifier ?? p.to_identifier,
-                            cc: entry.cc ?? p.cc,
-                          }
+                          return mergeDraftMessageBodyFromFetch(p, entry, threadSubject)
                         }).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
                       fetchAttachments(tid)
                       if (r.hasMore) setTimeout(retry, 800)
@@ -1429,6 +1455,66 @@ export default function Inbox() {
     return selected ?? null
   }
 
+  const resolveLinkedInvoiceId = useCallback((): string | null => {
+    return invoiceInboxDraftContextRef.current?.invoiceId ?? threadInvoiceLinks[0]?.invoice_id ?? null
+  }, [threadInvoiceLinks])
+
+  const openInvoiceDraftInEditor = useCallback(async (draft: InboxMessage, threadSubject: string | null | undefined) => {
+    const fromAddress = findFromAddressForReply(draft)
+    if (fromAddress) {
+      setSelectedAccountId(fromAddress.accountId)
+      setSelectedFromAddress(fromAddress.email)
+    }
+    setReplyTo(draft.to_identifier ?? '')
+    setReplyCc(draft.cc ?? '')
+    setReplyBcc('')
+    setShowCcBcc(!!(draft.cc?.trim()))
+    setReplyAttachments([])
+    setReplyAnchorMsgId(draft.id)
+    setDraftMessageId(draft.id)
+    setReplyMode('reply')
+    setInvoiceDraftEditBody(false)
+    setExpandedMsgs((prev) => new Set([...prev, draft.id]))
+
+    let subject = threadSubject ?? ''
+    let html = ''
+    const invoiceId = resolveLinkedInvoiceId()
+    if (invoiceId && currentOrg?.id) {
+      const kind = resolveKindForInvoiceDraftEditor({
+        contextKind: invoiceInboxDraftContextRef.current?.kind ?? null,
+        subject: threadSubject,
+        html: draft.html_body,
+      })
+      const refreshed = await refreshInvoiceInboxDraftEditorContent({
+        invoiceId,
+        orgId: currentOrg.id,
+        kind,
+      })
+      if (refreshed) {
+        subject = refreshed.subject
+        html = refreshed.html
+        setMessages((prev) => prev.map((m) => (
+          m.id === draft.id
+            ? { ...m, html_body: refreshed.storageHtml, body: stripHtmlToText(refreshed.storageHtml, 100_000) }
+            : m
+        )))
+        if (subject && subject !== (threadSubject ?? '')) {
+          void supabase.from('inbox_threads').update({ subject }).eq('id', draft.thread_id)
+        }
+      }
+    }
+
+    if (!html) {
+      const { content: draftContent, html: draftIsHtml } = cleanMessageBody(draft)
+      const normalizedDraft = draftIsHtml ? prepareDraftHtmlForDisplay(draftContent) : draftContent
+      html = draftIsHtml ? normalizedDraft : normalizedDraft.replace(/\n/g, '<br/>')
+    }
+
+    setReplySubject(subject)
+    setReplyHtml(html)
+    setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+  }, [currentOrg?.id, resolveLinkedInvoiceId, imapAccounts, selectedFromAddress])
+
   // Collect all unique addresses in the thread (from, to, cc) excluding any address that appears in the From dropdown; for Reply All
   const getThreadRecipientsForReplyAll = (anchorMessage: InboxMessage | null): { to: string; cc: string } => {
     const fromDropdownEmails = new Set<string>()
@@ -1464,6 +1550,7 @@ export default function Inbox() {
   const openReply = (mode: 'reply' | 'reply_all' | 'forward' | 'compose') => {
     setReplyAnchorMsgId(null)
     setDraftMessageId(null)
+    setInvoiceDraftEditBody(false)
     if (mode === 'compose') {
       leadComposeContextRef.current = null
       setReplyTo(''); setReplyCc(''); setReplyBcc(''); setReplySubject(''); setReplyHtml(''); setShowCcBcc(false); setReplyAttachments([])
@@ -1508,26 +1595,8 @@ export default function Inbox() {
     if (!draft) return
 
     pendingInvoiceDraftEditorRef.current = null
-    const fromAddress = findFromAddressForReply(draft)
-    if (fromAddress) {
-      setSelectedAccountId(fromAddress.accountId)
-      setSelectedFromAddress(fromAddress.email)
-    }
-    setReplyTo(draft.to_identifier ?? '')
-    setReplyCc(draft.cc ?? '')
-    setReplyBcc('')
-    setShowCcBcc(!!(draft.cc?.trim()))
-    setReplySubject(selectedThread?.subject ?? '')
-    const { content: draftContent, html: draftIsHtml } = cleanMessageBody(draft)
-    const normalizedDraft = draftIsHtml ? prepareDraftHtmlForDisplay(draftContent) : draftContent
-    setReplyHtml(draftIsHtml ? normalizedDraft : normalizedDraft.replace(/\n/g, '<br/>'))
-    setReplyAttachments([])
-    setReplyAnchorMsgId(draft.id)
-    setDraftMessageId(draft.id)
-    setReplyMode('reply')
-    setExpandedMsgs((prev) => new Set([...prev, draft.id]))
-    setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
-  }, [messages, messagesLoading, selectedThreadId, selectedThread?.subject, imapAccounts])
+    void openInvoiceDraftInEditor(draft, selectedThread?.subject ?? null)
+  }, [messages, messagesLoading, openInvoiceDraftInEditor, selectedThread?.subject, selectedThreadId])
 
   // Deep link from lead detail: /inbox?compose=1&to=...&leadId=...&contactId=...
   useEffect(() => {
@@ -2225,6 +2294,11 @@ export default function Inbox() {
   const sendableAddresses = getSendableAddresses()
 
   // Compose reply form (shared between compose mode and inline reply)
+  const isInvoiceDraftCompose =
+    !!draftMessageId
+    && isInvoiceEmailHtml(replyHtml)
+    && (!!invoiceInboxDraftContextRef.current || threadInvoiceLinks.length > 0)
+
   const renderReplyForm = (isCompose: boolean) => (
     <EmailComposeForm
       modeLabel={
@@ -2257,6 +2331,9 @@ export default function Inbox() {
       showSubject={isCompose}
       html={replyHtml}
       onHtmlChange={setReplyHtml}
+      hideBodyEditor={isInvoiceDraftCompose && !invoiceDraftEditBody}
+      bodyPreviewHtml={isInvoiceDraftCompose ? replyHtml : undefined}
+      onEditBody={isInvoiceDraftCompose ? () => setInvoiceDraftEditBody(true) : undefined}
       attachments={replyAttachments}
       onAttachmentsChange={setReplyAttachments}
       onSend={handleSendReply}
@@ -2272,6 +2349,7 @@ export default function Inbox() {
         setReplyMode(null)
         setReplyAnchorMsgId(null)
         setDraftMessageId(null)
+        setInvoiceDraftEditBody(false)
       }}
     />
   )
@@ -2757,6 +2835,7 @@ export default function Inbox() {
                       const sanitized = html
                         ? sanitizeEmailHtml(resolveInlineEmailImages(displayContent, msgAttachments))
                         : displayContent
+                      const draftUsesInvoiceLayout = isDraftMsg && html && isInvoiceEmailHtml(displayContent)
                       const preview = !isExpanded && m.body && !isUnavailableBodyText(m.body) ? m.body.replace(/<[^>]+>/g, '').slice(0, 80) : ''
                       const isEditingThisDraft = draftMessageId === m.id && replyMode !== null && replyMode !== 'compose'
                       if (isEditingThisDraft) {
@@ -2806,16 +2885,7 @@ export default function Inbox() {
                                 </button>
                               )}
                               {isDraftMsg && (<>
-                                <button type="button" title="Edit draft" onClick={(e) => { e.stopPropagation()
-                                  const fromAddress = findFromAddressForReply(m)
-                                  if (fromAddress) { setSelectedAccountId(fromAddress.accountId); setSelectedFromAddress(fromAddress.email) }
-                                  setReplyTo(m.to_identifier ?? ''); setReplyCc(m.cc ?? ''); setReplyBcc(''); setShowCcBcc(!!(m.cc?.trim()))
-                                  setReplySubject(selectedThread?.subject ?? '')
-                                  const { content: draftContent, html: draftIsHtml } = cleanMessageBody(m)
-                                  const normalizedDraft = draftIsHtml ? prepareDraftHtmlForDisplay(draftContent) : draftContent
-                                  setReplyHtml(draftIsHtml ? normalizedDraft : normalizedDraft.replace(/\n/g, '<br/>'))
-                                  setReplyAttachments([]); setReplyAnchorMsgId(m.id); setDraftMessageId(m.id); setReplyMode('reply')
-                                }} className="p-1 rounded text-yellow-500/70 hover:text-yellow-400 hover:bg-surface-muted">
+                                <button type="button" title="Edit draft" onClick={(e) => { e.stopPropagation(); void openInvoiceDraftInEditor(m, selectedThread?.subject ?? null) }} className="p-1 rounded text-yellow-500/70 hover:text-yellow-400 hover:bg-surface-muted">
                                   <Pencil className="w-3.5 h-3.5" />
                                 </button>
                                 <button type="button" title="Delete draft" onClick={(e) => { e.stopPropagation(); void handleDeleteDraft(m) }} className="p-1 rounded text-red-500/70 hover:text-red-400 hover:bg-surface-muted">
@@ -2855,7 +2925,7 @@ export default function Inbox() {
                             </div>}
                           </header>
                           {isExpanded && (html ? (() => {
-                            const { srcDoc, isDark } = buildEmailSrcDoc(sanitized, isDraftMsg ? { forceDark: true } : undefined)
+                            const { srcDoc, isDark } = buildEmailSrcDoc(sanitized, isDraftMsg && !draftUsesInvoiceLayout ? { forceDark: true } : undefined)
                             return (
                               <div style={{ background: isDark ? '#0f0f0f' : '#fff' }}>
                                 <iframe title="Email" srcDoc={srcDoc}

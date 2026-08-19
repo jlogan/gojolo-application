@@ -53,6 +53,7 @@ export default function RichTextEditor({
   const filteredUsersRef = useRef<MentionableUser[]>([])
   const mentionableUsersRef = useRef(mentionableUsers)
   const editorRef = useRef<Editor | null>(null)
+  const skipInitialUpdateRef = useRef(true)
 
   useEffect(() => { mentionableUsersRef.current = mentionableUsers }, [mentionableUsers])
   useEffect(() => { mentionOpenRef.current = mentionOpen }, [mentionOpen])
@@ -125,6 +126,10 @@ export default function RichTextEditor({
     autofocus,
     onUpdate: ({ editor: e }) => {
       editorRef.current = e
+      if (skipInitialUpdateRef.current) {
+        skipInitialUpdateRef.current = false
+        return
+      }
       onChange?.(e.getHTML())
       syncMentionState(e)
     },
@@ -186,6 +191,10 @@ export default function RichTextEditor({
   useEffect(() => {
     if (editor) editorRef.current = editor
   }, [editor])
+
+  useEffect(() => {
+    skipInitialUpdateRef.current = true
+  }, [content])
 
   if (!editor) return null
 

@@ -320,12 +320,33 @@ function canUnwrapDraftWrapper(el: Element): boolean {
 }
 
 /**
+ * Preserve invoice email layout (amount block, detail rows, pay button) for inbox preview/editor.
+ * Skips aggressive wrapper unwrapping that strips backgrounds and spacing from generated invoice HTML.
+ */
+export function prepareInvoiceDraftHtmlForDisplay(rawHtml: string): string {
+  const trimmed = rawHtml?.trim()
+  if (!trimmed) return rawHtml ?? ''
+
+  const doc = new DOMParser().parseFromString(trimmed, 'text/html')
+  doc.querySelectorAll('style').forEach((el) => el.remove())
+  doc.querySelectorAll('link[rel="stylesheet"]').forEach((el) => el.remove())
+  doc.querySelectorAll('meta').forEach((el) => el.remove())
+
+  const result = doc.body.innerHTML.trim()
+  return result || trimmed
+}
+
+/**
  * Strip full email document chrome from provider-synced draft HTML so display
  * and TipTap editing use content fragments instead of Gmail/Outlook wrappers.
  */
 export function prepareDraftHtmlForDisplay(rawHtml: string): string {
   const trimmed = rawHtml?.trim()
   if (!trimmed) return rawHtml ?? ''
+
+  if (/Invoice Amount/i.test(trimmed) && /PAY NOW/i.test(trimmed)) {
+    return prepareInvoiceDraftHtmlForDisplay(trimmed)
+  }
 
   const doc = new DOMParser().parseFromString(trimmed, 'text/html')
 

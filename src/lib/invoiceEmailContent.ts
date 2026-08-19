@@ -66,11 +66,64 @@ export function canFollowUpOverdueInvoice(
 
 export function resolveInvoiceEmailKind(
   inv: Pick<InvoiceEmailRow, 'due_date' | 'status' | 'email_sent_at'>,
-  preferred?: InvoiceInboxDraftKind,
+  preferred?: InvoiceEmailKind | InvoiceInboxDraftKind,
 ): InvoiceEmailKind {
+  if (preferred === 'initial') return 'initial'
   if (preferred === 'overdue_followup' && isInvoiceOverdue(inv)) return 'overdue_followup'
   if (preferred === 'resend' || isInvoiceResend(inv)) return 'resend'
   return 'initial'
+}
+
+/** Detect generated invoice email HTML (amount block + pay button + detail rows). */
+export function isInvoiceEmailHtml(html: string | null | undefined): boolean {
+  const trimmed = html?.trim()
+  if (!trimmed) return false
+  return trimmed.includes('Invoice Amount') && trimmed.includes('Invoice No') && trimmed.includes('PAY NOW')
+}
+
+export function inferInvoiceEmailKindFromSubject(subject: string | null | undefined): InvoiceEmailKind {
+  const trimmed = (subject ?? '').trim()
+  if (/^Overdue:\s*Invoice/i.test(trimmed)) return 'overdue_followup'
+  if (/^Reminder:\s*Invoice/i.test(trimmed)) return 'resend'
+  return 'initial'
+}
+
+export function inferInvoiceEmailKindFromHtml(html: string | null | undefined): InvoiceEmailKind | null {
+  if (!isInvoiceEmailHtml(html)) return null
+  const trimmed = html!.trim()
+  if (trimmed.includes('Overdue Invoice Follow-Up')) return 'overdue_followup'
+  if (trimmed.includes('Invoice Reminder')) return 'resend'
+  if (trimmed.includes('Invoice from Brogrammers Agency')) return 'initial'
+  return null
+}
+
+/** Prefer DB invoice draft HTML when IMAP reconcile returns stale or mismatched copy. */
+export function shouldPreferExistingInvoiceDraftHtml(args: {
+  existingHtml: string | null | undefined
+  incomingHtml: string | null | undefined
+  threadSubject?: string | null
+}): boolean {
+  if (!isInvoiceEmailHtml(args.existingHtml)) return false
+  if (!args.incomingHtml?.trim()) return true
+  if (!isInvoiceEmailHtml(args.incomingHtml)) return true
+  const expectedKind = inferInvoiceEmailKindFromSubject(args.threadSubject)
+  const existingKind = inferInvoiceEmailKindFromHtml(args.existingHtml)
+  const incomingKind = inferInvoiceEmailKindFromHtml(args.incomingHtml)
+  if (expectedKind !== 'initial' && incomingKind !== expectedKind) return true
+  if (existingKind && incomingKind && existingKind !== incomingKind) return true
+  return false
+}
+
+/** Prefer thread subject / navigation context over stored html_body (IMAP reconcile can leave stale copy). */
+export function resolveInvoiceDraftDisplayKind(args: {
+  contextKind?: InvoiceEmailKind | null
+  subject?: string | null
+  html?: string | null
+}): InvoiceEmailKind {
+  if (args.contextKind === 'overdue_followup' || args.contextKind === 'resend') return args.contextKind
+  const fromSubject = inferInvoiceEmailKindFromSubject(args.subject)
+  if (fromSubject !== 'initial') return fromSubject
+  return inferInvoiceEmailKindFromHtml(args.html) ?? args.contextKind ?? 'initial'
 }
 
 export function getInvoiceSendPath(
@@ -79,6 +132,7 @@ export function getInvoiceSendPath(
 ): string {
   const base = `/invoices/${inv.id}/send`
   if (kind === 'overdue_followup') return `${base}?${INVOICE_SEND_KIND_QUERY}=overdue_followup`
+  if (kind === 'resend') return `${base}?${INVOICE_SEND_KIND_QUERY}=resend`
   return base
 }
 
