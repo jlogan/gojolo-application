@@ -4,7 +4,7 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
-import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, invoiceEmailActionButtonClass, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
+import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, invoiceEmailActionIconButtonClass, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
 import { Plus, FileText, Search, Send, Pencil, CircleStop, Clock } from 'lucide-react'
 
 type InvoiceRow = {
@@ -107,8 +107,35 @@ function canSendInvoice(inv: InvoiceRow, isVendor: boolean): boolean {
     && !['paid', 'cancelled'].includes(inv.status)
 }
 
-function invoiceSendLabel(inv: InvoiceRow): string {
-  return getInvoiceEmailActionLabels(resolveInvoiceEmailKind(inv)).short
+function InvoiceListEmailActions({ inv }: { inv: InvoiceRow }) {
+  const sendLabels = getInvoiceEmailActionLabels(resolveInvoiceEmailKind(inv))
+  const followUpPath = getInvoiceFollowUpPath(inv)
+  const followUpLabels = getInvoiceEmailActionLabels('overdue_followup')
+
+  return (
+    <>
+      <Link
+        to={getInvoiceSendPath(inv)}
+        onClick={(e) => e.stopPropagation()}
+        className={invoiceEmailActionIconButtonClass('send')}
+        aria-label={sendLabels.long}
+        title={sendLabels.long}
+      >
+        <Send className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      </Link>
+      {followUpPath && (
+        <Link
+          to={followUpPath}
+          onClick={(e) => e.stopPropagation()}
+          className={invoiceEmailActionIconButtonClass('followup')}
+          aria-label={followUpLabels.long}
+          title={followUpLabels.long}
+        >
+          <Clock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        </Link>
+      )}
+    </>
+  )
 }
 
 function SortHeader({
@@ -375,7 +402,7 @@ export default function InvoicesList() {
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">
           {/* Table header — hidden on mobile */}
-          <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_120px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider bg-surface-muted/50 border-b border-border">
+          <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_72px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider bg-surface-muted/50 border-b border-border">
             <SortHeader field="number" label="#" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
             <SortHeader field="company" label={counterpartyLabel} sortField={sortField} sortDir={sortDir} onSort={handleSort} />
             <SortHeader field="project" label="Project" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -409,7 +436,7 @@ export default function InvoicesList() {
                   className="w-full text-left hover:bg-surface-muted transition-colors cursor-pointer"
                 >
                   {/* Desktop row */}
-                  <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_120px] gap-2 items-center px-4 py-3">
+                  <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_72px] gap-2 items-center px-4 py-3">
                     <span className="text-sm font-medium text-white truncate">{invoiceNumber(inv)}</span>
                     <span className="text-sm text-gray-300 truncate">{companyName(inv.companies)}</span>
                     <span className="text-sm text-gray-400 truncate">{projectName(inv.projects)}</span>
@@ -430,7 +457,7 @@ export default function InvoicesList() {
                         <span className="text-xs text-gray-400">{formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
                       </>
                     )}
-                    <span className="flex justify-end gap-1.5">
+                    <span className="flex justify-end items-center gap-1">
                       {inv.is_recurring && !isVendor ? (
                         <>
                           <Link
@@ -450,24 +477,7 @@ export default function InvoicesList() {
                           </button>
                         </>
                       ) : canSendInvoice(inv, isVendor) && (
-                        <>
-                          <Link
-                            to={getInvoiceSendPath(inv)}
-                            onClick={(e) => e.stopPropagation()}
-                            className={invoiceEmailActionButtonClass('send')}
-                          >
-                            <Send className="w-3.5 h-3.5 shrink-0" /> {invoiceSendLabel(inv)}
-                          </Link>
-                          {getInvoiceFollowUpPath(inv) && (
-                            <Link
-                              to={getInvoiceFollowUpPath(inv)!}
-                              onClick={(e) => e.stopPropagation()}
-                              className={invoiceEmailActionButtonClass('followup')}
-                            >
-                              <Clock className="w-3.5 h-3.5 shrink-0" /> Follow Up
-                            </Link>
-                          )}
-                        </>
+                        <InvoiceListEmailActions inv={inv} />
                       )}
                     </span>
                   </div>
@@ -515,23 +525,8 @@ export default function InvoicesList() {
                         </button>
                       </div>
                     ) : canSendInvoice(inv, isVendor) && (
-                      <div className="flex flex-wrap gap-2">
-                        <Link
-                          to={getInvoiceSendPath(inv)}
-                          onClick={(e) => e.stopPropagation()}
-                          className={invoiceEmailActionButtonClass('send')}
-                        >
-                          <Send className="w-3.5 h-3.5 shrink-0" /> {invoiceSendLabel(inv)}
-                        </Link>
-                        {getInvoiceFollowUpPath(inv) && (
-                          <Link
-                            to={getInvoiceFollowUpPath(inv)!}
-                            onClick={(e) => e.stopPropagation()}
-                            className={invoiceEmailActionButtonClass('followup')}
-                          >
-                            <Clock className="w-3.5 h-3.5 shrink-0" /> Follow Up
-                          </Link>
-                        )}
+                      <div className="flex items-center gap-1">
+                        <InvoiceListEmailActions inv={inv} />
                       </div>
                     )}
                   </div>

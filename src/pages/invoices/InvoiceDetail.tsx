@@ -498,8 +498,10 @@ export default function InvoiceDetail() {
           <Link
             to={getInvoiceSendPath(invoice)}
             className={invoiceEmailActionButtonClass('send')}
+            aria-label={sendLabels.long}
+            title={sendLabels.long}
           >
-            <Send className="w-3.5 h-3.5 shrink-0" /> {sendLabels.short}
+            <Send className="w-3.5 h-3.5 shrink-0" aria-hidden="true" /> {sendLabels.short}
           </Link>
         )}
 
@@ -507,8 +509,10 @@ export default function InvoiceDetail() {
           <Link
             to={followUpPath}
             className={invoiceEmailActionButtonClass('followup')}
+            aria-label="Follow Up on Overdue Invoice"
+            title="Follow Up on Overdue Invoice"
           >
-            <Clock className="w-3.5 h-3.5 shrink-0" /> Follow Up
+            <Clock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" /> Follow Up
           </Link>
         )}
 

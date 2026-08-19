@@ -92,14 +92,24 @@ export function getInvoiceFollowUpPath(
   return getInvoiceInboxDraftPath(inv, 'overdue_followup')
 }
 
-/** Compact shared styling for Send / Resend / Follow Up invoice actions (list, detail, mobile). */
+/** Compact shared styling for Send / Resend / Follow Up invoice actions (detail page, mobile). */
 export const INVOICE_EMAIL_ACTION_BUTTON_BASE =
   'inline-flex items-center justify-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-none shrink-0 whitespace-nowrap'
+
+/** Icon-only square buttons for tight table/list action columns. */
+export const INVOICE_EMAIL_ACTION_ICON_BUTTON_BASE =
+  'inline-flex items-center justify-center size-7 rounded-md shrink-0'
 
 export function invoiceEmailActionButtonClass(variant: 'send' | 'followup'): string {
   return variant === 'followup'
     ? `${INVOICE_EMAIL_ACTION_BUTTON_BASE} bg-red-600/90 text-white hover:bg-red-700`
     : `${INVOICE_EMAIL_ACTION_BUTTON_BASE} bg-blue-600/90 text-white hover:bg-blue-700`
+}
+
+export function invoiceEmailActionIconButtonClass(variant: 'send' | 'followup'): string {
+  return variant === 'followup'
+    ? `${INVOICE_EMAIL_ACTION_ICON_BUTTON_BASE} bg-red-600/90 text-white hover:bg-red-700`
+    : `${INVOICE_EMAIL_ACTION_ICON_BUTTON_BASE} bg-blue-600/90 text-white hover:bg-blue-700`
 }
 
 export function getInvoiceEmailActionLabels(kind: InvoiceEmailKind): {
