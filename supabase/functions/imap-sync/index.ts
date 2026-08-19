@@ -41,6 +41,13 @@ import {
   resolveThreadIdFromMaps,
   subjectMapKey,
 } from '../_shared/inboxThreadResolve.ts'
+import {
+  extractGmailLabelState,
+  gmailLabelMessageFields,
+  isGmailHost,
+  refreshGmailLabelsForEnvelopes,
+  syncThreadGmailLabelsBatch,
+} from '../_shared/inboxGmailLabels.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -713,8 +720,12 @@ serve(async (req) => {
       }
       console.log('[imap-sync] account', acc.id, 'fetch range:', range, 'uidNext=', uidNext, 'cap=', MAX_HEADER_FETCH_PER_SYNC)
 
-      // Fetch headers only — no body/source download. flags needed to skip Gmail draft autosaves.
-      const envelopes = await client.fetchAll(range, { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }, { uid: true })
+      // Fetch headers only — no body/source download. flags/labels needed for Gmail draft + label state.
+      const isGmailAccount = isGmailHost(acc.host)
+      const headerFetchQuery = isGmailAccount
+        ? { envelope: true, flags: true, labels: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }
+        : { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }
+      const envelopes = await client.fetchAll(range, headerFetchQuery, { uid: true })
 
       let newMsgs = envelopes
         .filter((m) => {
@@ -753,6 +764,21 @@ serve(async (req) => {
 
       console.log('[imap-sync] account', acc.id, 'envelopes=', envelopes.length, 'newMsgs=', newMsgs.length, 'lastUid=', lastUid)
 
+      if (isGmailAccount && highestAvailableUid > 0) {
+        const labelRefreshStart = Math.max(1, highestAvailableUid - 199)
+        const labelRange = `${labelRefreshStart}:${highestAvailableUid}`
+        const labelEnvelopes = labelRange === range
+          ? envelopes
+          : await client.fetchAll(labelRange, headerFetchQuery, { uid: true })
+        await refreshGmailLabelsForEnvelopes(
+          service,
+          acc.id,
+          acc.host,
+          labelEnvelopes as Array<{ uid?: unknown; flags?: Set<string>; labels?: Set<string> }>,
+          `[imap-sync] account ${acc.id}`,
+        )
+      }
+
       if (newMsgs.length === 0) {
         console.log('[imap-sync] account', acc.id, 'no new messages — updating last_fetch_at only')
         // Draft heal scans Gmail Drafts for empty threads — maintenance-only; too slow for cron fan-out.
@@ -785,7 +811,9 @@ serve(async (req) => {
       const parsed = newMsgs.map(msg => {
         const uid = msg.uid as number
         const flags = msg.flags as Set<string> | undefined
+        const labels = (msg as { labels?: Set<string> }).labels
         const isDraft = flags instanceof Set ? flags.has('\\Draft') : false
+        const labelState = extractGmailLabelState(isGmailAccount, flags, labels)
         const envelope = msg.envelope as ImapEnvelope & { date?: Date }
         // ImapFlow returns headers as a Buffer of raw header lines
         const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
@@ -805,6 +833,7 @@ serve(async (req) => {
           uid, messageId, inReplyTo, refsList,
           fromAddr,
           isDraft,
+          labelState,
           toAddr: resolveToFromEnvelope(envelope),
           ccAddr,
           bccAddr,
@@ -848,6 +877,7 @@ serve(async (req) => {
 
       // Batch insert rows (dedupe by UID + skip UIDs already in DB — idx_inbox_messages_imap_dedup)
       const insertRows: Record<string, unknown>[] = []
+      const labelSyncThreadIds = new Set<string>()
       // Track thread IDs created fresh in this batch so we can delete them if insert fails
       const newlyCreatedThreadIds = new Set<string>()
       const draftsCache = new DraftsEnvelopeCache(client, acc.host)
@@ -1017,7 +1047,9 @@ serve(async (req) => {
           body: null, html_body: null,
           external_id: p.externalId, external_uid: p.uid,
           imap_account_id: acc.id, received_at: p.date.toISOString(),
+          ...gmailLabelMessageFields(p.labelState),
         })
+        labelSyncThreadIds.add(threadId)
       }
 
       // Last-line defense: same external_uid twice in insertRows would violate idx_inbox_messages_imap_dedup
@@ -1139,7 +1171,12 @@ serve(async (req) => {
           } else if (isIncrementalSync && insertedRows.length > 0) {
             console.log('[imap-sync] account', acc.id, 'incremental: deferred body fetch for', insertedRows.length, 'message(s) — use fetch-thread-bodies or resync')
           }
+          for (const row of insertedRows) labelSyncThreadIds.add(row.thread_id)
         }
+      }
+
+      if (labelSyncThreadIds.size > 0) {
+        await syncThreadGmailLabelsBatch(service, labelSyncThreadIds, `[imap-sync] account ${acc.id}`)
       }
 
       await service

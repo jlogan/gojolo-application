@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import { corsHeaders } from '../_shared/cors.ts'
+import { isGmailHost, syncThreadGmailLabels } from '../_shared/inboxGmailLabels.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -95,6 +96,16 @@ Deno.serve(async (req: Request) => {
     }
 
     await client.logout().catch(() => client.close())
+
+    if (isGmailHost(acc.host as string)) {
+      const inGmailInbox = body.action === 'unarchive'
+      await service.from('inbox_messages')
+        .update({ in_gmail_inbox: inGmailInbox })
+        .eq('thread_id', body.threadId)
+        .not('external_uid', 'is', null)
+      await syncThreadGmailLabels(service, body.threadId, '[imap-flag-sync]')
+    }
+
     return new Response(JSON.stringify({ ok: true }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   } catch (err) {
     try { await client.logout() } catch { client.close() }

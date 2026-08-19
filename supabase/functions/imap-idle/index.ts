@@ -26,6 +26,11 @@ import {
   resolveThreadIdFromMaps,
   subjectMapKey,
 } from '../_shared/inboxThreadResolve.ts'
+import {
+  extractGmailLabelState,
+  gmailLabelMessageFields,
+  syncThreadGmailLabels,
+} from '../_shared/inboxGmailLabels.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -174,7 +179,10 @@ Deno.serve(async (req: Request) => {
         let inserted = 0
 
         for (const envMsg of batch) {
-          const fullMsgs = await client.fetchAll(String(envMsg.uid), { envelope: true, flags: true, source: true, uid: true }, { uid: true })
+          const fullFetchQuery = isGmail
+            ? { envelope: true, flags: true, labels: true, source: true, uid: true }
+            : { envelope: true, flags: true, source: true, uid: true }
+          const fullMsgs = await client.fetchAll(String(envMsg.uid), fullFetchQuery, { uid: true })
           const msg = fullMsgs[0]
           if (!msg) continue
           const uid = msg.uid as number
@@ -182,6 +190,8 @@ Deno.serve(async (req: Request) => {
 
           // Skip Gmail draft autosaves — they would be ingested as duplicate outbound messages
           const flags = msg.flags as Set<string> | undefined
+          const labels = (msg as { labels?: Set<string> }).labels
+          const labelState = extractGmailLabelState(isGmail, flags, labels)
           if (flags instanceof Set && flags.has('\\Draft')) {
             console.log('[imap-idle] account', acc.id, 'skip draft envelope', uid)
             continue
@@ -348,7 +358,10 @@ Deno.serve(async (req: Request) => {
             body: bodyText, html_body: htmlBody,
             external_id: externalId, external_uid: uid,
             imap_account_id: acc.id, received_at: date.toISOString(),
+            ...gmailLabelMessageFields(labelState),
           }).select('id').single()
+
+          await syncThreadGmailLabels(service, threadId, `[imap-idle] account ${acc.id}`)
 
           // Persist inline-image attachment rows (previously uploaded but never recorded)
           if (insertedMsg) {
