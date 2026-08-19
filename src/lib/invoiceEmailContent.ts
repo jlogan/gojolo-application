@@ -17,10 +17,13 @@ export type InvoiceEmailKind = 'initial' | 'resend' | 'overdue_followup'
 
 export type InvoiceInboxDraftKind = Extract<InvoiceEmailKind, 'resend' | 'overdue_followup'>
 
+/** Query param on legacy inbox thread URLs; redirected to invoice compose. */
 export const INVOICE_INBOX_DRAFT_QUERY_PARAMS: Record<InvoiceInboxDraftKind, string> = {
   resend: 'resendInvoice',
   overdue_followup: 'followUpInvoice',
 }
+
+export const INVOICE_SEND_KIND_QUERY = 'kind'
 
 export function fmtInvoiceCurrency(value: number | null | undefined): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(value ?? 0)
@@ -70,37 +73,25 @@ export function resolveInvoiceEmailKind(
   return 'initial'
 }
 
-export function hasInvoiceSentThreadId(
-  inv: Pick<InvoiceEmailRow, 'email_sent_thread_id'>,
-): boolean {
-  return Boolean(inv.email_sent_thread_id)
+export function getInvoiceSendPath(
+  inv: Pick<InvoiceEmailRow, 'id'>,
+  kind?: InvoiceInboxDraftKind,
+): string {
+  const base = `/invoices/${inv.id}/send`
+  if (kind === 'overdue_followup') return `${base}?${INVOICE_SEND_KIND_QUERY}=overdue_followup`
+  return base
 }
 
-export function getInvoiceInboxDraftPath(
-  inv: Pick<InvoiceEmailRow, 'id' | 'email_sent_thread_id'>,
-  kind: InvoiceInboxDraftKind,
-): string | null {
-  if (!hasInvoiceSentThreadId(inv)) return null
-  const param = INVOICE_INBOX_DRAFT_QUERY_PARAMS[kind]
-  return `/inbox/${inv.email_sent_thread_id}?${param}=${inv.id}`
-}
-
-/** Inbox-thread resend path when a sent thread id exists; callers must verify the thread has real sent/received messages. */
-export function getInvoiceSendPath(inv: Pick<InvoiceEmailRow, 'id' | 'email_sent_at' | 'email_sent_thread_id' | 'status'>): string {
-  const inboxPath = getInvoiceInboxDraftPath(inv, 'resend')
-  if (isInvoiceResend(inv) && inboxPath) return inboxPath
-  return `/invoices/${inv.id}/send`
-}
-
+/** @deprecated Use getInvoiceSendPath */
 export function getInvoiceComposePath(inv: Pick<InvoiceEmailRow, 'id'>): string {
-  return `/invoices/${inv.id}/send`
+  return getInvoiceSendPath(inv)
 }
 
 export function getInvoiceFollowUpPath(
   inv: Pick<InvoiceEmailRow, 'id' | 'due_date' | 'status' | 'email_sent_at' | 'email_sent_thread_id'>,
 ): string | null {
   if (!canFollowUpOverdueInvoice(inv)) return null
-  return getInvoiceInboxDraftPath(inv, 'overdue_followup')
+  return getInvoiceSendPath(inv, 'overdue_followup')
 }
 
 /** Compact shared styling for Send / Resend / Follow Up invoice actions (detail page, mobile). */
@@ -137,18 +128,18 @@ export function getInvoiceEmailActionLabels(kind: InvoiceEmailKind): {
         short: 'Resend',
         long: 'Resend Invoice To Client',
         composeTitle: 'Resend Invoice To Client',
-        composeDescription: 'Compose and resend this invoice through the Inbox module.',
-        draftCreatedToast: 'Invoice resend draft created in this thread',
-        draftUpdatedToast: 'Invoice resend draft updated in this thread',
+        composeDescription: 'Compose and resend this invoice in a new email thread. The original sent thread is left unchanged.',
+        draftCreatedToast: 'Invoice resend draft ready to send',
+        draftUpdatedToast: 'Invoice resend draft updated',
       }
     case 'overdue_followup':
       return {
         short: 'Follow Up',
         long: 'Follow Up on Overdue Invoice',
         composeTitle: 'Follow Up on Overdue Invoice',
-        composeDescription: 'Compose a payment reminder for this overdue invoice in the existing Inbox thread.',
-        draftCreatedToast: 'Overdue invoice follow-up draft created in this thread',
-        draftUpdatedToast: 'Overdue invoice follow-up draft updated in this thread',
+        composeDescription: 'Compose a payment reminder in a new email thread. The original invoice thread is left unchanged.',
+        draftCreatedToast: 'Overdue invoice follow-up draft ready to send',
+        draftUpdatedToast: 'Overdue invoice follow-up draft updated',
       }
     default:
       return {
@@ -156,8 +147,8 @@ export function getInvoiceEmailActionLabels(kind: InvoiceEmailKind): {
         long: 'Send Invoice To Client',
         composeTitle: 'Send Invoice To Client',
         composeDescription: 'Compose and send this invoice through the Inbox module.',
-        draftCreatedToast: 'Invoice draft created in this thread',
-        draftUpdatedToast: 'Invoice draft updated in this thread',
+        draftCreatedToast: 'Invoice draft ready to send',
+        draftUpdatedToast: 'Invoice draft updated',
       }
   }
 }
@@ -169,6 +160,17 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
+}
+
+const P_STYLE = 'margin:0 0 14px;color:#111827;font-size:14px;line-height:1.65;'
+const H2_STYLE = 'margin:0 0 20px;color:#111827;font-size:22px;line-height:1.3;font-weight:800;'
+
+function styledParagraph(content: string): string {
+  return `<p style="${P_STYLE}">${content}</p>`
+}
+
+function styledHeading(title: string): string {
+  return `<h2 style="${H2_STYLE}">${title}</h2>`
 }
 
 function buildEmailMetaRow(label: string, value: string): string {
@@ -192,52 +194,67 @@ type InvoiceMessageFields = {
   signature: string
 }
 
-function buildInvoiceDetailsBlock(args: InvoiceMessageFields): string {
-  const payUrl = escapeHtml(args.payUrl)
+function buildInvoiceAmountBlock(amountDue: string): string {
   return [
-    '<h3>INVOICE AMOUNT</h3>',
-    `<p><strong>${escapeHtml(args.invoiceAmountDue)}</strong></p>`,
-    `<p><span>Invoice No</span><strong>${escapeHtml(args.invoiceNumber)}</strong></p>`,
-    `<p><span>Invoice Date</span><strong>${escapeHtml(args.invoiceDate)}</strong></p>`,
-    `<p><span>Due Date</span><strong>${escapeHtml(args.dueDate)}</strong></p>`,
-    `<p><a href="${payUrl}"><strong>PAY NOW</strong></a></p>`,
+    '<div style="margin:24px 0 18px;padding:18px 20px;border-radius:14px;background:#f3f6fb;border:1px solid #dbe4f0;">',
+    '<div style="margin:0 0 8px;color:#475569;font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">Invoice Amount</div>',
+    `<div style="color:#111827;font-size:24px;line-height:1.2;font-weight:800;">${amountDue}</div>`,
+    '</div>',
   ].join('')
 }
 
-function buildInitialInvoiceMessage(args: InvoiceMessageFields): string {
-  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
+function buildPayNowButton(payUrl: string): string {
+  if (!payUrl) return ''
+  return `<p style="margin:24px 0;"><a href="${payUrl}" style="display:inline-block;padding:13px 28px;border-radius:999px;background:#2563eb;color:#ffffff;text-decoration:none;font-size:13px;font-weight:800;letter-spacing:0.04em;">PAY NOW</a></p>`
+}
+
+function buildInvoiceDetailsBlock(args: InvoiceMessageFields): string {
+  const payUrl = escapeHtml(args.payUrl)
   return [
-    '<h2>Invoice from Brogrammers Agency</h2>',
-    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
-    '<p>Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.</p>',
+    buildInvoiceAmountBlock(escapeHtml(args.invoiceAmountDue)),
+    buildEmailMetaRow('Invoice No', escapeHtml(args.invoiceNumber)),
+    buildEmailMetaRow('Invoice Date', escapeHtml(args.invoiceDate)),
+    buildEmailMetaRow('Due Date', escapeHtml(args.dueDate)),
+    buildPayNowButton(payUrl),
+  ].join('')
+}
+
+function buildSignatureBlock(signature: string): string {
+  const signatureHtml = escapeHtml(signature).replace(/\n/g, '<br />')
+  return styledParagraph(`Kind Regards,<br />${signatureHtml}`)
+}
+
+function buildInitialInvoiceMessage(args: InvoiceMessageFields): string {
+  return [
+    styledHeading('Invoice from Brogrammers Agency'),
+    styledParagraph(`Dear ${escapeHtml(args.contactName)},`),
+    styledParagraph('Thank you for your business. Your invoice can be viewed, printed and downloaded as PDF from the link below. You can also choose to pay it online.'),
     buildInvoiceDetailsBlock(args),
-    '<p>Please contact us for more information.</p>',
-    `<p>Kind Regards,<br />${signatureHtml}</p>`,
+    styledParagraph('Please contact us for more information.'),
+    buildSignatureBlock(args.signature),
   ].join('')
 }
 
 function buildResendInvoiceMessage(args: InvoiceMessageFields): string {
-  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
   return [
-    '<h2>Invoice Reminder from Brogrammers Agency</h2>',
-    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
-    `<p>This is a friendly reminder regarding invoice <strong>${escapeHtml(args.invoiceNumber)}</strong>. We are resending it here for your records. You can view, print, or download the invoice as a PDF from the link below, and pay online if you prefer.</p>`,
+    styledHeading('Invoice Reminder from Brogrammers Agency'),
+    styledParagraph(`Dear ${escapeHtml(args.contactName)},`),
+    styledParagraph(`This is a friendly reminder regarding invoice <strong>${escapeHtml(args.invoiceNumber)}</strong>. We are resending it here for your records. You can view, print, or download the invoice as a PDF from the link below, and pay online if you prefer.`),
     buildInvoiceDetailsBlock(args),
-    '<p>If you have already sent payment, please disregard this message. Otherwise, let us know if you have any questions.</p>',
-    `<p>Kind Regards,<br />${signatureHtml}</p>`,
+    styledParagraph('If you have already sent payment, please disregard this message. Otherwise, let us know if you have any questions.'),
+    buildSignatureBlock(args.signature),
   ].join('')
 }
 
 function buildOverdueFollowUpMessage(args: InvoiceMessageFields): string {
-  const signatureHtml = escapeHtml(args.signature).replace(/\n/g, '<br />')
   return [
-    '<h2>Overdue Invoice Follow-Up</h2>',
-    `<p>Dear ${escapeHtml(args.contactName)},</p>`,
-    `<p>Our records show that invoice <strong>${escapeHtml(args.invoiceNumber)}</strong> was due on <strong>${escapeHtml(args.dueDate)}</strong> and remains unpaid.</p>`,
-    '<p>Please review the invoice details below and submit payment at your earliest convenience. If payment has already been sent, or if you need more time, reply to this email and we will update our records.</p>',
+    styledHeading('Overdue Invoice Follow-Up'),
+    styledParagraph(`Dear ${escapeHtml(args.contactName)},`),
+    styledParagraph(`Our records show that invoice <strong>${escapeHtml(args.invoiceNumber)}</strong> was due on <strong>${escapeHtml(args.dueDate)}</strong> and remains unpaid.`),
+    styledParagraph('Please review the invoice details below and submit payment at your earliest convenience. If payment has already been sent, or if you need more time, reply to this email and we will update our records.'),
     buildInvoiceDetailsBlock(args),
-    '<p>Thank you for your prompt attention to this matter.</p>',
-    `<p>Kind Regards,<br />${signatureHtml}</p>`,
+    styledParagraph('Thank you for your prompt attention to this matter.'),
+    buildSignatureBlock(args.signature),
   ].join('')
 }
 
@@ -264,36 +281,71 @@ function buildInvoiceSubject(kind: InvoiceEmailKind, invoiceNumber: string): str
 }
 
 export function finalizeInvoiceEmailHtml(html: string): string {
-  let out = html
-
-  out = out.replace(/<h2>(.*?)<\/h2>/gis, (_match, title: string) => (
-    `<h2 style="margin:0 0 20px;color:#111827;font-size:22px;line-height:1.3;font-weight:800;">${title}</h2>`
-  ))
-
-  out = out.replace(/<h3>\s*INVOICE AMOUNT\s*<\/h3>\s*<p>\s*<strong>(.*?)<\/strong>\s*<\/p>/is, (_match, amount: string) => ([
-    '<div style="margin:24px 0 18px;padding:18px 20px;border-radius:14px;background:#f3f6fb;border:1px solid #dbe4f0;">',
-    '<div style="margin:0 0 8px;color:#475569;font-size:12px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">Invoice Amount</div>',
-    `<div style="color:#111827;font-size:24px;line-height:1.2;font-weight:800;">${amount}</div>`,
-    '</div>',
-  ].join('')))
-
-  out = out.replace(/<p>\s*(?:<span>)?\s*(Invoice No|Invoice Date|Due Date)\s*(?:<\/span>)?\s*<strong>(.*?)<\/strong>\s*<\/p>/gis, (_match, label: string, value: string) => (
-    buildEmailMetaRow(label, value)
-  ))
-
-  out = out.replace(/<p>\s*<a\s+href="([^"]+)"[^>]*>\s*(?:<strong>)?\s*PAY NOW\s*(?:<\/strong>)?\s*<\/a>\s*<\/p>/is, (_match, href: string) => (
-    `<p style="margin:24px 0;"><a href="${href}" style="display:inline-block;padding:13px 28px;border-radius:999px;background:#2563eb;color:#ffffff;text-decoration:none;font-size:13px;font-weight:800;letter-spacing:0.04em;">PAY NOW</a></p>`
-  ))
-
-  out = out.replace(/<p>/gi, '<p style="margin:0 0 14px;color:#111827;font-size:14px;line-height:1.65;">')
-
   return [
     '<div style="margin:0;padding:0;background:#ffffff;">',
     '<div style="max-width:680px;margin:0;padding:32px 28px;font-family:Arial,Helvetica,sans-serif;color:#111827;">',
-    out,
+    html,
     '</div>',
     '</div>',
   ].join('')
+}
+
+export type InvoiceEmailHtmlValidation = {
+  ok: boolean
+  issues: string[]
+}
+
+/** Sanity-check generated invoice email HTML before send. */
+export function validateInvoiceEmailHtml(html: string, kind: InvoiceEmailKind): InvoiceEmailHtmlValidation {
+  const issues: string[] = []
+  const trimmed = html.trim()
+
+  if (!trimmed) {
+    issues.push('HTML is empty')
+    return { ok: false, issues }
+  }
+
+  const openDivs = (trimmed.match(/<div\b/gi) ?? []).length
+  const closeDivs = (trimmed.match(/<\/div>/gi) ?? []).length
+  if (openDivs !== closeDivs) {
+    issues.push(`Unbalanced div tags (${openDivs} open, ${closeDivs} close)`)
+  }
+
+  const openPs = (trimmed.match(/<p\b/gi) ?? []).length
+  const closePs = (trimmed.match(/<\/p>/gi) ?? []).length
+  if (openPs !== closePs) {
+    issues.push(`Unbalanced paragraph tags (${openPs} open, ${closePs} close)`)
+  }
+
+  if (!trimmed.includes('Invoice Amount')) {
+    issues.push('Missing invoice amount block')
+  }
+
+  if (!trimmed.includes('Invoice No')) {
+    issues.push('Missing invoice number row')
+  }
+
+  if (!trimmed.includes('PAY NOW')) {
+    issues.push('Missing pay button')
+  }
+
+  if (kind === 'overdue_followup' && !trimmed.includes('Overdue Invoice Follow-Up')) {
+    issues.push('Missing overdue follow-up heading')
+  }
+
+  if (kind === 'resend' && !trimmed.includes('Invoice Reminder')) {
+    issues.push('Missing resend reminder heading')
+  }
+
+  if (kind === 'initial' && !trimmed.includes('Invoice from Brogrammers Agency')) {
+    issues.push('Missing initial invoice heading')
+  }
+
+  if (/style="[^"]*style="/i.test(trimmed)) {
+    issues.push('Malformed nested style attributes')
+  }
+
+  return { ok: issues.length === 0, issues }
 }
 
 export function splitContactName(name: string | null | undefined): { first: string; last: string } {

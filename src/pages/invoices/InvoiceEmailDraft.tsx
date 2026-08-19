@@ -1,26 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Mail, CheckCircle, AlertCircle } from 'lucide-react'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import EmailComposeForm from '@/components/inbox/EmailComposeForm'
+import { buildEmailSrcDoc } from '@/lib/emailSanitizer'
 import {
+  buildFinalizedInvoiceEmailHtml,
   buildInvoiceEmailContent,
-  finalizeInvoiceEmailHtml,
-  getInvoiceInboxDraftPath,
-  invoiceNumberFromRow,
-  isInvoiceResend,
-  resolveInvoiceEmailKind,
   getInvoiceEmailActionLabels,
+  invoiceNumberFromRow,
+  INVOICE_SEND_KIND_QUERY,
+  resolveInvoiceEmailKind,
   splitContactName,
+  validateInvoiceEmailHtml,
   DEFAULT_INVOICE_EMAIL_SIGNATURE,
+  type InvoiceEmailKind,
   type InvoiceEmailRow,
+  type InvoiceInboxDraftKind,
 } from '@/lib/invoiceEmailContent'
-import {
-  clearStaleInvoiceSentThreadLink,
-  resolveUsableInvoiceSentThreadId,
-} from '@/lib/invoiceEmailThread'
+import { recordInvoiceEmailSend } from '@/lib/invoiceEmailThread'
 
 type Invoice = InvoiceEmailRow & {
   org_id: string
@@ -83,9 +83,18 @@ function normalizeRecipientOptions(contacts: ContactInfo[]): RecipientOption[] {
     })
 }
 
+function parsePreferredKind(searchParams: URLSearchParams): InvoiceInboxDraftKind | undefined {
+  const raw = searchParams.get(INVOICE_SEND_KIND_QUERY)
+  if (raw === 'overdue_followup') return 'overdue_followup'
+  if (raw === 'resend') return 'resend'
+  return undefined
+}
+
 export default function InvoiceEmailDraft() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const preferredKind = parsePreferredKind(searchParams)
   const { currentOrg, isVendor } = useOrg()
   const { user } = useAuth()
 
@@ -98,12 +107,11 @@ export default function InvoiceEmailDraft() {
   const [subject, setSubject] = useState('')
   const [to, setTo] = useState('')
   const signature = DEFAULT_INVOICE_EMAIL_SIGNATURE
-  const [message, setMessage] = useState('')
+  const [contactName, setContactName] = useState('there')
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successThreadId, setSuccessThreadId] = useState<string | null>(null)
-  const [usableSentThreadId, setUsableSentThreadId] = useState<string | null>(null)
 
   const sendableAddresses = useMemo<SendableAddress[]>(() => {
     return accounts.flatMap((account) => {
@@ -124,11 +132,22 @@ export default function InvoiceEmailDraft() {
 
   const invNum = invoiceNumberFromRow(invoice)
   const payUrl = invoice?.hash ? `${window.location.origin}/invoice/${invoice.hash}` : ''
-  const emailKind = invoice ? resolveInvoiceEmailKind(invoice) : 'initial'
+  const emailKind: InvoiceEmailKind = invoice
+    ? resolveInvoiceEmailKind(invoice, preferredKind)
+    : 'initial'
   const actionLabels = getInvoiceEmailActionLabels(emailKind)
-  const resendThreadId = isInvoiceResend(invoice ?? { email_sent_at: null, status: 'draft' })
-    ? usableSentThreadId
-    : null
+
+  const previewHtml = useMemo(() => {
+    if (!invoice) return ''
+    return buildFinalizedInvoiceEmailHtml({
+      invoiceRow: invoice,
+      contactName,
+      signature,
+      kind: emailKind,
+    })
+  }, [invoice, contactName, signature, emailKind])
+
+  const previewSrcDoc = useMemo(() => buildEmailSrcDoc(previewHtml).srcDoc, [previewHtml])
 
   const load = useCallback(async () => {
     if (!id || !currentOrg?.id) return
@@ -165,22 +184,6 @@ export default function InvoiceEmailDraft() {
     }
 
     const readyInvoice = ensured.invoice
-    if (isInvoiceResend(readyInvoice) && readyInvoice.email_sent_thread_id) {
-      const usableThreadId = await resolveUsableInvoiceSentThreadId(readyInvoice.email_sent_thread_id)
-      if (usableThreadId) {
-        const inboxDraftPath = getInvoiceInboxDraftPath({ ...readyInvoice, email_sent_thread_id: usableThreadId }, 'resend')
-        if (inboxDraftPath) {
-          navigate(inboxDraftPath, { replace: true })
-          return
-        }
-      }
-      await clearStaleInvoiceSentThreadLink(readyInvoice.id, readyInvoice.email_sent_thread_id)
-      readyInvoice.email_sent_thread_id = null
-      setUsableSentThreadId(null)
-    } else {
-      setUsableSentThreadId(null)
-    }
-
     let loadedContact: ContactInfo | null = null
     let loadedCompany: CompanyInfo | null = null
     setInvoice(readyInvoice)
@@ -253,18 +256,18 @@ export default function InvoiceEmailDraft() {
     else if (activeAccounts[0]) setSelectedFrom(activeAccounts[0].email)
 
     const loadedContactNameParts = splitContactName(loadedContact?.name)
-    const loadedContactName = [loadedContactNameParts.first, loadedContactNameParts.last].filter(Boolean).join(' ')
+    const loadedContactName = [loadedContactNameParts.first, loadedContactNameParts.last].filter(Boolean).join(' ') || 'there'
+    setContactName(loadedContactName)
     const emailContent = buildInvoiceEmailContent({
       invoiceRow: readyInvoice,
-      contactName: loadedContactName || 'there',
+      contactName: loadedContactName,
       signature,
-      kind: resolveInvoiceEmailKind(readyInvoice),
+      kind: resolveInvoiceEmailKind(readyInvoice, preferredKind),
     })
     setSubject(emailContent.subject)
-    setMessage(emailContent.message)
 
     setLoading(false)
-  }, [currentOrg?.id, id, navigate, signature])
+  }, [currentOrg?.id, id, preferredKind, signature])
 
   useEffect(() => { load() }, [load])
 
@@ -279,7 +282,6 @@ export default function InvoiceEmailDraft() {
     if (recipients.length === 0 || recipients.some((email) => !email.includes('@'))) { setError('Enter at least one valid recipient email.'); return }
     if (!selectedSendable) { setError('No active inbox email account is available for sending.'); return }
     if (!payUrl) { setError('This invoice does not have a public payment link yet.'); return }
-    if (!message.trim()) { setError('Message is required.'); return }
 
     setSending(true)
     const ensured = await ensureInvoiceNumber(invoice, currentOrg.id)
@@ -291,27 +293,36 @@ export default function InvoiceEmailDraft() {
 
     let sendInvoice = ensured.invoice
     let sendSubject = subject.trim()
-    let sendMessage = message
+    const sendKind = resolveInvoiceEmailKind(sendInvoice, preferredKind)
     if (sendInvoice.number !== invoice.number) {
       setInvoice(sendInvoice)
-      const loadedContactNameParts = splitContactName(contact?.name)
-      const loadedContactName = [loadedContactNameParts.first, loadedContactNameParts.last].filter(Boolean).join(' ')
       const emailContent = buildInvoiceEmailContent({
         invoiceRow: sendInvoice,
-        contactName: loadedContactName || 'there',
+        contactName,
         signature,
-        kind: resolveInvoiceEmailKind(sendInvoice),
+        kind: sendKind,
       })
       sendSubject = emailContent.subject
-      sendMessage = emailContent.message
       setSubject(sendSubject)
-      setMessage(sendMessage)
     }
 
     const sendNum = invoiceNumberFromRow(sendInvoice)
     if (!sendInvoice.number) {
       setSending(false)
       setError('This invoice does not have an invoice number yet.')
+      return
+    }
+
+    const sendHtml = buildFinalizedInvoiceEmailHtml({
+      invoiceRow: sendInvoice,
+      contactName,
+      signature,
+      kind: sendKind,
+    })
+    const validation = validateInvoiceEmailHtml(sendHtml, sendKind)
+    if (!validation.ok) {
+      setSending(false)
+      setError(`Invoice email template is invalid: ${validation.issues.join(', ')}`)
       return
     }
 
@@ -322,8 +333,6 @@ export default function InvoiceEmailDraft() {
       return
     }
 
-    const sendHtml = finalizeInvoiceEmailHtml(sendMessage)
-    const useExistingThread = Boolean(resendThreadId)
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/inbox-send-reply`, {
       method: 'POST',
       headers: {
@@ -332,7 +341,7 @@ export default function InvoiceEmailDraft() {
         apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
       },
       body: JSON.stringify({
-        ...(useExistingThread ? { threadId: resendThreadId } : { compose: true }),
+        compose: true,
         to: recipients.join(', '),
         subject: sendSubject || `Invoice - ${sendNum} from Brogrammers Agency`,
         body: sendHtml,
@@ -350,23 +359,17 @@ export default function InvoiceEmailDraft() {
 
     const threadId = data.threadId as string | undefined
     if (threadId) {
-      await supabase.from('inbox_thread_assignments').insert({ thread_id: threadId, user_id: user.id }).then(({ error }) => {
-        if (error && error.code !== '23505') console.warn('[InvoiceEmailDraft] assignment failed', error.message)
+      await supabase.from('inbox_thread_assignments').insert({ thread_id: threadId, user_id: user.id }).then(({ error: assignErr }) => {
+        if (assignErr && assignErr.code !== '23505') console.warn('[InvoiceEmailDraft] assignment failed', assignErr.message)
       })
       await supabase.from('inbox_threads').update({ status: 'closed', updated_at: new Date().toISOString() }).eq('id', threadId)
-    }
-
-    const sentUpdate: Record<string, string> = { updated_at: new Date().toISOString(), email_sent_at: new Date().toISOString() }
-    if (threadId) sentUpdate.email_sent_thread_id = threadId
-    if (sendInvoice.status === 'draft') sentUpdate.status = 'unpaid'
-    await supabase.from('invoices').update(sentUpdate).eq('id', sendInvoice.id)
-    if (threadId) {
-      await supabase
-        .from('inbox_thread_invoices')
-        .upsert({ thread_id: threadId, invoice_id: sendInvoice.id, created_by: user.id }, { onConflict: 'thread_id,invoice_id' })
-        .then(({ error }) => {
-          if (error) console.warn('[InvoiceEmailDraft] invoice/thread link failed', error.message)
-        })
+      await recordInvoiceEmailSend({
+        invoiceId: sendInvoice.id,
+        threadId,
+        userId: user.id,
+        kind: sendKind,
+        status: sendInvoice.status,
+      })
     }
 
     setSuccessThreadId(threadId ?? null)
@@ -400,7 +403,7 @@ export default function InvoiceEmailDraft() {
             <Mail size={24} className="text-gray-400" /> {actionLabels.composeTitle}
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Compose and {emailKind === 'initial' ? 'send' : emailKind === 'resend' ? 'resend' : 'follow up on'} {invNum} through the Inbox module. The sent email will create a closed Inbox thread assigned to you.
+            {actionLabels.composeDescription}
           </p>
         </div>
         {successThreadId && (
@@ -422,7 +425,7 @@ export default function InvoiceEmailDraft() {
         </div>
       )}
 
-      <div className="invoice-email-draft-compose">
+      <div className="invoice-email-draft-compose space-y-4">
         <EmailComposeForm
           modeLabel="New message"
           sendableAddresses={sendableAddresses}
@@ -434,15 +437,26 @@ export default function InvoiceEmailDraft() {
           allowMultipleToOptions
           subject={subject}
           onSubjectChange={setSubject}
-          html={message}
-          onHtmlChange={setMessage}
+          html=""
+          onHtmlChange={() => {}}
           onSend={handleSend}
           sending={sending}
           sendDisabled={!!successThreadId || !to.trim()}
           sendLabel="Send"
-          minHeight="min-h-[520px]"
-          onCancel={() => window.history.back()}
+          hideBodyEditor
+          onCancel={() => navigate(invoice ? `/invoices/${invoice.id}` : '/invoices')}
         />
+        <div>
+          <p className="text-xs font-medium text-gray-400 mb-2">Email preview</p>
+          <div className="rounded-lg border border-border overflow-hidden bg-white">
+            <iframe
+              title="Invoice email preview"
+              srcDoc={previewSrcDoc}
+              className="w-full min-h-[520px] border-0"
+              sandbox=""
+            />
+          </div>
+        </div>
       </div>
 
       <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs text-gray-400 space-y-1">

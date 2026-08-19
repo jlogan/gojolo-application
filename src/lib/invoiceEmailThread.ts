@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import type { InvoiceEmailKind } from '@/lib/invoiceEmailContent'
 
 export type InboxMessageThreadCheck = {
   is_draft?: boolean | null
@@ -31,21 +32,56 @@ export async function resolveUsableInvoiceSentThreadId(
   return (await threadHasRealMessages(emailSentThreadId)) ? emailSentThreadId : null
 }
 
+export async function linkInvoiceToThread(
+  invoiceId: string,
+  threadId: string,
+  userId?: string | null,
+): Promise<void> {
+  await supabase
+    .from('inbox_thread_invoices')
+    .upsert(
+      { thread_id: threadId, invoice_id: invoiceId, ...(userId ? { created_by: userId } : {}) },
+      { onConflict: 'thread_id,invoice_id' },
+    )
+}
+
+/** Updates invoice send metadata and links the thread without overwriting the primary sent thread on resend/follow-up. */
+export async function recordInvoiceEmailSend(args: {
+  invoiceId: string
+  threadId: string
+  userId?: string | null
+  kind: InvoiceEmailKind
+  status?: string
+}): Promise<void> {
+  const sentUpdate: Record<string, string> = {
+    updated_at: new Date().toISOString(),
+    email_sent_at: new Date().toISOString(),
+  }
+  if (args.kind === 'initial') {
+    sentUpdate.email_sent_thread_id = args.threadId
+  }
+  if (args.status === 'draft') {
+    sentUpdate.status = 'unpaid'
+  }
+  await supabase.from('invoices').update(sentUpdate).eq('id', args.invoiceId)
+  await linkInvoiceToThread(args.invoiceId, args.threadId, args.userId)
+}
+
 export async function clearStaleInvoiceSentThreadLink(
   invoiceId: string,
   threadId: string,
 ): Promise<void> {
   await supabase
-    .from('invoices')
-    .update({ email_sent_thread_id: null, updated_at: new Date().toISOString() })
-    .eq('id', invoiceId)
-    .eq('email_sent_thread_id', threadId)
-
-  await supabase
     .from('inbox_thread_invoices')
     .delete()
     .eq('thread_id', threadId)
     .eq('invoice_id', invoiceId)
+
+  await supabase
+    .from('invoices')
+    .update({ email_sent_thread_id: null, updated_at: new Date().toISOString() })
+    .eq('id', invoiceId)
+    .eq('email_sent_thread_id', threadId)
 }
 
 async function clearInvoiceLinksForOrphanThread(threadId: string, invoiceId?: string | null): Promise<void> {

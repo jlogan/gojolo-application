@@ -49,6 +49,8 @@ type Props = {
   stickyActions?: boolean
   autofocus?: boolean
   minHeight?: string
+  /** When true, omit the rich-text body editor (e.g. invoice emails with iframe preview). */
+  hideBodyEditor?: boolean
 }
 
 export default function EmailComposeForm({
@@ -94,6 +96,7 @@ export default function EmailComposeForm({
   stickyActions = false,
   autofocus = true,
   minHeight = 'min-h-[240px]',
+  hideBodyEditor = false,
 }: Props) {
   const [isDragging, setIsDragging] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -311,7 +314,9 @@ export default function EmailComposeForm({
         )}
       </div>
 
-      <RichTextEditor content={html} onChange={onHtmlChange} placeholder="Write your message…" autofocus={autofocus} minHeight={minHeight} />
+      {!hideBodyEditor && (
+        <RichTextEditor content={html} onChange={onHtmlChange} placeholder="Write your message…" autofocus={autofocus} minHeight={minHeight} />
+      )}
 
       {attachments.length > 0 && (
         <div className="px-1 py-2 space-y-1.5">
