@@ -535,10 +535,26 @@ export default function Inbox() {
 
   const applyGmailLabelFilter = useCallback((label: string | null) => {
     setSelectedGmailLabel(label)
+    fetchSelectedGmailLabelRef.current = label
     setThreads([])
     setHasMoreThreads(false)
     initialLoadDone.current = false
   }, [])
+
+  const refreshGmailLabelOptions = useCallback(() => {
+    if (!currentOrg?.id) return
+    void supabase.rpc('list_inbox_gmail_labels', {
+      p_org_id: currentOrg.id,
+      p_imap_account_id: mailboxFilterId,
+    }).then(({ data, error }) => {
+      if (error) {
+        console.warn('[Inbox] list_inbox_gmail_labels:', error.message)
+        setGmailLabelOptions([])
+        return
+      }
+      setGmailLabelOptions((data as GmailLabelOption[]) ?? [])
+    })
+  }, [currentOrg?.id, mailboxFilterId])
 
   // Data fetching — paginated and server-side searchable so older/unloaded threads can be found.
   const fetchThreadsPage = useCallback(async (offset = 0, append = false) => {
@@ -609,6 +625,7 @@ export default function Inbox() {
       })
       setHasMoreThreads(hasMore)
       initialLoadDone.current = true
+      if (!append) refreshGmailLabelOptions()
     } catch (e) {
       debugLog('fetchThreads', { event: 'ERROR', error: String(e) })
       if (
@@ -623,7 +640,7 @@ export default function Inbox() {
       if (append) setLoadingMoreThreads(false)
       else setLoading(false)
     }
-  }, [currentOrg?.id, filter, mailboxFilterId, selectedGmailLabel, userId, debugLog, pageSize, searchQuery])
+  }, [currentOrg?.id, filter, mailboxFilterId, selectedGmailLabel, userId, debugLog, pageSize, searchQuery, refreshGmailLabelOptions])
 
   const fetchThreads = useCallback(() => fetchThreadsPage(0, false), [fetchThreadsPage])
 
@@ -957,19 +974,8 @@ export default function Inbox() {
   }, [currentOrg?.id])
 
   useEffect(() => {
-    if (!currentOrg?.id) return
-    void supabase.rpc('list_inbox_gmail_labels', {
-      p_org_id: currentOrg.id,
-      p_imap_account_id: mailboxFilterId,
-    }).then(({ data, error }) => {
-      if (error) {
-        console.warn('[Inbox] list_inbox_gmail_labels:', error.message)
-        setGmailLabelOptions([])
-        return
-      }
-      setGmailLabelOptions((data as GmailLabelOption[]) ?? [])
-    })
-  }, [currentOrg?.id, mailboxFilterId])
+    refreshGmailLabelOptions()
+  }, [refreshGmailLabelOptions])
 
   useEffect(() => {
     if (!userId) return
@@ -1313,14 +1319,7 @@ export default function Inbox() {
     }
 
     setSyncing(false)
-    if (currentOrg?.id) {
-      void supabase.rpc('list_inbox_gmail_labels', {
-        p_org_id: currentOrg.id,
-        p_imap_account_id: mailboxFilterId,
-      }).then(({ data, error }) => {
-        if (!error) setGmailLabelOptions((data as GmailLabelOption[]) ?? [])
-      })
-    }
+    refreshGmailLabelOptions()
     fetchThreads()
   }
 
@@ -2445,6 +2444,10 @@ export default function Inbox() {
           {FILTERS.map(f => (
             <button key={f.id} type="button" onClick={() => {
               console.log('[Inbox:nav] filter tab click', { filterId: f.id, label: f.label })
+              if (f.id === 'inbox') {
+                setSelectedGmailLabel(null)
+                fetchSelectedGmailLabelRef.current = null
+              }
               setFilter(f.id); setSelectedThreadId(null); setThreads([]); setHasMoreThreads(false); initialLoadDone.current = false
             }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
