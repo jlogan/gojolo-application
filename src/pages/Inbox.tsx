@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -19,12 +19,16 @@ import {
 } from '@/lib/inboxBodyUnavailable'
 import {
   cleanupThreadAfterDraftRemoved,
+  recordInvoiceEmailSend,
 } from '@/lib/invoiceEmailThread'
 import {
   INVOICE_INBOX_DRAFT_QUERY_PARAMS,
   getInvoiceSendPath,
+  type InvoiceEmailKind,
   type InvoiceInboxDraftKind,
 } from '@/lib/invoiceEmailContent'
+import { invoiceInboxDraftToastMessage } from '@/lib/invoiceResendDraft'
+import type { InvoiceDraftNavigationState } from '@/pages/invoices/InvoiceEmailDraft'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
 type ThreadAssignment = { user_id: string }
@@ -169,6 +173,7 @@ export default function Inbox() {
   const { user } = useAuth()
   const { threadId: urlThreadId } = useParams<{ threadId?: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const inboxDebug = searchParams.get('debug') === '1'
   const debugEnabledRef = useRef(inboxDebug)
@@ -344,6 +349,9 @@ export default function Inbox() {
   const phantomHealDoneForThreadRef = useRef<string | null>(null)
   /** When set (from /inbox?compose=1&leadId=...), a successful send logs a lead_attempt for that lead. */
   const leadComposeContextRef = useRef<{ leadId: string; contactId: string | null } | null>(null)
+  /** When set (from /invoices/:id/send), a successful send updates invoice email metadata. */
+  const invoiceInboxDraftContextRef = useRef<{ invoiceId: string; kind: InvoiceEmailKind; status: string } | null>(null)
+  const pendingInvoiceDraftEditorRef = useRef<{ draftMessageId: string } | null>(null)
 
   const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -579,10 +587,14 @@ export default function Inbox() {
 
   const maybeCleanupThreadAfterDraftDeletes = useCallback(async (threadId: string, deletedIds: Set<string>) => {
     if (deletedIds.size === 0) return
-    const threadRemoved = await cleanupThreadAfterDraftRemoved(threadId)
-    if (threadRemoved && selectedThreadIdRef.current === threadId) {
-      setSelectedThreadId(null)
-      void fetchThreadsRef.current()
+    const invoiceId = invoiceInboxDraftContextRef.current?.invoiceId ?? null
+    const threadRemoved = await cleanupThreadAfterDraftRemoved(threadId, { invoiceId })
+    if (threadRemoved) {
+      if (invoiceId) invoiceInboxDraftContextRef.current = null
+      if (selectedThreadIdRef.current === threadId) {
+        setSelectedThreadId(null)
+        void fetchThreadsRef.current()
+      }
     }
   }, [])
 
@@ -1060,6 +1072,23 @@ export default function Inbox() {
   const currentAssignees = (selectedThread?.inbox_thread_assignments ?? []) as { user_id: string }[]
   const toast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), 3000) }
 
+  useEffect(() => {
+    const state = location.state as InvoiceDraftNavigationState | null
+    if (!state?.invoiceDraft) return
+
+    invoiceInboxDraftContextRef.current = {
+      invoiceId: state.invoiceDraft.invoiceId,
+      kind: state.invoiceDraft.kind,
+      status: state.invoiceDraft.status,
+    }
+    if (state.invoiceDraft.openEditor) {
+      pendingInvoiceDraftEditorRef.current = { draftMessageId: state.invoiceDraft.draftMessageId }
+    }
+    toast(invoiceInboxDraftToastMessage(state.invoiceDraft.kind, false))
+    navigate(location.pathname, { replace: true, state: null })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when invoice send navigation state arrives
+  }, [location.state])
+
   /** Legacy deep links (/inbox/:threadId?resendInvoice=...) redirect to invoice compose in a new thread. */
   useEffect(() => {
     let draftKind: InvoiceInboxDraftKind | null = null
@@ -1472,6 +1501,34 @@ export default function Inbox() {
     setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
   }
 
+  useEffect(() => {
+    const pending = pendingInvoiceDraftEditorRef.current
+    if (!pending || messagesLoading || !selectedThreadId) return
+    const draft = messages.find((m) => m.id === pending.draftMessageId && m.is_draft)
+    if (!draft) return
+
+    pendingInvoiceDraftEditorRef.current = null
+    const fromAddress = findFromAddressForReply(draft)
+    if (fromAddress) {
+      setSelectedAccountId(fromAddress.accountId)
+      setSelectedFromAddress(fromAddress.email)
+    }
+    setReplyTo(draft.to_identifier ?? '')
+    setReplyCc(draft.cc ?? '')
+    setReplyBcc('')
+    setShowCcBcc(!!(draft.cc?.trim()))
+    setReplySubject(selectedThread?.subject ?? '')
+    const { content: draftContent, html: draftIsHtml } = cleanMessageBody(draft)
+    const normalizedDraft = draftIsHtml ? prepareDraftHtmlForDisplay(draftContent) : draftContent
+    setReplyHtml(draftIsHtml ? normalizedDraft : normalizedDraft.replace(/\n/g, '<br/>'))
+    setReplyAttachments([])
+    setReplyAnchorMsgId(draft.id)
+    setDraftMessageId(draft.id)
+    setReplyMode('reply')
+    setExpandedMsgs((prev) => new Set([...prev, draft.id]))
+    setTimeout(() => timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 200)
+  }, [messages, messagesLoading, selectedThreadId, selectedThread?.subject, imapAccounts])
+
   // Deep link from lead detail: /inbox?compose=1&to=...&leadId=...&contactId=...
   useEffect(() => {
     if (searchParams.get('compose') !== '1') return
@@ -1587,6 +1644,23 @@ export default function Inbox() {
       else setMessages(prev => prev.filter(msg => !msg.is_draft))
     }
 
+    const invoiceDraftCtx = invoiceInboxDraftContextRef.current
+    if (invoiceDraftCtx?.invoiceId && sentThreadId) {
+      invoiceInboxDraftContextRef.current = null
+      await recordInvoiceEmailSend({
+        invoiceId: invoiceDraftCtx.invoiceId,
+        threadId: sentThreadId,
+        userId: userId ?? undefined,
+        kind: invoiceDraftCtx.kind,
+        status: invoiceDraftCtx.status,
+      })
+      if (userId) {
+        await supabase.from('inbox_thread_assignments').insert({ thread_id: sentThreadId, user_id: userId }).then(({ error: assignErr }) => {
+          if (assignErr && assignErr.code !== '23505') console.warn('[Inbox] invoice assignment failed', assignErr.message)
+        })
+      }
+    }
+
     const leadCtx = leadComposeContextRef.current
     if (leadCtx?.leadId && currentOrg?.id && replyMode === 'compose') {
       leadComposeContextRef.current = null
@@ -1678,6 +1752,7 @@ export default function Inbox() {
   const handleDeleteDraft = async (m: InboxMessage) => {
     if (!confirm('Delete this draft message?')) return
     const threadId = m.thread_id
+    const invoiceId = invoiceInboxDraftContextRef.current?.invoiceId ?? null
     const externalUid = m.external_uid ?? null
     const imapAccountId = m.imap_account_id ?? null
     const messageId = m.id
@@ -1696,8 +1771,11 @@ export default function Inbox() {
       setReplyHtml('')
       setReplyAttachments([])
     }
+    if (invoiceId) {
+      invoiceInboxDraftContextRef.current = null
+    }
 
-    const threadRemoved = await cleanupThreadAfterDraftRemoved(threadId)
+    const threadRemoved = await cleanupThreadAfterDraftRemoved(threadId, { invoiceId })
     if (threadRemoved) {
       if (selectedThreadId === threadId) setSelectedThreadId(null)
     }
