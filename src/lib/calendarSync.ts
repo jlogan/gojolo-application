@@ -28,68 +28,71 @@ function messageFromResponseBody(body: CalendarSyncResponse | null | undefined):
   return null
 }
 
-async function parseInvokeError(error: unknown, data: CalendarSyncResponse | null): Promise<string> {
-  const fromData = messageFromResponseBody(data)
-  if (fromData) return fromData
-
-  if (error && typeof error === 'object') {
-    if ('context' in error && error.context instanceof Response) {
-      try {
-        const body = await error.context.clone().json() as CalendarSyncResponse
-        const fromBody = messageFromResponseBody(body)
-        if (fromBody) return fromBody
-      } catch {
-        // ignore non-JSON error bodies
-      }
-    }
-    if ('message' in error) {
-      const msg = String((error as { message: string }).message)
-      if (msg && msg !== 'Edge Function returned a non-2xx status code') return msg
-    }
+async function invokeCalendarSync<T>(body: Record<string, unknown>): Promise<T> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) {
+    throw new Error('Please sign in again.')
   }
-  return 'Calendar request failed'
+
+  const response = await fetch(
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/calendar-sync`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify(body),
+    },
+  )
+
+  const data = await response.json().catch(() => null) as T | null
+
+  if (!response.ok) {
+    const msg = messageFromResponseBody(data as CalendarSyncResponse | null)
+    throw new Error(msg ?? 'Calendar request failed')
+  }
+
+  return (data ?? {}) as T
 }
 
 export async function fetchCalendarSyncStatus(orgId: string): Promise<CalendarSyncResponse> {
-  const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
-    body: { orgId, action: 'status' },
-  })
-  if (error) throw new Error(await parseInvokeError(error, data))
-  return data ?? {}
+  return invokeCalendarSync<CalendarSyncResponse>({ orgId, action: 'status' })
 }
 
 export async function startGoogleCalendarConnect(
   orgId: string,
   returnPath = '/calendar',
 ): Promise<string> {
-  const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
-    body: {
-      orgId,
-      action: 'start',
-      provider: 'google' satisfies CalendarProvider,
-      returnPath,
-    },
+  const data = await invokeCalendarSync<CalendarSyncResponse>({
+    orgId,
+    action: 'start',
+    provider: 'google' satisfies CalendarProvider,
+    returnPath,
   })
-  if (error || !data?.authUrl) {
-    throw new Error(await parseInvokeError(error, data ?? null))
+  if (!data.authUrl) {
+    throw new Error(messageFromResponseBody(data) ?? 'Calendar request failed')
   }
   return data.authUrl
 }
 
 export async function syncGoogleCalendar(orgId: string, connectionId?: string): Promise<CalendarSyncResponse> {
-  const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
-    body: { orgId, action: 'sync', provider: 'google', ...(connectionId ? { connectionId } : {}) },
+  return invokeCalendarSync<CalendarSyncResponse>({
+    orgId,
+    action: 'sync',
+    provider: 'google',
+    ...(connectionId ? { connectionId } : {}),
   })
-  if (error) throw new Error(await parseInvokeError(error, data ?? null))
-  return data ?? {}
 }
 
 export async function disconnectGoogleCalendar(orgId: string, connectionId?: string): Promise<CalendarSyncResponse> {
-  const { data, error } = await supabase.functions.invoke<CalendarSyncResponse>('calendar-sync', {
-    body: { orgId, action: 'disconnect', provider: 'google', ...(connectionId ? { connectionId } : {}) },
+  return invokeCalendarSync<CalendarSyncResponse>({
+    orgId,
+    action: 'disconnect',
+    provider: 'google',
+    ...(connectionId ? { connectionId } : {}),
   })
-  if (error) throw new Error(await parseInvokeError(error, data ?? null))
-  return data ?? {}
 }
 
 export async function updateCalendarConnectionLabel(
@@ -110,15 +113,12 @@ export async function createGoogleCalendarEvent(
   orgId: string,
   input: CreateCalendarEventInput,
 ): Promise<CreateCalendarEventResult> {
-  const { data, error } = await supabase.functions.invoke<CreateCalendarEventResult>('calendar-sync', {
-    body: {
-      orgId,
-      action: 'createEvent',
-      provider: 'google' satisfies CalendarProvider,
-      ...input,
-    },
+  const data = await invokeCalendarSync<CreateCalendarEventResult>({
+    orgId,
+    action: 'createEvent',
+    provider: 'google' satisfies CalendarProvider,
+    ...input,
   })
-  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   if (data?.error) throw new Error(data.message ?? data.error)
   return data ?? {}
 }
@@ -127,15 +127,12 @@ export async function updateGoogleCalendarEvent(
   orgId: string,
   input: UpdateCalendarEventInput,
 ): Promise<UpdateCalendarEventResult> {
-  const { data, error } = await supabase.functions.invoke<UpdateCalendarEventResult>('calendar-sync', {
-    body: {
-      orgId,
-      action: 'updateEvent',
-      provider: 'google' satisfies CalendarProvider,
-      ...input,
-    },
+  const data = await invokeCalendarSync<UpdateCalendarEventResult>({
+    orgId,
+    action: 'updateEvent',
+    provider: 'google' satisfies CalendarProvider,
+    ...input,
   })
-  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   if (data?.error) throw new Error(data.message ?? data.error)
   return data ?? {}
 }
@@ -144,15 +141,12 @@ export async function deleteGoogleCalendarEvent(
   orgId: string,
   input: DeleteCalendarEventInput,
 ): Promise<DeleteCalendarEventResult> {
-  const { data, error } = await supabase.functions.invoke<DeleteCalendarEventResult>('calendar-sync', {
-    body: {
-      orgId,
-      action: 'deleteEvent',
-      provider: 'google' satisfies CalendarProvider,
-      ...input,
-    },
+  const data = await invokeCalendarSync<DeleteCalendarEventResult>({
+    orgId,
+    action: 'deleteEvent',
+    provider: 'google' satisfies CalendarProvider,
+    ...input,
   })
-  if (error) throw new Error(await parseInvokeError(error, data ?? null))
   if (data?.error) throw new Error(data.message ?? data.error)
   return data ?? {}
 }

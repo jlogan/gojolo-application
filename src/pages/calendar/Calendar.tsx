@@ -195,6 +195,15 @@ function CalendarEventFormModal({
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
+  const selectedConnection = connected.find((c) => c.id === connectionId)
+  const staleSelectedConnection = mode === 'create' && Boolean(connectionId && !selectedConnection)
+
+  useEffect(() => {
+    if (mode !== 'create') return
+    if (connectionId && connected.some((c) => c.id === connectionId)) return
+    setConnectionId(connected[0]?.id ?? '')
+  }, [mode, connected, connectionId])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !submitting) onClose()
@@ -208,6 +217,10 @@ function CalendarEventFormModal({
     if (!currentOrg?.id || !title.trim() || submitting) return
     if (mode === 'create' && !connectionId) return
     if (mode === 'edit' && !editEvent) return
+    if (mode === 'create' && !selectedConnection) {
+      setError('This calendar connection is no longer active. Reconnect your calendar or refresh the page.')
+      return
+    }
     setError(null)
     setSubmitting(true)
     try {
@@ -232,7 +245,7 @@ function CalendarEventFormModal({
             ...fields,
             ...(sendEmailUpdates ? { sendEmailUpdates: true } : {}),
           })
-        : await createGoogleCalendarEvent(currentOrg.id, { connectionId, ...fields })
+        : await createGoogleCalendarEvent(currentOrg.id, { connectionId: selectedConnection!.id, ...fields })
       await onSaved(result.message ?? (mode === 'edit' ? 'Event updated' : 'Event created'))
       onClose()
     } catch (err) {
@@ -284,6 +297,11 @@ function CalendarEventFormModal({
           <p className="text-sm text-gray-400">Connect a Google Calendar account before creating events.</p>
         ) : (
           <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+            {staleSelectedConnection ? (
+              <p className="text-sm text-amber-400">
+                This calendar connection is no longer active. Reconnect your calendar or refresh the page.
+              </p>
+            ) : null}
             <div>
               <span className="block text-xs text-gray-500 mb-1">Calendar</span>
               {isEdit && editConnection ? (
@@ -293,7 +311,7 @@ function CalendarEventFormModal({
                   id="create-event-connection"
                   value={connectionId}
                   onChange={(e) => setConnectionId(e.target.value)}
-                  disabled={submitting}
+                  disabled={submitting || staleSelectedConnection}
                   className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
                 >
                   {connected.map((conn) => (
@@ -502,7 +520,7 @@ function CalendarEventFormModal({
             <div className="flex gap-2 pt-1">
               <button
                 type="submit"
-                disabled={submitting || !title.trim() || (mode === 'create' && !connectionId)}
+                disabled={submitting || !title.trim() || (mode === 'create' && (!connectionId || staleSelectedConnection))}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-accent-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50"
                 data-testid={isEdit ? 'calendar-edit-event-submit' : 'calendar-create-event-submit'}
               >
