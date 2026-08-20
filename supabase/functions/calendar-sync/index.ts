@@ -1385,6 +1385,33 @@ async function getWritableEventContext(
   return { event: event as CalendarEventRow, connection: pair.connection, tokens: pair.tokens }
 }
 
+type GoogleApiErrorBody = {
+  error?: {
+    code?: number
+    message?: string
+    status?: string
+    errors?: Array<{ domain?: string; reason?: string; message?: string }>
+  }
+}
+
+function formatGoogleApiError(
+  res: Response,
+  data: GoogleApiErrorBody,
+  fallback: string,
+): string {
+  const err = data.error
+  const parts: string[] = []
+  if (err?.status) parts.push(err.status)
+  if (err?.message) parts.push(err.message)
+  else if (err?.errors?.[0]?.message) parts.push(err.errors[0].message)
+  if (err?.code != null) parts.push(`code ${err.code}`)
+  if (parts.length === 0) {
+    parts.push(fallback)
+    parts.push(`HTTP ${res.status}`)
+  }
+  return parts.join(': ')
+}
+
 async function createGoogleCalendarEvent(
   accessToken: string,
   calendarId: string,
@@ -1403,9 +1430,9 @@ async function createGoogleCalendarEvent(
     },
     body: JSON.stringify(payload),
   })
-  const data = await res.json()
+  const data = await res.json() as GoogleApiErrorBody & GoogleEvent
   if (!res.ok) {
-    throw new Error(data.error?.message ?? 'Failed to create Google Calendar event')
+    throw new Error(formatGoogleApiError(res, data, 'Failed to create Google Calendar event'))
   }
   return data as GoogleEvent
 }
@@ -1431,9 +1458,9 @@ async function patchGoogleCalendarEvent(
     },
     body: JSON.stringify(payload),
   })
-  const data = await res.json()
+  const data = await res.json() as GoogleApiErrorBody & GoogleEvent
   if (!res.ok) {
-    throw new Error(data.error?.message ?? 'Failed to update Google Calendar event')
+    throw new Error(formatGoogleApiError(res, data, 'Failed to update Google Calendar event'))
   }
   return data as GoogleEvent
 }
@@ -1454,8 +1481,8 @@ async function deleteGoogleCalendarEventApi(
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (!res.ok && res.status !== 410) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error(data.error?.message ?? 'Failed to delete Google Calendar event')
+    const data = await res.json().catch(() => ({})) as GoogleApiErrorBody
+    throw new Error(formatGoogleApiError(res, data, 'Failed to delete Google Calendar event'))
   }
 }
 
@@ -1497,13 +1524,32 @@ async function handleCreateEvent(
 
   const accessToken = await getValidAccessToken(service, pair.connection, pair.tokens)
   const calendarId = pair.connection.primary_calendar_id ?? 'primary'
+  const sendUpdates = attendeeEmails.length > 0
 
-  const created = await createGoogleCalendarEvent(
-    accessToken,
-    calendarId,
-    googlePayload,
-    { addGoogleMeet, sendUpdates: attendeeEmails.length > 0 },
-  )
+  let created: GoogleEvent
+  let meetFallbackMessage: string | undefined
+
+  try {
+    created = await createGoogleCalendarEvent(
+      accessToken,
+      calendarId,
+      googlePayload,
+      { addGoogleMeet, sendUpdates },
+    )
+  } catch (firstErr) {
+    if (!addGoogleMeet) throw firstErr
+
+    const payloadWithoutMeet = { ...googlePayload }
+    delete payloadWithoutMeet.conferenceData
+
+    created = await createGoogleCalendarEvent(
+      accessToken,
+      calendarId,
+      payloadWithoutMeet,
+      { addGoogleMeet: false, sendUpdates },
+    )
+    meetFallbackMessage = 'Event created without Google Meet link'
+  }
 
   if (!created.id) throw new Error('Google did not return an event id')
 
@@ -1523,7 +1569,7 @@ async function handleCreateEvent(
 
   return json({
     ok: true,
-    message: 'Event created',
+    message: meetFallbackMessage ?? 'Event created',
     event: upserted,
   })
 }
