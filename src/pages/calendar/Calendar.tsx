@@ -38,7 +38,6 @@ import {
   displayEventLocation,
   displayEventMeetingUrl,
   displayEventTitle,
-  eventOwnerLabel,
   formatEventStartTime,
   formatEventTimeRange,
   getConnectionChipActiveStyles,
@@ -81,7 +80,6 @@ import type {
   CalendarConnection,
   CalendarEvent,
   CalendarReminders,
-  CalendarTeamMember,
   CreateCalendarEventAvailability,
   CreateCalendarEventReminder,
   CreateCalendarEventVisibility,
@@ -543,9 +541,12 @@ function CalendarEventFormModal({
   )
 }
 
+function eventCalendarLabel(conn: CalendarConnection | undefined): string {
+  return conn ? connectionAccountLabel(conn) : 'Unknown calendar'
+}
+
 function CalendarEventDetailModal({
   event,
-  owner,
   conn,
   viewerUserId,
   connectionColor,
@@ -556,7 +557,6 @@ function CalendarEventDetailModal({
   onDelete,
 }: {
   event: CalendarEvent
-  owner: CalendarTeamMember | undefined
   conn: CalendarConnection | undefined
   viewerUserId: string | undefined
   connectionColor: string
@@ -639,7 +639,7 @@ function CalendarEventDetailModal({
         <dl className="space-y-4 text-sm">
           <div>
             <dt className="text-gray-500">Calendar</dt>
-            <dd className="text-gray-200">{eventOwnerLabel(owner, conn)}</dd>
+            <dd className="text-gray-200">{eventCalendarLabel(conn)}</dd>
           </div>
 
           {(meetingUrl || extraConferenceLinks.length > 0) && (
@@ -830,7 +830,6 @@ function CalendarEventDetailModal({
 
 function CalendarEventCard({
   event,
-  owner,
   conn,
   viewerUserId,
   connectionColor,
@@ -838,7 +837,6 @@ function CalendarEventCard({
   onSelect,
 }: {
   event: CalendarEvent
-  owner: CalendarTeamMember | undefined
   conn: CalendarConnection | undefined
   viewerUserId: string | undefined
   connectionColor: string
@@ -875,7 +873,7 @@ function CalendarEventCard({
       >
         <p className="font-medium text-white truncate">{title}</p>
         <p className="text-gray-400 mt-0.5">{formatEventTimeRange(event)}</p>
-        <p className="text-gray-500 truncate mt-0.5">{eventOwnerLabel(owner, conn)}</p>
+        <p className="text-gray-500 truncate mt-0.5">{eventCalendarLabel(conn)}</p>
         {location && <p className="text-gray-500 truncate mt-0.5">{location}</p>}
       </button>
     </li>
@@ -886,7 +884,6 @@ function CalendarDayCard({
   day,
   dayEvents,
   viewerUserId,
-  membersById,
   connectionsById,
   connectionColorMap,
   variant,
@@ -896,7 +893,6 @@ function CalendarDayCard({
   day: Date
   dayEvents: CalendarEvent[]
   viewerUserId: string | undefined
-  membersById: Map<string, CalendarTeamMember>
   connectionsById: Map<string, CalendarConnection>
   connectionColorMap: ConnectionColorMap
   variant: 'compact' | 'day'
@@ -924,7 +920,6 @@ function CalendarDayCard({
             <CalendarEventCard
               key={event.id}
               event={event}
-              owner={membersById.get(event.user_id)}
               conn={connectionsById.get(event.connection_id)}
               viewerUserId={viewerUserId}
               connectionColor={getConnectionColorFromMap(event.connection_id, connectionColorMap)}
@@ -949,7 +944,6 @@ export default function CalendarPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('week')
   const [anchorDate, setAnchorDate] = useState(() => nowInCalendarTz())
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null)
-  const [teamMembers, setTeamMembers] = useState<CalendarTeamMember[]>([])
   const [selectedConnectionIds, setSelectedConnectionIds] = useState<Set<string>>(new Set())
   const [connections, setConnections] = useState<CalendarConnection[]>([])
   const [events, setEvents] = useState<CalendarEvent[]>([])
@@ -984,11 +978,7 @@ export default function CalendarPage() {
     const rangeStart = range.start.toISOString()
     const rangeEnd = range.end.toISOString()
 
-    const [membersRes, connectionsRes, eventsRes] = await Promise.all([
-      supabase.rpc('org_users_with_permission', {
-        p_org_id: currentOrg.id,
-        p_permission: 'calendar.view',
-      }),
+    const [connectionsRes, eventsRes] = await Promise.all([
       supabase
         .from('calendar_connections')
         .select('*')
@@ -1001,9 +991,7 @@ export default function CalendarPage() {
       }),
     ])
 
-    const members = (membersRes.data ?? []) as CalendarTeamMember[]
     const loadedConnections = (connectionsRes.data ?? []) as CalendarConnection[]
-    setTeamMembers(members)
     setConnections(loadedConnections)
     setEvents((eventsRes.data ?? []) as CalendarEvent[])
 
@@ -1064,12 +1052,6 @@ export default function CalendarPage() {
     () => sortConnectionsByDisplayLabel(filterableConnections),
     [filterableConnections],
   )
-
-  const membersById = useMemo(() => {
-    const map = new Map<string, CalendarTeamMember>()
-    for (const member of teamMembers) map.set(member.user_id, member)
-    return map
-  }, [teamMembers])
 
   const connectionsById = useMemo(() => {
     const map = new Map<string, CalendarConnection>()
@@ -1185,7 +1167,6 @@ export default function CalendarPage() {
 
   const selectedEventDetails = selectedEvent ? {
     event: selectedEvent,
-    owner: membersById.get(selectedEvent.user_id),
     conn: connectionsById.get(selectedEvent.connection_id),
     color: getConnectionColorFromMap(selectedEvent.connection_id, connectionColorMap),
   } : null
@@ -1223,7 +1204,6 @@ export default function CalendarPage() {
       {selectedEventDetails && (
         <CalendarEventDetailModal
           event={selectedEventDetails.event}
-          owner={selectedEventDetails.owner}
           conn={selectedEventDetails.conn}
           viewerUserId={user?.id}
           connectionColor={selectedEventDetails.color}
@@ -1408,7 +1388,6 @@ export default function CalendarPage() {
                   day={day}
                   dayEvents={eventsByDay.get(calendarDayKeyFromDate(day)) ?? []}
                   viewerUserId={user?.id}
-                  membersById={membersById}
                   connectionsById={connectionsById}
                   connectionColorMap={connectionColorMap}
                   variant={eventTileVariant}
