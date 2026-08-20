@@ -58,6 +58,10 @@ import {
   renderSanitizedDescription,
 } from '@/lib/calendarDescription'
 import {
+  adjustAllDayEndOnStartChange,
+  adjustTimedEndOnStartChange,
+} from '@/lib/calendarEventForm'
+import {
   addCalendarDays,
   CALENDAR_TIMEZONE_LABEL,
   calendarDayKeyFromDate,
@@ -116,6 +120,7 @@ function buildEditEventDefaults(editEvent: CalendarEvent) {
     reminder: reminderFromEvent(editEvent.reminders),
     visibility: visibilityFromEvent(editEvent.visibility),
     availability: 'busy' as CreateCalendarEventAvailability,
+    projectId: editEvent.project_id ?? '',
   }
 }
 
@@ -189,6 +194,8 @@ function CalendarEventFormModal({
   const [reminder, setReminder] = useState<CreateCalendarEventReminder>(editDefaults?.reminder ?? '10')
   const [visibility, setVisibility] = useState<CreateCalendarEventVisibility>(editDefaults?.visibility ?? 'default')
   const [availability, setAvailability] = useState<CreateCalendarEventAvailability>(editDefaults?.availability ?? 'busy')
+  const [projectId, setProjectId] = useState(editDefaults?.projectId ?? '')
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
   const [sendEmailUpdates, setSendEmailUpdates] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -201,6 +208,53 @@ function CalendarEventFormModal({
     if (connectionId && connected.some((c) => c.id === connectionId)) return
     setConnectionId(connected[0]?.id ?? '')
   }, [mode, connected, connectionId])
+
+  useEffect(() => {
+    if (!currentOrg?.id) return
+    let cancelled = false
+    void supabase
+      .from('projects')
+      .select('id, name')
+      .eq('org_id', currentOrg.id)
+      .order('name')
+      .then(({ data }) => {
+        if (!cancelled) setProjects((data ?? []) as Array<{ id: string; name: string }>)
+      })
+    return () => { cancelled = true }
+  }, [currentOrg?.id])
+
+  const handleStartDateChange = (newStartDate: string) => {
+    if (allDay) {
+      const { endDate: newEndDate } = adjustAllDayEndOnStartChange(startDate, endDate, newStartDate)
+      setEndDate(newEndDate)
+    } else {
+      const adjusted = adjustTimedEndOnStartChange(
+        startDate,
+        startTime,
+        endDate,
+        endTime,
+        newStartDate,
+        startTime,
+      )
+      setEndDate(adjusted.endDate)
+      setEndTime(adjusted.endTime)
+    }
+    setStartDate(newStartDate)
+  }
+
+  const handleStartTimeChange = (newStartTime: string) => {
+    const adjusted = adjustTimedEndOnStartChange(
+      startDate,
+      startTime,
+      endDate,
+      endTime,
+      startDate,
+      newStartTime,
+    )
+    setEndDate(adjusted.endDate)
+    setEndTime(adjusted.endTime)
+    setStartTime(newStartTime)
+  }
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -236,6 +290,7 @@ function CalendarEventFormModal({
         reminder,
         visibility,
         availability,
+        projectId: projectId.trim() || null,
       }
       const result = mode === 'edit'
         ? await updateGoogleCalendarEvent(currentOrg.id, {
@@ -320,6 +375,22 @@ function CalendarEventFormModal({
             </div>
 
             <div>
+              <label htmlFor="create-event-project" className="block text-xs text-gray-500 mb-1">Project (optional)</label>
+              <select
+                id="create-event-project"
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                disabled={submitting}
+                className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+              >
+                <option value="">No project</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
               <label htmlFor="create-event-title" className="block text-xs text-gray-500 mb-1">Title</label>
               <input
                 id="create-event-title"
@@ -351,7 +422,7 @@ function CalendarEventFormModal({
                   id="create-event-start-date"
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => handleStartDateChange(e.target.value)}
                   disabled={submitting}
                   required
                   className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
@@ -364,7 +435,7 @@ function CalendarEventFormModal({
                     id="create-event-start-time"
                     type="time"
                     value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
+                    onChange={(e) => handleStartTimeChange(e.target.value)}
                     disabled={submitting}
                     required
                     className="w-full h-9 rounded-lg border border-border bg-surface-muted px-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"

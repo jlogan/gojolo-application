@@ -100,6 +100,7 @@ export type CalendarEvent = {
   provider_updated_at: string | null
   source: CalendarEventSource
   created_by_user_id: string | null
+  project_id: string | null
   created_at: string
   updated_at: string
 }
@@ -136,6 +137,8 @@ export type CreateCalendarEventInput = {
   visibility?: CreateCalendarEventVisibility
   /** Busy (opaque) vs free (transparent) on shared calendars. */
   availability?: CreateCalendarEventAvailability
+  /** Optional GoJoLo project link (persisted locally, not sent to Google). */
+  projectId?: string | null
 }
 
 export type CreateCalendarEventResult = {
@@ -162,6 +165,7 @@ export type MutateCalendarEventFields = {
   reminder?: CreateCalendarEventReminder
   visibility?: CreateCalendarEventVisibility
   availability?: CreateCalendarEventAvailability
+  projectId?: string | null
 }
 
 export type UpdateCalendarEventInput = MutateCalendarEventFields & {

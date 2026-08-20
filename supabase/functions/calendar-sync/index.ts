@@ -698,7 +698,7 @@ async function syncGoogleConnection(
 
   const { data: gojoloRows, error: gojoloMetaError } = await service
     .from('calendar_events')
-    .select('external_id, created_by_user_id')
+    .select('external_id, created_by_user_id, project_id')
     .eq('connection_id', connection.id)
     .eq('source', 'gojolo')
     .gte('starts_at', timeMin)
@@ -706,10 +706,18 @@ async function syncGoogleConnection(
 
   if (gojoloMetaError) throw new Error(gojoloMetaError.message)
 
-  const gojoloMeta = new Map<string, string | null>(
-    (gojoloRows ?? []).map((row: { external_id: string; created_by_user_id: string | null }) => [
+  type GojoloEventMeta = {
+    created_by_user_id: string | null
+    project_id: string | null
+  }
+
+  const gojoloMeta = new Map<string, GojoloEventMeta>(
+    (gojoloRows ?? []).map((row: { external_id: string; created_by_user_id: string | null; project_id: string | null }) => [
       row.external_id,
-      row.created_by_user_id,
+      {
+        created_by_user_id: row.created_by_user_id,
+        project_id: row.project_id,
+      },
     ]),
   )
 
@@ -750,9 +758,10 @@ async function syncGoogleConnection(
       if (!row) continue
 
       if (gojoloMeta.has(event.id)) {
+        const meta = gojoloMeta.get(event.id)!
         row.source = 'gojolo'
-        const createdBy = gojoloMeta.get(event.id)
-        if (createdBy) row.created_by_user_id = createdBy
+        if (meta.created_by_user_id) row.created_by_user_id = meta.created_by_user_id
+        row.project_id = meta.project_id
       }
 
       const { error } = await service
@@ -1153,6 +1162,8 @@ type CreateEventBody = {
   reminder?: CreateEventReminder
   visibility?: CreateEventVisibility
   availability?: CreateEventAvailability
+  /** Optional GoJoLo project link (stored locally, not sent to Google). */
+  projectId?: string | null
   /** When true on updateEvent, Google sends update emails to guests (sendUpdates=all). */
   sendEmailUpdates?: boolean
 }
@@ -1166,6 +1177,7 @@ type CalendarEventRow = {
   source: string | null
   meeting_url: string | null
   created_by_user_id: string | null
+  project_id: string | null
   attendees: Array<{ email?: string }> | null
   organizer: CalendarPersonJson | null
   creator: CalendarPersonJson | null
@@ -1261,6 +1273,97 @@ function normalizeAttendeeEmails(attendees: string[] | undefined): string[] {
   return result
 }
 
+function isoDateFromParts(parts: { year: number; month: number; day: number }): string {
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
+function normalizeEventEndParts(
+  allDay: boolean,
+  startParts: { year: number; month: number; day: number },
+  endParts: { year: number; month: number; day: number },
+  startTime: { hour: number; minute: number },
+  endTime: { hour: number; minute: number },
+): {
+  endParts: { year: number; month: number; day: number }
+  endTime: { hour: number; minute: number }
+} {
+  if (allDay) {
+    const startIso = isoDateFromParts(startParts)
+    let endIso = isoDateFromParts(endParts)
+    if (endIso < startIso) {
+      endIso = startIso
+    }
+    return { endParts: parseDateOnly(endIso)!, endTime }
+  }
+
+  const startMs = zonedTimeToUtc(
+    startParts.year,
+    startParts.month,
+    startParts.day,
+    startTime.hour,
+    startTime.minute,
+  ).getTime()
+  let endMs = zonedTimeToUtc(
+    endParts.year,
+    endParts.month,
+    endParts.day,
+    endTime.hour,
+    endTime.minute,
+  ).getTime()
+
+  if (endMs <= startMs) {
+    endMs = startMs + 60 * 60 * 1000
+  }
+
+  const correctedEnd = new Date(endMs)
+  const shifted = new Intl.DateTimeFormat('en-US', {
+    timeZone: CALENDAR_TIMEZONE,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(correctedEnd)
+  const get = (type: string) => shifted.find((p) => p.type === type)?.value ?? '0'
+  const hourRaw = Number(get('hour'))
+  const minuteRaw = Number(get('minute'))
+
+  return {
+    endParts: {
+      year: Number(get('year')),
+      month: Number(get('month')),
+      day: Number(get('day')),
+    },
+    endTime: {
+      hour: hourRaw === 24 ? 0 : hourRaw,
+      minute: minuteRaw,
+    },
+  }
+}
+
+async function resolveProjectIdForOrg(
+  service: ReturnType<typeof createClient>,
+  orgId: string,
+  projectId: string | null | undefined,
+): Promise<string | null | { error: string; status: number }> {
+  if (projectId == null || projectId === '') return null
+  const trimmed = projectId.trim()
+  if (!trimmed) return null
+
+  const { data, error } = await service
+    .from('projects')
+    .select('id')
+    .eq('id', trimmed)
+    .eq('org_id', orgId)
+    .maybeSingle()
+
+  if (error) throw new Error(error.message)
+  if (!data) return { error: 'invalid_project', status: 400 }
+
+  return trimmed
+}
+
 function buildGoogleEventPayload(body: CreateEventBody): {
   payload: Record<string, unknown>
   attendeeEmails: string[]
@@ -1274,30 +1377,32 @@ function buildGoogleEventPayload(body: CreateEventBody): {
   if (!startParts) return { error: 'startDate required (YYYY-MM-DD)', status: 400 }
 
   const allDay = body.allDay === true
-  const endParts = parseDateOnly(body.endDate) ?? startParts
+  let endParts = parseDateOnly(body.endDate) ?? startParts
 
   let googlePayload: Record<string, unknown>
 
   if (allDay) {
-    const endExclusive = addCalendarDaysFromIso(
-      `${endParts.year}-${String(endParts.month).padStart(2, '0')}-${String(endParts.day).padStart(2, '0')}`,
-      1,
-    )
+    const normalized = normalizeEventEndParts(allDay, startParts, endParts, { hour: 0, minute: 0 }, { hour: 0, minute: 0 })
+    endParts = normalized.endParts
+    const endExclusive = addCalendarDaysFromIso(isoDateFromParts(endParts), 1)
     googlePayload = {
       summary: title,
       start: {
-        date: `${startParts.year}-${String(startParts.month).padStart(2, '0')}-${String(startParts.day).padStart(2, '0')}`,
+        date: isoDateFromParts(startParts),
       },
       end: {
-        date: `${endExclusive.year}-${String(endExclusive.month).padStart(2, '0')}-${String(endExclusive.day).padStart(2, '0')}`,
+        date: isoDateFromParts(endExclusive),
       },
     }
   } else {
     const startTime = parseTimeOnly(body.startTime) ?? { hour: 9, minute: 0 }
-    const endTime = parseTimeOnly(body.endTime) ?? { hour: startTime.hour + 1, minute: startTime.minute }
+    let endTime = parseTimeOnly(body.endTime) ?? { hour: startTime.hour + 1, minute: startTime.minute }
+    const normalized = normalizeEventEndParts(allDay, startParts, endParts, startTime, endTime)
+    endParts = normalized.endParts
+    endTime = normalized.endTime
 
-    const startIso = `${startParts.year}-${String(startParts.month).padStart(2, '0')}-${String(startParts.day).padStart(2, '0')}T${String(startTime.hour).padStart(2, '0')}:${String(startTime.minute).padStart(2, '0')}:00`
-    const endIso = `${endParts.year}-${String(endParts.month).padStart(2, '0')}-${String(endParts.day).padStart(2, '0')}T${String(endTime.hour).padStart(2, '0')}:${String(endTime.minute).padStart(2, '0')}:00`
+    const startIso = `${isoDateFromParts(startParts)}T${String(startTime.hour).padStart(2, '0')}:${String(startTime.minute).padStart(2, '0')}:00`
+    const endIso = `${isoDateFromParts(endParts)}T${String(endTime.hour).padStart(2, '0')}:${String(endTime.minute).padStart(2, '0')}:00`
 
     googlePayload = {
       summary: title,
@@ -1344,7 +1449,7 @@ async function getWritableEventContext(
 > {
   const { data: event, error } = await service
     .from('calendar_events')
-    .select('id, org_id, connection_id, user_id, external_id, source, meeting_url, created_by_user_id, attendees, organizer, creator')
+    .select('id, org_id, connection_id, user_id, external_id, source, meeting_url, created_by_user_id, project_id, attendees, organizer, creator')
     .eq('id', eventId)
     .eq('org_id', orgId)
     .maybeSingle()
@@ -1503,6 +1608,11 @@ async function handleCreateEvent(
   const built = buildGoogleEventPayload(body)
   if ('error' in built) return json({ error: built.error }, built.status)
 
+  const projectResolved = await resolveProjectIdForOrg(service, orgId, body.projectId)
+  if (typeof projectResolved === 'object' && projectResolved !== null && 'error' in projectResolved) {
+    return json({ error: 'Invalid project for this organization' }, projectResolved.status)
+  }
+
   const { payload: googlePayload, attendeeEmails, addGoogleMeet } = built
 
   const connection = await getOrgConnection(service, orgId, 'google', connectionId)
@@ -1558,11 +1668,12 @@ async function handleCreateEvent(
     created_by_user_id: userId,
   })
   if (!row) throw new Error('Failed to map created event')
+  if (projectResolved) row.project_id = projectResolved
 
   const { data: upserted, error: upsertError } = await service
     .from('calendar_events')
     .upsert(row, { onConflict: 'connection_id,external_id' })
-    .select('id, external_id, title, starts_at, ends_at, meeting_url, html_link, source, created_by_user_id')
+    .select('id, external_id, title, starts_at, ends_at, meeting_url, html_link, source, created_by_user_id, project_id')
     .single()
 
   if (upsertError) throw new Error(upsertError.message)
@@ -1596,6 +1707,13 @@ async function handleUpdateEvent(
     return json({ error: context.error, message: context.message }, context.status)
   }
 
+  const projectResolved = body.projectId !== undefined
+    ? await resolveProjectIdForOrg(service, orgId, body.projectId)
+    : undefined
+  if (typeof projectResolved === 'object' && projectResolved !== null && 'error' in projectResolved) {
+    return json({ error: 'Invalid project for this organization' }, projectResolved.status)
+  }
+
   const { event, connection, tokens } = context
   const { payload: googlePayload, addGoogleMeet } = built
 
@@ -1624,10 +1742,16 @@ async function handleUpdateEvent(
   })
   if (!row) throw new Error('Failed to map updated event')
 
+  if (projectResolved !== undefined) {
+    row.project_id = projectResolved
+  } else if (event.project_id) {
+    row.project_id = event.project_id
+  }
+
   const { data: upserted, error: upsertError } = await service
     .from('calendar_events')
     .upsert(row, { onConflict: 'connection_id,external_id' })
-    .select('id, external_id, title, starts_at, ends_at, meeting_url, html_link, source, created_by_user_id')
+    .select('id, external_id, title, starts_at, ends_at, meeting_url, html_link, source, created_by_user_id, project_id')
     .single()
 
   if (upsertError) throw new Error(upsertError.message)
@@ -1728,6 +1852,7 @@ Deno.serve(async (req: Request) => {
       availability?: CreateEventAvailability
       eventId?: string
       sendEmailUpdates?: boolean
+      projectId?: string | null
     }
 
     if (isCron) {
