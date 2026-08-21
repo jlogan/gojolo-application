@@ -50,6 +50,8 @@ type Props = {
   stickyActions?: boolean
   autofocus?: boolean
   minHeight?: string
+  /** Remount key for RichTextEditor when compose session changes (reply/draft/thread). */
+  bodyEditorKey?: string
   /** When true, omit the rich-text body editor (e.g. invoice emails with iframe preview). */
   hideBodyEditor?: boolean
   /** Formatted HTML preview shown when hideBodyEditor is true (invoice drafts). */
@@ -101,6 +103,7 @@ export default function EmailComposeForm({
   stickyActions = false,
   autofocus = true,
   minHeight = 'min-h-[240px]',
+  bodyEditorKey,
   hideBodyEditor = false,
   bodyPreviewHtml = '',
   onEditBody,
@@ -323,7 +326,14 @@ export default function EmailComposeForm({
       </div>
 
       {!hideBodyEditor && (
-        <RichTextEditor content={html} onChange={onHtmlChange} placeholder="Write your message…" autofocus={autofocus} minHeight={minHeight} />
+        <RichTextEditor
+          key={bodyEditorKey}
+          content={html}
+          onChange={onHtmlChange}
+          placeholder="Write your message…"
+          autofocus={autofocus}
+          minHeight={minHeight}
+        />
       )}
 
       {hideBodyEditor && bodyPreviewHtml.trim() && (() => {

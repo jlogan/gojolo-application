@@ -28,6 +28,15 @@ type Props = {
 
 const MENTION_QUERY_RE = /@([^\s@]*)$/
 
+function isEffectivelyEmptyHtml(html: string): boolean {
+  return html.replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').replace(/\u200b/g, '').trim() === ''
+}
+
+function htmlEquivalent(a: string, b: string): boolean {
+  if (a === b) return true
+  return isEffectivelyEmptyHtml(a) && isEffectivelyEmptyHtml(b)
+}
+
 function getMentionLabel(user: MentionableUser): string {
   return user.display_name ?? user.email ?? 'user'
 }
@@ -53,7 +62,7 @@ export default function RichTextEditor({
   const filteredUsersRef = useRef<MentionableUser[]>([])
   const mentionableUsersRef = useRef(mentionableUsers)
   const editorRef = useRef<Editor | null>(null)
-  const skipInitialUpdateRef = useRef(true)
+  const syncingExternalContentRef = useRef(false)
 
   useEffect(() => { mentionableUsersRef.current = mentionableUsers }, [mentionableUsers])
   useEffect(() => { mentionOpenRef.current = mentionOpen }, [mentionOpen])
@@ -126,8 +135,8 @@ export default function RichTextEditor({
     autofocus,
     onUpdate: ({ editor: e }) => {
       editorRef.current = e
-      if (skipInitialUpdateRef.current) {
-        skipInitialUpdateRef.current = false
+      if (syncingExternalContentRef.current) {
+        syncingExternalContentRef.current = false
         return
       }
       onChange?.(e.getHTML())
@@ -193,8 +202,12 @@ export default function RichTextEditor({
   }, [editor])
 
   useEffect(() => {
-    skipInitialUpdateRef.current = true
-  }, [content])
+    if (!editor || editor.isDestroyed) return
+    const currentHtml = editor.getHTML()
+    if (htmlEquivalent(content, currentHtml)) return
+    syncingExternalContentRef.current = true
+    editor.commands.setContent(content, { emitUpdate: false })
+  }, [editor, content])
 
   if (!editor) return null
 

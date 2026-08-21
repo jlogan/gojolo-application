@@ -2398,6 +2398,7 @@ export default function Inbox() {
       showSubject={isCompose}
       html={replyHtml}
       onHtmlChange={setReplyHtml}
+      bodyEditorKey={`${selectedThreadId ?? 'compose'}-${replyMode ?? 'none'}-${replyAnchorMsgId ?? ''}-${draftMessageId ?? ''}`}
       hideBodyEditor={isInvoiceDraftCompose && !invoiceDraftEditBody}
       bodyPreviewHtml={isInvoiceDraftCompose ? replyHtml : undefined}
       onEditBody={isInvoiceDraftCompose ? () => setInvoiceDraftEditBody(true) : undefined}
