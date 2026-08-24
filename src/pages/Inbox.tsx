@@ -534,6 +534,7 @@ export default function Inbox() {
   const threadsListFetchInFlightRef = useRef(false)
   const threadsListFetchPendingRef = useRef<'immediate' | 'background' | false>(false)
   const threadsListDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const backgroundRefreshBackoffUntilRef = useRef(0)
   const fetchFilterRef = useRef<InboxFilter>(filter)
   const fetchMailboxFilterRef = useRef<string | null>(mailboxFilterId)
   const fetchSelectedGmailLabelRef = useRef<string | null>(selectedGmailLabel)
@@ -569,6 +570,7 @@ export default function Inbox() {
 
   const INBOX_THREADS_RPC_TIMEOUT_MS = 15_000
   const REALTIME_THREADS_DEBOUNCE_MS = 400
+  const BACKGROUND_REFRESH_BACKOFF_MS = 120_000
 
   // Data fetching — paginated and server-side searchable so older/unloaded threads can be found.
   const fetchThreadsPage = useCallback(async (
@@ -637,19 +639,25 @@ export default function Inbox() {
 
       if (error) {
         console.error('[Inbox] search_inbox_threads failed:', error.message, error)
-        debugLog('fetchThreads', { event: 'ERROR_rpc', error: error.message })
+        debugLog('fetchThreads', { event: 'ERROR_rpc', error: error.message, source })
         if (!append) {
           const preserveThreads = initialLoadDone.current
+          const silentBackgroundFailure = source === 'background' && preserveThreads
           if (!preserveThreads) {
             setThreads([])
             setThreadsFetchFailed(true)
           }
-          toast(
-            preserveThreads
-              ? 'Could not refresh inbox. Your list may be out of date.'
-              : 'Could not load inbox. Check your connection and try again.',
-            { action: 'retry-threads' },
-          )
+          if (silentBackgroundFailure) {
+            backgroundRefreshBackoffUntilRef.current = Date.now() + BACKGROUND_REFRESH_BACKOFF_MS
+            console.warn('[Inbox] Background inbox refresh failed (list unchanged):', error.message)
+          } else {
+            toast(
+              preserveThreads
+                ? 'Could not refresh inbox. Your list may be out of date.'
+                : 'Could not load inbox. Check your connection and try again.',
+              { action: 'retry-threads' },
+            )
+          }
           if (!preserveThreads) setHasMoreThreads(false)
         }
         return
@@ -690,9 +698,10 @@ export default function Inbox() {
       setHasMoreThreads(hasMore)
       initialLoadDone.current = true
       setThreadsFetchFailed(false)
+      if (source === 'background') backgroundRefreshBackoffUntilRef.current = 0
       if (!append) refreshGmailLabelOptions()
     } catch (e) {
-      debugLog('fetchThreads', { event: 'ERROR', error: String(e) })
+      debugLog('fetchThreads', { event: 'ERROR', error: String(e), source })
       const timedOut = e instanceof Error && e.message.includes('search_inbox_threads timed out')
       if (timedOut) console.error('[Inbox] search_inbox_threads timed out')
       if (!append) {
@@ -700,22 +709,31 @@ export default function Inbox() {
           && fetchMailboxFilterRef.current === mailboxFilterId
           && fetchSelectedGmailLabelRef.current === selectedGmailLabel
         const preserveThreads = initialLoadDone.current
+        const silentBackgroundFailure = source === 'background' && preserveThreads
         if (filtersStillMatch) {
           if (!preserveThreads) {
             setThreads([])
             setThreadsFetchFailed(true)
             setHasMoreThreads(false)
           }
-          toast(
-            timedOut
-              ? (preserveThreads
-                ? 'Inbox refresh timed out. Your list may be out of date.'
-                : 'Loading inbox timed out. Check your connection and try again.')
-              : (preserveThreads
-                ? 'Could not refresh inbox. Your list may be out of date.'
-                : 'Could not load inbox. Check your connection and try again.'),
-            { action: 'retry-threads' },
-          )
+          if (silentBackgroundFailure) {
+            backgroundRefreshBackoffUntilRef.current = Date.now() + BACKGROUND_REFRESH_BACKOFF_MS
+            console.warn(
+              '[Inbox] Background inbox refresh failed (list unchanged):',
+              timedOut ? 'timed out' : String(e),
+            )
+          } else {
+            toast(
+              timedOut
+                ? (preserveThreads
+                  ? 'Inbox refresh timed out. Your list may be out of date.'
+                  : 'Loading inbox timed out. Check your connection and try again.')
+                : (preserveThreads
+                  ? 'Could not refresh inbox. Your list may be out of date.'
+                  : 'Could not load inbox. Check your connection and try again.'),
+              { action: 'retry-threads' },
+            )
+          }
         }
       }
     } finally {
@@ -736,12 +754,26 @@ export default function Inbox() {
   const fetchThreads = useCallback(() => fetchThreadsPage(0, false, { source: 'immediate' }), [fetchThreadsPage])
 
   const scheduleBackgroundThreadsRefresh = useCallback(() => {
+    if (Date.now() < backgroundRefreshBackoffUntilRef.current) {
+      debugLog('fetchThreads', {
+        event: 'SKIP_backoff',
+        until: backgroundRefreshBackoffUntilRef.current,
+      })
+      return
+    }
     if (threadsListDebounceTimerRef.current) clearTimeout(threadsListDebounceTimerRef.current)
     threadsListDebounceTimerRef.current = setTimeout(() => {
       threadsListDebounceTimerRef.current = null
+      if (Date.now() < backgroundRefreshBackoffUntilRef.current) {
+        debugLog('fetchThreads', {
+          event: 'SKIP_backoff',
+          until: backgroundRefreshBackoffUntilRef.current,
+        })
+        return
+      }
       void fetchThreadsPage(0, false, { source: 'background' })
     }, REALTIME_THREADS_DEBOUNCE_MS)
-  }, [fetchThreadsPage])
+  }, [fetchThreadsPage, debugLog])
 
   const loadOlderThreads = useCallback(() => {
     if (loadingMoreThreads || !hasMoreThreads) return
@@ -1155,7 +1187,6 @@ export default function Inbox() {
       }, (payload) => {
         const tid = (payload.new as { thread_id: string }).thread_id
         debugLogRef.current('realtime', { event: 'inbox_messages_INSERT', threadId: tid, payload }, tid)
-        scheduleBackgroundThreadsRefreshRef.current()
         if (tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
@@ -1166,7 +1197,6 @@ export default function Inbox() {
         const tid = ((payload.new as { thread_id?: string })?.thread_id
           ?? (payload.old as { thread_id?: string })?.thread_id) as string | undefined
         debugLogRef.current('realtime', { event: 'inbox_messages_UPDATE', threadId: tid, payload }, tid)
-        scheduleBackgroundThreadsRefreshRef.current()
         if (tid && tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
@@ -1176,7 +1206,6 @@ export default function Inbox() {
       }, (payload) => {
         const tid = (payload.old as { thread_id?: string }).thread_id
         debugLogRef.current('realtime', { event: 'inbox_messages_DELETE', threadId: tid, payload }, tid)
-        scheduleBackgroundThreadsRefreshRef.current()
         if (tid && tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
@@ -1199,11 +1228,12 @@ export default function Inbox() {
     }
   }, [currentOrg?.id])
 
-  // Polling fallback — 15s when realtime disconnected, 60s when connected
+  // Polling fallback when realtime is disconnected (inbox_threads subscription covers list updates when connected)
   useEffect(() => {
+    if (realtimeConnected) return
     const interval = setInterval(() => {
       scheduleBackgroundThreadsRefresh()
-    }, realtimeConnected ? 60_000 : 15_000)
+    }, 15_000)
     return () => clearInterval(interval)
   }, [scheduleBackgroundThreadsRefresh, realtimeConnected])
 
