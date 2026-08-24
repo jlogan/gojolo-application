@@ -328,7 +328,9 @@ export default function Inbox() {
 
   // Pagination
   const [pageSize] = useState(50)
-  const [toastMsg, setToastMsg] = useState<string | null>(null)
+  type InboxToast = { message: string; action?: 'retry-threads' }
+  const [toastMsg, setToastMsg] = useState<InboxToast | null>(null)
+  const [threadsFetchFailed, setThreadsFetchFailed] = useState(false)
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [mailboxFilterId, setMailboxFilterId] = useState<string | null>(null)
@@ -529,15 +531,24 @@ export default function Inbox() {
   }))
 
   const initialLoadDone = useRef(false)
+  const threadsListFetchInFlightRef = useRef(false)
+  const threadsListFetchPendingRef = useRef<'immediate' | 'background' | false>(false)
+  const threadsListDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fetchFilterRef = useRef<InboxFilter>(filter)
   const fetchMailboxFilterRef = useRef<string | null>(mailboxFilterId)
   const fetchSelectedGmailLabelRef = useRef<string | null>(selectedGmailLabel)
+
+  const toast = useCallback((msg: string, opts?: { action?: 'retry-threads'; durationMs?: number }) => {
+    setToastMsg({ message: msg, action: opts?.action })
+    setTimeout(() => setToastMsg(null), opts?.durationMs ?? (opts?.action ? 8000 : 3000))
+  }, [])
 
   const applyGmailLabelFilter = useCallback((label: string | null) => {
     setSelectedGmailLabel(label)
     fetchSelectedGmailLabelRef.current = label
     setThreads([])
     setHasMoreThreads(false)
+    setThreadsFetchFailed(false)
     initialLoadDone.current = false
   }, [])
 
@@ -557,9 +568,15 @@ export default function Inbox() {
   }, [currentOrg?.id, mailboxFilterId])
 
   const INBOX_THREADS_RPC_TIMEOUT_MS = 15_000
+  const REALTIME_THREADS_DEBOUNCE_MS = 400
 
   // Data fetching — paginated and server-side searchable so older/unloaded threads can be found.
-  const fetchThreadsPage = useCallback(async (offset = 0, append = false) => {
+  const fetchThreadsPage = useCallback(async (
+    offset = 0,
+    append = false,
+    opts?: { source?: 'immediate' | 'background' },
+  ) => {
+    const source = opts?.source ?? 'immediate'
     fetchFilterRef.current = filter
     fetchMailboxFilterRef.current = mailboxFilterId
     fetchSelectedGmailLabelRef.current = selectedGmailLabel
@@ -570,6 +587,20 @@ export default function Inbox() {
         setHasMoreThreads(false)
       }
       return
+    }
+    if (!append) {
+      if (source === 'immediate' && threadsListDebounceTimerRef.current) {
+        clearTimeout(threadsListDebounceTimerRef.current)
+        threadsListDebounceTimerRef.current = null
+      }
+      if (threadsListFetchInFlightRef.current) {
+        if (source === 'immediate' || threadsListFetchPendingRef.current !== 'immediate') {
+          threadsListFetchPendingRef.current = source
+        }
+        debugLog('fetchThreads', { event: 'QUEUED', source, pending: threadsListFetchPendingRef.current })
+        return
+      }
+      threadsListFetchInFlightRef.current = true
     }
     if (append) setLoadingMoreThreads(true)
     else if (!initialLoadDone.current) setLoading(true)
@@ -607,8 +638,20 @@ export default function Inbox() {
       if (error) {
         console.error('[Inbox] search_inbox_threads failed:', error.message, error)
         debugLog('fetchThreads', { event: 'ERROR_rpc', error: error.message })
-        if (!append) setThreads([])
-        setHasMoreThreads(false)
+        if (!append) {
+          const preserveThreads = initialLoadDone.current
+          if (!preserveThreads) {
+            setThreads([])
+            setThreadsFetchFailed(true)
+          }
+          toast(
+            preserveThreads
+              ? 'Could not refresh inbox. Your list may be out of date.'
+              : 'Could not load inbox. Check your connection and try again.',
+            { action: 'retry-threads' },
+          )
+          if (!preserveThreads) setHasMoreThreads(false)
+        }
         return
       }
 
@@ -646,29 +689,59 @@ export default function Inbox() {
       })
       setHasMoreThreads(hasMore)
       initialLoadDone.current = true
+      setThreadsFetchFailed(false)
       if (!append) refreshGmailLabelOptions()
     } catch (e) {
       debugLog('fetchThreads', { event: 'ERROR', error: String(e) })
-      if (e instanceof Error && e.message.includes('search_inbox_threads timed out')) {
-        console.error('[Inbox] search_inbox_threads timed out')
-        setToastMsg('Loading inbox timed out. Check your connection and try again.')
-        setTimeout(() => setToastMsg(null), 3000)
+      const timedOut = e instanceof Error && e.message.includes('search_inbox_threads timed out')
+      if (timedOut) console.error('[Inbox] search_inbox_threads timed out')
+      if (!append) {
+        const filtersStillMatch = fetchFilterRef.current === filter
+          && fetchMailboxFilterRef.current === mailboxFilterId
+          && fetchSelectedGmailLabelRef.current === selectedGmailLabel
+        const preserveThreads = initialLoadDone.current
+        if (filtersStillMatch) {
+          if (!preserveThreads) {
+            setThreads([])
+            setThreadsFetchFailed(true)
+            setHasMoreThreads(false)
+          }
+          toast(
+            timedOut
+              ? (preserveThreads
+                ? 'Inbox refresh timed out. Your list may be out of date.'
+                : 'Loading inbox timed out. Check your connection and try again.')
+              : (preserveThreads
+                ? 'Could not refresh inbox. Your list may be out of date.'
+                : 'Could not load inbox. Check your connection and try again.'),
+            { action: 'retry-threads' },
+          )
+        }
       }
-      if (
-        !append
-        && fetchFilterRef.current === filter
-        && fetchMailboxFilterRef.current === mailboxFilterId
-        && fetchSelectedGmailLabelRef.current === selectedGmailLabel
-        && !initialLoadDone.current
-      ) setThreads([])
-      setHasMoreThreads(false)
     } finally {
-      if (append) setLoadingMoreThreads(false)
-      else setLoading(false)
+      if (append) {
+        setLoadingMoreThreads(false)
+      } else {
+        threadsListFetchInFlightRef.current = false
+        setLoading(false)
+        const pending = threadsListFetchPendingRef.current
+        if (pending) {
+          threadsListFetchPendingRef.current = false
+          void fetchThreadsPage(0, false, { source: pending })
+        }
+      }
     }
-  }, [currentOrg?.id, filter, mailboxFilterId, selectedGmailLabel, userId, debugLog, pageSize, searchQuery, refreshGmailLabelOptions])
+  }, [currentOrg?.id, filter, mailboxFilterId, selectedGmailLabel, userId, debugLog, pageSize, searchQuery, refreshGmailLabelOptions, toast])
 
-  const fetchThreads = useCallback(() => fetchThreadsPage(0, false), [fetchThreadsPage])
+  const fetchThreads = useCallback(() => fetchThreadsPage(0, false, { source: 'immediate' }), [fetchThreadsPage])
+
+  const scheduleBackgroundThreadsRefresh = useCallback(() => {
+    if (threadsListDebounceTimerRef.current) clearTimeout(threadsListDebounceTimerRef.current)
+    threadsListDebounceTimerRef.current = setTimeout(() => {
+      threadsListDebounceTimerRef.current = null
+      void fetchThreadsPage(0, false, { source: 'background' })
+    }, REALTIME_THREADS_DEBOUNCE_MS)
+  }, [fetchThreadsPage])
 
   const loadOlderThreads = useCallback(() => {
     if (loadingMoreThreads || !hasMoreThreads) return
@@ -1025,13 +1098,19 @@ export default function Inbox() {
   // Refs for stable realtime callbacks (avoids channel teardown on every state change)
   const selectedThreadIdRef = useRef(selectedThreadId)
   const fetchThreadsRef = useRef(fetchThreads)
+  const scheduleBackgroundThreadsRefreshRef = useRef(scheduleBackgroundThreadsRefresh)
   const fetchMessagesRef = useRef(fetchMessages)
   const fetchCommentsRef = useRef(fetchComments)
   useEffect(() => { selectedThreadIdRef.current = selectedThreadId }, [selectedThreadId])
   useEffect(() => { draftMessageIdRef.current = draftMessageId }, [draftMessageId])
   useEffect(() => { fetchThreadsRef.current = fetchThreads }, [fetchThreads])
+  useEffect(() => { scheduleBackgroundThreadsRefreshRef.current = scheduleBackgroundThreadsRefresh }, [scheduleBackgroundThreadsRefresh])
   useEffect(() => { fetchMessagesRef.current = fetchMessages }, [fetchMessages])
   useEffect(() => { fetchCommentsRef.current = fetchComments }, [fetchComments])
+
+  useEffect(() => () => {
+    if (threadsListDebounceTimerRef.current) clearTimeout(threadsListDebounceTimerRef.current)
+  }, [])
 
   // When comment text is set programmatically (mention insert or clear), update contenteditable with styled mentions
   useEffect(() => {
@@ -1065,7 +1144,7 @@ export default function Inbox() {
         filter: `org_id=eq.${currentOrg.id}`,
       }, (payload) => {
         debugLogRef.current('realtime', { event: 'inbox_threads', payload })
-        fetchThreadsRef.current()
+        scheduleBackgroundThreadsRefreshRef.current()
         const changedId = (payload.new as { id?: string })?.id
         if (changedId && changedId === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
@@ -1076,7 +1155,7 @@ export default function Inbox() {
       }, (payload) => {
         const tid = (payload.new as { thread_id: string }).thread_id
         debugLogRef.current('realtime', { event: 'inbox_messages_INSERT', threadId: tid, payload }, tid)
-        fetchThreadsRef.current()
+        scheduleBackgroundThreadsRefreshRef.current()
         if (tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
@@ -1087,7 +1166,7 @@ export default function Inbox() {
         const tid = ((payload.new as { thread_id?: string })?.thread_id
           ?? (payload.old as { thread_id?: string })?.thread_id) as string | undefined
         debugLogRef.current('realtime', { event: 'inbox_messages_UPDATE', threadId: tid, payload }, tid)
-        fetchThreadsRef.current()
+        scheduleBackgroundThreadsRefreshRef.current()
         if (tid && tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
@@ -1097,7 +1176,7 @@ export default function Inbox() {
       }, (payload) => {
         const tid = (payload.old as { thread_id?: string }).thread_id
         debugLogRef.current('realtime', { event: 'inbox_messages_DELETE', threadId: tid, payload }, tid)
-        fetchThreadsRef.current()
+        scheduleBackgroundThreadsRefreshRef.current()
         if (tid && tid === selectedThreadIdRef.current) {
           fetchMessagesRef.current(selectedThreadIdRef.current, { background: true })
         }
@@ -1123,10 +1202,10 @@ export default function Inbox() {
   // Polling fallback — 15s when realtime disconnected, 60s when connected
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchThreads()
+      scheduleBackgroundThreadsRefresh()
     }, realtimeConnected ? 60_000 : 15_000)
     return () => clearInterval(interval)
-  }, [fetchThreads, realtimeConnected])
+  }, [scheduleBackgroundThreadsRefresh, realtimeConnected])
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -1178,7 +1257,6 @@ export default function Inbox() {
   const getUserName = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
   const getUserAvatar = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.avatar_url ?? null
   const currentAssignees = (selectedThread?.inbox_thread_assignments ?? []) as { user_id: string }[]
-  const toast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), 3000) }
 
   useEffect(() => {
     const state = location.state as InvoiceDraftNavigationState | null
@@ -2215,8 +2293,7 @@ export default function Inbox() {
       if (!session?.access_token) {
         console.warn('[Inbox:imap-reload] no session', { reloadId, messageId: m.id })
         debugLog('imapReload', { event: 'ERROR', reloadId, reason: 'no_session', messageId: m.id }, m.thread_id)
-        setToastMsg('Sign in to reload from mail server')
-        setTimeout(() => setToastMsg(null), 3000)
+        toast('Sign in to reload from mail server')
         return
       }
 
@@ -2272,8 +2349,7 @@ export default function Inbox() {
       if (!res.ok || (data.error && !data.bodyUnavailable && !isUnavailableBodyText(data.body))) {
         console.error('[Inbox:imap-reload] failed', { reloadId, messageId: m.id, status: res.status, error: data.error })
         setBodyFetchStatus((prev) => ({ ...prev, [m.id]: 'failed' }))
-        setToastMsg(data.error || `Reload failed (${res.status})`)
-        setTimeout(() => setToastMsg(null), 4000)
+        toast(data.error || `Reload failed (${res.status})`, { durationMs: 4000 })
         return
       }
 
@@ -2320,11 +2396,10 @@ export default function Inbox() {
 
       const ac = typeof data.attachmentCount === 'number' ? `${data.attachmentCount} file(s) from IMAP. ` : ''
       if (data.bodyUnavailable || isUnavailableBodyText(nextBody)) {
-        setToastMsg('Message body could not be loaded from mail server.')
+        toast('Message body could not be loaded from mail server.', { durationMs: 3500 })
       } else {
-        setToastMsg(`${ac}Reloaded from mail server.`)
+        toast(`${ac}Reloaded from mail server.`, { durationMs: 3500 })
       }
-      setTimeout(() => setToastMsg(null), 3500)
     } catch (err) {
       console.error('[Inbox:imap-reload] exception', {
         reloadId,
@@ -2339,12 +2414,11 @@ export default function Inbox() {
         error: err instanceof Error ? err.message : String(err),
       }, m.thread_id)
       setBodyFetchStatus((prev) => ({ ...prev, [m.id]: 'failed' }))
-      setToastMsg('Could not reload from mail server')
-      setTimeout(() => setToastMsg(null), 3000)
+      toast('Could not reload from mail server')
     } finally {
       setImapReloadingId(null)
     }
-  }, [fetchAttachments, debugLog])
+  }, [fetchAttachments, debugLog, toast])
 
   const attachmentsByMessageId = useMemo(() => {
     const m = new Map<string, Attachment[]>()
@@ -2458,7 +2532,20 @@ export default function Inbox() {
 
   return (
     <div className="flex flex-col h-full min-h-0" data-testid="inbox-page">
-      {toastMsg && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-accent text-white text-sm shadow-lg">{toastMsg}</div>}
+      {toastMsg && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-accent text-white text-sm shadow-lg flex items-center gap-3">
+          <span>{toastMsg.message}</span>
+          {toastMsg.action === 'retry-threads' && (
+            <button
+              type="button"
+              onClick={() => { setToastMsg(null); fetchThreads() }}
+              className="underline font-medium hover:opacity-90 shrink-0"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
       {inboxDebug && (
         <div className="bg-amber-500/20 border-b border-amber-500/40 px-4 py-2 text-xs text-amber-200 font-mono">
           Debug mode: Console (F12, filter by &quot;Inbox&quot;) + Supabase table <code className="bg-amber-500/30 px-1 rounded">inbox_debug_log</code> — logs queries, thread visibility, and empty message bodies.
@@ -2475,7 +2562,7 @@ export default function Inbox() {
                 setSelectedGmailLabel(null)
                 fetchSelectedGmailLabelRef.current = null
               }
-              setFilter(f.id); setSelectedThreadId(null); setThreads([]); setHasMoreThreads(false); initialLoadDone.current = false
+              setFilter(f.id); setSelectedThreadId(null); setThreads([]); setHasMoreThreads(false); setThreadsFetchFailed(false); initialLoadDone.current = false
             }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
                 filter === f.id ? 'bg-accent text-white' : 'bg-surface-muted text-gray-300 hover:bg-surface-muted/80'}`}>
@@ -2580,6 +2667,7 @@ export default function Inbox() {
                     setMailboxFilterId(e.target.value || null)
                     setThreads([])
                     setHasMoreThreads(false)
+                    setThreadsFetchFailed(false)
                     initialLoadDone.current = false
                   }}
                   title="Filter by mailbox"
@@ -2656,7 +2744,21 @@ export default function Inbox() {
 
           {loading ? <div className="p-4 text-gray-400 text-sm">Loading…</div>
           : filteredThreads.length === 0 ? (
-            <div className="p-4 text-gray-400 text-sm text-center mt-8"><InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" /><p>No threads</p></div>
+            threadsFetchFailed ? (
+              <div className="p-4 text-gray-400 text-sm text-center mt-8">
+                <InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                <p className="mb-3">Could not load inbox</p>
+                <button
+                  type="button"
+                  onClick={() => fetchThreads()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:opacity-90"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Retry
+                </button>
+              </div>
+            ) : (
+              <div className="p-4 text-gray-400 text-sm text-center mt-8"><InboxIcon className="w-8 h-8 mx-auto mb-2 opacity-40" /><p>No threads</p></div>
+            )
           ) : (
             <ul className="overflow-y-auto divide-y divide-border flex-1">
               {filteredThreads.map(t => {
