@@ -556,6 +556,8 @@ export default function Inbox() {
     })
   }, [currentOrg?.id, mailboxFilterId])
 
+  const INBOX_THREADS_RPC_TIMEOUT_MS = 15_000
+
   // Data fetching — paginated and server-side searchable so older/unloaded threads can be found.
   const fetchThreadsPage = useCallback(async (offset = 0, append = false) => {
     fetchFilterRef.current = filter
@@ -563,6 +565,10 @@ export default function Inbox() {
     fetchSelectedGmailLabelRef.current = selectedGmailLabel
     if (!currentOrg?.id || !userId) {
       debugLog('fetchThreads', { event: 'SKIP', orgId: currentOrg?.id, userId })
+      if (!append) {
+        setLoading(false)
+        setHasMoreThreads(false)
+      }
       return
     }
     if (append) setLoadingMoreThreads(true)
@@ -571,17 +577,32 @@ export default function Inbox() {
       const query = searchQuery.trim()
       debugLog('fetchThreads', { event: 'START', orgId: currentOrg.id, userId, filter, mailboxFilterId, selectedGmailLabel, pageSize, offset, append, query })
 
-      const { data, error } = await supabase.rpc('search_inbox_threads', {
-        p_org_id: currentOrg.id,
-        p_user_id: userId,
-        p_filter: filter,
-        p_query: query || null,
-        p_limit: pageSize,
-        p_offset: offset,
-        p_imap_account_id: mailboxFilterId,
-        p_gmail_label: selectedGmailLabel,
-        p_gmail_label_mode: selectedGmailLabel ? 'include' : null,
-      })
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
+      let data
+      let error
+      try {
+        ({ data, error } = await Promise.race([
+          supabase.rpc('search_inbox_threads', {
+            p_org_id: currentOrg.id,
+            p_user_id: userId,
+            p_filter: filter,
+            p_query: query || null,
+            p_limit: pageSize,
+            p_offset: offset,
+            p_imap_account_id: mailboxFilterId,
+            p_gmail_label: selectedGmailLabel,
+            p_gmail_label_mode: selectedGmailLabel ? 'include' : null,
+          }),
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error(`search_inbox_threads timed out after ${INBOX_THREADS_RPC_TIMEOUT_MS}ms`)),
+              INBOX_THREADS_RPC_TIMEOUT_MS,
+            )
+          }),
+        ]))
+      } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId)
+      }
 
       if (error) {
         console.error('[Inbox] search_inbox_threads failed:', error.message, error)
@@ -628,6 +649,11 @@ export default function Inbox() {
       if (!append) refreshGmailLabelOptions()
     } catch (e) {
       debugLog('fetchThreads', { event: 'ERROR', error: String(e) })
+      if (e instanceof Error && e.message.includes('search_inbox_threads timed out')) {
+        console.error('[Inbox] search_inbox_threads timed out')
+        setToastMsg('Loading inbox timed out. Check your connection and try again.')
+        setTimeout(() => setToastMsg(null), 3000)
+      }
       if (
         !append
         && fetchFilterRef.current === filter
