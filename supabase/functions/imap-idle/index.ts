@@ -31,6 +31,12 @@ import {
   gmailLabelMessageFields,
   syncThreadGmailLabels,
 } from '../_shared/inboxGmailLabels.ts'
+import {
+  extractGmailIds,
+  gmailIdMessageFields,
+  syncThreadGmailIds,
+  withGmailImapIdFetch,
+} from '../_shared/inboxGmailIds.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -179,14 +185,15 @@ Deno.serve(async (req: Request) => {
         let inserted = 0
 
         for (const envMsg of batch) {
-          const fullFetchQuery = isGmail
+          const fullFetchQuery = withGmailImapIdFetch(isGmail, isGmail
             ? { envelope: true, flags: true, labels: true, source: true, uid: true }
-            : { envelope: true, flags: true, source: true, uid: true }
+            : { envelope: true, flags: true, source: true, uid: true })
           const fullMsgs = await client.fetchAll(String(envMsg.uid), fullFetchQuery, { uid: true })
           const msg = fullMsgs[0]
           if (!msg) continue
           const uid = msg.uid as number
           if (uid > highestUid) highestUid = uid
+          const gmailIds = extractGmailIds(isGmail, msg)
 
           // Skip Gmail draft autosaves — they would be ingested as duplicate outbound messages
           const flags = msg.flags as Set<string> | undefined
@@ -319,7 +326,11 @@ Deno.serve(async (req: Request) => {
               const externalId = messageId ?? `uid-${acc.id}-${uid}`
               console.log('[imap-idle] account', acc.id, 'outbound dedup: updating existing msg', existingId, 'threadId=', threadId, 'uid=', uid)
               await service.from('inbox_messages')
-                .update({ external_id: externalId, external_uid: uid })
+                .update({
+                  external_id: externalId,
+                  external_uid: uid,
+                  ...gmailIdMessageFields(gmailIds),
+                })
                 .eq('id', existingId)
               const { error: touchDedupErr } = await service.rpc('touch_inbox_thread_on_new_message', {
                 p_thread_id: threadId,
@@ -359,9 +370,11 @@ Deno.serve(async (req: Request) => {
             external_id: externalId, external_uid: uid,
             imap_account_id: acc.id, received_at: date.toISOString(),
             ...gmailLabelMessageFields(labelState),
+            ...gmailIdMessageFields(gmailIds),
           }).select('id').single()
 
           await syncThreadGmailLabels(service, threadId, `[imap-idle] account ${acc.id}`)
+          await syncThreadGmailIds(service, threadId, `[imap-idle] account ${acc.id}`)
 
           // Persist inline-image attachment rows (previously uploaded but never recorded)
           if (insertedMsg) {

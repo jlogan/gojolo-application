@@ -11,6 +11,12 @@ import { createClient } from 'npm:@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { corsHeaders } from '../_shared/cors.ts'
+import {
+  extractGmailIds,
+  gmailIdMessageFields,
+  syncThreadGmailIds,
+  withGmailImapIdFetch,
+} from '../_shared/inboxGmailIds.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -234,8 +240,14 @@ Deno.serve(async (req: Request) => {
         const tMsg = performance.now()
         try {
           console.log('[backfill-empty-bodies] fetching', i + 1, '/', msgs.length, { id: msg.id.slice(0, 8), uid: msg.external_uid, direction: msg.direction })
-          const fetched = await client.fetchAll(String(msg.external_uid), { source: true, uid: true }, { uid: true })
-          const source = fetched[0]?.source as Uint8Array | undefined
+          const fetched = await client.fetchAll(
+            String(msg.external_uid),
+            withGmailImapIdFetch(isGmail, { source: true, uid: true }),
+            { uid: true },
+          )
+          const fetchedMsg = fetched[0]
+          const source = fetchedMsg?.source as Uint8Array | undefined
+          const gmailIdFields = isGmail ? gmailIdMessageFields(extractGmailIds(true, fetchedMsg ?? {})) : {}
           if (!source) {
             console.log('[backfill-empty-bodies] no source returned for UID', msg.external_uid, '— marking as unavailable so it won\'t retry')
             await service.from('inbox_messages')
@@ -304,12 +316,15 @@ Deno.serve(async (req: Request) => {
 
           const { error: upDb } = await service
             .from('inbox_messages')
-            .update({ body: bodyText || null, html_body: htmlBody })
+            .update({ body: bodyText || null, html_body: htmlBody, ...gmailIdFields })
             .eq('id', msg.id)
           if (upDb) {
             console.error('[backfill-empty-bodies] DB update failed for', msg.id.slice(0, 8), upDb.message)
             errored++
           } else {
+            if (isGmail && (gmailIdFields.gmail_thread_id || gmailIdFields.gmail_message_id)) {
+              await syncThreadGmailIds(service, msg.thread_id, '[backfill-empty-bodies]')
+            }
             filled++
             console.log('[backfill-empty-bodies] message done', { id: msg.id.slice(0, 8), uid: msg.external_uid, bodyLen: bodyText.length, htmlLen: htmlBody?.length ?? 0, msgMs: Math.round(performance.now() - tMsg) })
           }

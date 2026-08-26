@@ -34,6 +34,13 @@ import {
   refreshGmailLabelsForEnvelopes,
   syncThreadGmailLabelsBatch,
 } from '../_shared/inboxGmailLabels.ts'
+import {
+  extractGmailIds,
+  gmailIdMessageFields,
+  refreshGmailIdsForEnvelopes,
+  syncThreadGmailIdsBatch,
+  withGmailImapIdFetch,
+} from '../_shared/inboxGmailIds.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -280,9 +287,9 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
     }
 
     const isGmailAccount = isGmailHost(acc.host)
-    const headerFetchQuery = isGmailAccount
+    const headerFetchQuery = withGmailImapIdFetch(isGmailAccount, isGmailAccount
       ? { envelope: true, flags: true, labels: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }
-      : { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }
+      : { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true })
 
     const envelopes = await client.fetchAll(range, headerFetchQuery, { uid: true })
     console.log('[refresh-email] fetchAll returned', envelopes.length, 'envelope(s)')
@@ -324,6 +331,13 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         envelopes as Array<{ uid?: unknown; flags?: Set<string>; labels?: Set<string> }>,
         '[refresh-email]',
       )
+      await refreshGmailIdsForEnvelopes(
+        service,
+        acc.id,
+        acc.host,
+        envelopes as Array<{ uid?: unknown; threadId?: unknown; emailId?: unknown }>,
+        '[refresh-email]',
+      )
     }
 
     if (n === 0) {
@@ -349,6 +363,8 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       externalId: string
       isDraft: boolean
       labelState: ReturnType<typeof extractGmailLabelState>
+      gmailThreadId: string | null
+      gmailMessageId: string | null
     }
 
     const parsed: ParsedMeta[] = newMsgs.map((msg) => {
@@ -357,6 +373,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
       const labels = (msg as { labels?: Set<string> }).labels
       const isDraft = flags instanceof Set ? flags.has('\\Draft') : false
       const labelState = extractGmailLabelState(isGmailAccount, flags, labels)
+      const gmailIds = extractGmailIds(isGmailAccount, msg as { threadId?: unknown; emailId?: unknown })
       const envelope = msg.envelope as ImapEnvelope & { date?: Date }
       const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
       const getHdr = (name: string): string | null => {
@@ -385,6 +402,8 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         externalId: messageId ?? `uid-${acc.id}-${uid}`,
         isDraft,
         labelState,
+        gmailThreadId: gmailIds.gmail_thread_id,
+        gmailMessageId: gmailIds.gmail_message_id,
       }
     })
 
@@ -547,6 +566,10 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
           if (p.ccAddr) dedupUpdate.cc = p.ccAddr
           if (p.bccAddr) dedupUpdate.bcc = p.bccAddr
           if (p.toAddr) dedupUpdate.to_identifier = p.toAddr
+          Object.assign(dedupUpdate, gmailIdMessageFields({
+            gmail_thread_id: p.gmailThreadId,
+            gmail_message_id: p.gmailMessageId,
+          }))
           await service
             .from('inbox_messages')
             .update(dedupUpdate)
@@ -608,6 +631,10 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
         imap_account_id: acc.id,
         received_at: p.date.toISOString(),
         ...gmailLabelMessageFields(p.labelState),
+        ...gmailIdMessageFields({
+          gmail_thread_id: p.gmailThreadId,
+          gmail_message_id: p.gmailMessageId,
+        }),
       })
       labelSyncThreadIds.add(tid)
     }
@@ -639,6 +666,7 @@ async function handleRefreshEmail(req: Request): Promise<Response> {
 
     if (labelSyncThreadIds.size > 0) {
       await syncThreadGmailLabelsBatch(service, labelSyncThreadIds, '[refresh-email]')
+      await syncThreadGmailIdsBatch(service, labelSyncThreadIds, '[refresh-email]')
     }
 
     await service

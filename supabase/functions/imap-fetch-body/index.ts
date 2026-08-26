@@ -11,6 +11,12 @@ import { ImapFlow } from 'npm:imapflow'
 import PostalMime from 'npm:postal-mime'
 import { corsHeaders } from '../_shared/cors.ts'
 import { isUnavailableBodyText, unavailableBodyText } from '../_shared/inboxBodyUnavailable.ts'
+import {
+  extractGmailIds,
+  gmailIdMessageFields,
+  syncThreadGmailIds,
+  withGmailImapIdFetch,
+} from '../_shared/inboxGmailIds.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -139,8 +145,14 @@ Deno.serve(async (req: Request) => {
     await client.connect()
     const lock = await client.getMailboxLock(mailboxPath)
     try {
-      const fetched = await client.fetchAll(String(msg.external_uid), { source: true, uid: true }, { uid: true })
-      const source = fetched[0]?.source as Uint8Array | undefined
+      const fetched = await client.fetchAll(
+        String(msg.external_uid),
+        withGmailImapIdFetch(isGmail, { source: true, uid: true }),
+        { uid: true },
+      )
+      const fetchedMsg = fetched[0]
+      const source = fetchedMsg?.source as Uint8Array | undefined
+      const gmailIdFields = isGmail ? gmailIdMessageFields(extractGmailIds(true, fetchedMsg ?? {})) : {}
 
       console.log('[imap-fetch-body] IMAP fetch', { messageId, uid: msg.external_uid, sourceBytes: source?.byteLength ?? 0, fetchedCount: fetched.length })
 
@@ -245,7 +257,10 @@ Deno.serve(async (req: Request) => {
         storedHtml = null
       }
 
-      await service.from('inbox_messages').update({ body: storedBody, html_body: storedHtml }).eq('id', msg.id)
+      await service.from('inbox_messages').update({ body: storedBody, html_body: storedHtml, ...gmailIdFields }).eq('id', msg.id)
+      if (isGmail && (gmailIdFields.gmail_thread_id || gmailIdFields.gmail_message_id)) {
+        await syncThreadGmailIds(service, msg.thread_id as string, '[imap-fetch-body]')
+      }
 
       await lock.release()
       await client.logout().catch(() => client.close())

@@ -33,6 +33,12 @@ import {
   type ImapEnvelope,
 } from '../_shared/inboxGmailDraftIngest.ts'
 import { isUnavailableBodyText, unavailableBodyText } from '../_shared/inboxBodyUnavailable.ts'
+import {
+  extractGmailIds,
+  gmailIdMessageFields,
+  syncThreadGmailIds,
+  withGmailImapIdFetch,
+} from '../_shared/inboxGmailIds.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -451,6 +457,7 @@ Deno.serve(async (req: Request) => {
     msg: DraftReconcileRow,
     source: Uint8Array,
     resolvedUid: number,
+    gmailIdFields: ReturnType<typeof gmailIdMessageFields> = {},
   ): Promise<boolean> => {
     const parsed = await PostalMime.parse(source)
     let bodyText = parsed.text ?? ''
@@ -494,6 +501,7 @@ Deno.serve(async (req: Request) => {
       from_identifier: fromIdentifier,
       to_identifier: toIdentifier,
       cc,
+      ...gmailIdFields,
     }
     if (resolvedUid !== msg.external_uid) {
       updatePayload.external_uid = resolvedUid
@@ -509,6 +517,9 @@ Deno.serve(async (req: Request) => {
 
     result.push(resultEntry)
     await deletePhantomOutboundDuplicates(msg, { body: bodyStored, htmlBody, fromIdentifier, toIdentifier })
+    if (gmailIdFields.gmail_thread_id || gmailIdFields.gmail_message_id) {
+      await syncThreadGmailIds(service, threadId, '[fetch-thread-bodies]')
+    }
     return true
   }
 
@@ -796,9 +807,15 @@ Deno.serve(async (req: Request) => {
             const tDraftMsg = performance.now()
             let resolvedUid: number | null = null
             let source: Uint8Array | undefined
+            let draftGmailIdFields: ReturnType<typeof gmailIdMessageFields> = {}
 
-            const fetched = await client.fetchAll(String(msg.external_uid), { source: true, uid: true }, { uid: true })
+            const fetched = await client.fetchAll(
+              String(msg.external_uid),
+              withGmailImapIdFetch(isGmail, { source: true, uid: true }),
+              { uid: true },
+            )
             source = fetched[0]?.source as Uint8Array | undefined
+            if (isGmail) draftGmailIdFields = gmailIdMessageFields(extractGmailIds(true, fetched[0] ?? {}))
             if (source) {
               resolvedUid = msg.external_uid
               draftsMailboxVerified = true
@@ -818,7 +835,11 @@ Deno.serve(async (req: Request) => {
                 .sort((a, b) => b.score - a.score || b.uid - a.uid)
 
               for (const candidate of scored.slice(0, 5)) {
-                const candFetched = await client.fetchAll(String(candidate.uid), { source: true, uid: true }, { uid: true })
+                const candFetched = await client.fetchAll(
+                  String(candidate.uid),
+                  withGmailImapIdFetch(isGmail, { source: true, uid: true }),
+                  { uid: true },
+                )
                 const candSource = candFetched[0]?.source as Uint8Array | undefined
                 if (!candSource) continue
                 let bodyOk = true
@@ -834,6 +855,7 @@ Deno.serve(async (req: Request) => {
                 if (!bodyOk) continue
                 resolvedUid = candidate.uid
                 source = candSource
+                if (isGmail) draftGmailIdFields = gmailIdMessageFields(extractGmailIds(true, candFetched[0] ?? {}))
                 console.log('[fetch-thread-bodies] draft matched in Drafts fallback search', { threadId, msgId: msg.id, staleUid: msg.external_uid, matchedUid: candidate.uid, score: candidate.score })
                 break
               }
@@ -841,18 +863,23 @@ Deno.serve(async (req: Request) => {
               // Likely server draft exists (envelope match) — rematch even when body snippet differs.
               if (resolvedUid == null && scored.length > 0) {
                 const likely = scored[0]
-                const likelyFetched = await client.fetchAll(String(likely.uid), { source: true, uid: true }, { uid: true })
+                const likelyFetched = await client.fetchAll(
+                  String(likely.uid),
+                  withGmailImapIdFetch(isGmail, { source: true, uid: true }),
+                  { uid: true },
+                )
                 const likelySource = likelyFetched[0]?.source as Uint8Array | undefined
                 if (likelySource) {
                   resolvedUid = likely.uid
                   source = likelySource
+                  if (isGmail) draftGmailIdFields = gmailIdMessageFields(extractGmailIds(true, likelyFetched[0] ?? {}))
                   console.log('[fetch-thread-bodies] draft rematched by envelope score (no body confirm)', { threadId, msgId: msg.id, staleUid: msg.external_uid, matchedUid: likely.uid, score: likely.score })
                 }
               }
             }
 
             if (resolvedUid != null && source) {
-              const ok = await applyDraftReconcile(msg, source, resolvedUid)
+              const ok = await applyDraftReconcile(msg, source, resolvedUid, draftGmailIdFields)
               if (ok) claimedDraftUids.add(resolvedUid)
               console.log('[fetch-thread-bodies] draft reconciled', { threadId, msgId: msg.id, uid: resolvedUid, totalMs: Math.round(performance.now() - tDraftMsg) })
               continue
@@ -956,8 +983,14 @@ Deno.serve(async (req: Request) => {
       try {
         for (const msg of msgs) {
           const tMsg = performance.now()
-          const fetched = await client.fetchAll(String(msg.external_uid), { source: true, uid: true }, { uid: true })
-          const source = fetched[0]?.source as Uint8Array | undefined
+          const fetched = await client.fetchAll(
+            String(msg.external_uid),
+            withGmailImapIdFetch(isGmail, { source: true, uid: true }),
+            { uid: true },
+          )
+          const fetchedMsg = fetched[0]
+          const source = fetchedMsg?.source as Uint8Array | undefined
+          const gmailIdFields = isGmail ? gmailIdMessageFields(extractGmailIds(true, fetchedMsg ?? {})) : {}
           const fetchMs = Math.round(performance.now() - tMsg)
           console.log('[fetch-thread-bodies] IMAP fetch', { threadId, msgId: msg.id, uid: msg.external_uid, sourceBytes: source?.byteLength ?? 0, fetchMs })
           if (!source) {
@@ -1060,8 +1093,11 @@ Deno.serve(async (req: Request) => {
             const tDb = performance.now()
             await service
               .from('inbox_messages')
-              .update({ body: storedBody, html_body: storedHtml })
+              .update({ body: storedBody, html_body: storedHtml, ...gmailIdFields })
               .eq('id', msg.id)
+            if (isGmail && (gmailIdFields.gmail_thread_id || gmailIdFields.gmail_message_id)) {
+              await syncThreadGmailIds(service, threadId, '[fetch-thread-bodies]')
+            }
             const dbMs = Math.round(performance.now() - tDb)
             const attCount = (attsByMsg.get(msg.id) ?? []).length + newAtts.length
             const msgTotalMs = Math.round(performance.now() - tMsg)

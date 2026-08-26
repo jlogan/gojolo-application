@@ -48,6 +48,13 @@ import {
   refreshGmailLabelsForEnvelopes,
   syncThreadGmailLabelsBatch,
 } from '../_shared/inboxGmailLabels.ts'
+import {
+  extractGmailIds,
+  gmailIdMessageFields,
+  refreshGmailIdsForEnvelopes,
+  syncThreadGmailIdsBatch,
+  withGmailImapIdFetch,
+} from '../_shared/inboxGmailIds.ts'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -722,9 +729,9 @@ serve(async (req) => {
 
       // Fetch headers only — no body/source download. flags/labels needed for Gmail draft + label state.
       const isGmailAccount = isGmailHost(acc.host)
-      const headerFetchQuery = isGmailAccount
+      const headerFetchQuery = withGmailImapIdFetch(isGmailAccount, isGmailAccount
         ? { envelope: true, flags: true, labels: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }
-        : { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true }
+        : { envelope: true, flags: true, headers: ['message-id', 'in-reply-to', 'references', 'cc', 'bcc', 'from'], uid: true })
       const envelopes = await client.fetchAll(range, headerFetchQuery, { uid: true })
 
       let newMsgs = envelopes
@@ -777,6 +784,13 @@ serve(async (req) => {
           labelEnvelopes as Array<{ uid?: unknown; flags?: Set<string>; labels?: Set<string> }>,
           `[imap-sync] account ${acc.id}`,
         )
+        await refreshGmailIdsForEnvelopes(
+          service,
+          acc.id,
+          acc.host,
+          labelEnvelopes as Array<{ uid?: unknown; threadId?: unknown; emailId?: unknown }>,
+          `[imap-sync] account ${acc.id}`,
+        )
       }
 
       if (newMsgs.length === 0) {
@@ -814,6 +828,7 @@ serve(async (req) => {
         const labels = (msg as { labels?: Set<string> }).labels
         const isDraft = flags instanceof Set ? flags.has('\\Draft') : false
         const labelState = extractGmailLabelState(isGmailAccount, flags, labels)
+        const gmailIds = extractGmailIds(isGmailAccount, msg as { threadId?: unknown; emailId?: unknown })
         const envelope = msg.envelope as ImapEnvelope & { date?: Date }
         // ImapFlow returns headers as a Buffer of raw header lines
         const rawHdrs = msg.headers ? new TextDecoder().decode(msg.headers as Uint8Array) : ''
@@ -834,6 +849,8 @@ serve(async (req) => {
           fromAddr,
           isDraft,
           labelState,
+          gmailThreadId: gmailIds.gmail_thread_id,
+          gmailMessageId: gmailIds.gmail_message_id,
           toAddr: resolveToFromEnvelope(envelope),
           ccAddr,
           bccAddr,
@@ -995,6 +1012,10 @@ serve(async (req) => {
             if (p.ccAddr) dedupUpdate.cc = p.ccAddr
             if (p.bccAddr) dedupUpdate.bcc = p.bccAddr
             if (p.toAddr) dedupUpdate.to_identifier = p.toAddr
+            Object.assign(dedupUpdate, gmailIdMessageFields({
+              gmail_thread_id: p.gmailThreadId,
+              gmail_message_id: p.gmailMessageId,
+            }))
             await service.from('inbox_messages')
               .update(dedupUpdate)
               .eq('id', existingRow.id)
@@ -1048,6 +1069,10 @@ serve(async (req) => {
           external_id: p.externalId, external_uid: p.uid,
           imap_account_id: acc.id, received_at: p.date.toISOString(),
           ...gmailLabelMessageFields(p.labelState),
+          ...gmailIdMessageFields({
+            gmail_thread_id: p.gmailThreadId,
+            gmail_message_id: p.gmailMessageId,
+          }),
         })
         labelSyncThreadIds.add(threadId)
       }
@@ -1092,8 +1117,13 @@ serve(async (req) => {
             console.log('[imap-sync] account', acc.id, 'fetching bodies for', toFetch.length, 'new messages (limit', MAX_BODY_FETCH_PER_SYNC, ')')
             for (const row of toFetch) {
               try {
-                const fetched = await client.fetchAll(String(row.external_uid), { source: true, uid: true }, { uid: true })
-                const source = fetched[0]?.source as Uint8Array | undefined
+                const fetched = await client.fetchAll(
+                  String(row.external_uid),
+                  withGmailImapIdFetch(isGmailAccount, { source: true, uid: true }),
+                  { uid: true },
+                )
+                const fetchedMsg = fetched[0]
+                const source = fetchedMsg?.source as Uint8Array | undefined
                 if (!source) continue
                 const parsed = await parseBodyFromSource(source)
                 let bodyText = parsed.body.slice(0, MAX_BODY_LENGTH)
@@ -1161,7 +1191,11 @@ serve(async (req) => {
 
                 await service
                   .from('inbox_messages')
-                  .update({ body: bodyText || null, html_body: htmlBody })
+                  .update({
+                    body: bodyText || null,
+                    html_body: htmlBody,
+                    ...gmailIdMessageFields(extractGmailIds(isGmailAccount, fetchedMsg ?? {})),
+                  })
                   .eq('id', row.id)
                 console.log('[imap-sync] account', acc.id, 'body fetched', { msgId: row.id, bodyLen: bodyText.length, htmlLen: htmlBody?.length ?? 0 })
               } catch (bodyErr) {
@@ -1177,6 +1211,7 @@ serve(async (req) => {
 
       if (labelSyncThreadIds.size > 0) {
         await syncThreadGmailLabelsBatch(service, labelSyncThreadIds, `[imap-sync] account ${acc.id}`)
+        await syncThreadGmailIdsBatch(service, labelSyncThreadIds, `[imap-sync] account ${acc.id}`)
       }
 
       await service

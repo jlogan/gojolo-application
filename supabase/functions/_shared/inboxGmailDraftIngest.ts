@@ -206,6 +206,8 @@ export type ParsedEnvelopeMeta = {
   date: Date
   externalId: string
   isDraft: boolean
+  gmailThreadId?: string | null
+  gmailMessageId?: string | null
 }
 
 export type DraftIngestContext = {
@@ -645,6 +647,8 @@ export async function handleGmailDraftRevision(
   if (bodyPayload?.htmlBody) updateFields.html_body = bodyPayload.htmlBody
   if (ccAddr) updateFields.cc = ccAddr
   if (bccAddr) updateFields.bcc = bccAddr
+  if (p.gmailThreadId) updateFields.gmail_thread_id = p.gmailThreadId
+  if (p.gmailMessageId) updateFields.gmail_message_id = p.gmailMessageId
 
   if (draftRow) {
     console.log(ctx.logPrefix, 'update existing draft row for Gmail revision', {
@@ -703,6 +707,8 @@ export async function handleGmailDraftRevision(
     imap_account_id: ctx.imapAccountId,
     received_at: p.date.toISOString(),
     is_draft: true,
+    ...(p.gmailThreadId ? { gmail_thread_id: p.gmailThreadId } : {}),
+    ...(p.gmailMessageId ? { gmail_message_id: p.gmailMessageId } : {}),
   })
   return true
 }
