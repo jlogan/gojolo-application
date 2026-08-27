@@ -34,6 +34,7 @@ import {
   refreshInvoiceInboxDraftEditorContent,
   resolveKindForInvoiceDraftEditor,
 } from '@/lib/invoiceResendDraft'
+import { getGmailThreadUrlForThread } from '@/lib/inboxGmail'
 import type { InvoiceDraftNavigationState } from '@/pages/invoices/InvoiceEmailDraft'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -52,6 +53,8 @@ type InboxThread = {
   gmail_labels?: string[] | null
   /** False when latest message is not in Gmail \\Inbox (label-only / archived in Gmail). */
   in_gmail_inbox?: boolean
+  /** Gmail X-GM-THRID for mail.google.com deep links (Gmail IMAP accounts only). */
+  gmail_thread_id?: string | null
 }
 type InboxMessage = {
   id: string; thread_id: string; channel: string; direction: string
@@ -80,11 +83,12 @@ type SearchInboxThreadRow = Omit<InboxThread, 'inbox_thread_assignments' | 'inbo
   has_draft?: boolean | null
   gmail_labels?: string[] | null
   in_gmail_inbox?: boolean | null
+  gmail_thread_id?: string | null
 }
 
 /** PostgREST list select without embedded inbox_messages(count) — counts come from inbox_message_counts_by_thread RPC. */
 const INBOX_THREAD_LIST_SELECT =
-  'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, mailbox_address, inbox_thread_assignments(user_id)' as const
+  'id, org_id, channel, status, subject, last_message_at, created_at, from_address, imap_account_id, mailbox_address, gmail_thread_id, inbox_thread_assignments(user_id)' as const
 
 const INBOX_THREAD_ACTION_BTN_CLASS =
   'inline-flex items-center shrink-0 gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50 disabled:cursor-not-allowed'
@@ -555,6 +559,7 @@ export default function Inbox() {
     has_draft: !!row.has_draft,
     gmail_labels: row.gmail_labels ?? null,
     in_gmail_inbox: row.in_gmail_inbox ?? true,
+    gmail_thread_id: row.gmail_thread_id ?? null,
   }))
 
   const initialLoadDone = useRef(false)
@@ -1320,6 +1325,10 @@ export default function Inbox() {
   }, [selectedThreadId])
 
   const selectedThread = threads.find(t => t.id === selectedThreadId) ?? selectedThreadFallback
+  const selectedThreadGmailUrl = useMemo(
+    () => (selectedThread ? getGmailThreadUrlForThread(selectedThread, imapAccounts) : null),
+    [selectedThread, imapAccounts],
+  )
   const getUserName = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
   const getUserAvatar = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.avatar_url ?? null
   const currentAssignees = (selectedThread?.inbox_thread_assignments ?? []) as { user_id: string }[]
@@ -2957,6 +2966,19 @@ export default function Inbox() {
                     </span>
                   )}
                   <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${selectedThread.status === 'open' ? 'bg-accent/20 text-accent' : selectedThread.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{selectedThread.status}</span>
+                  {selectedThreadGmailUrl && (
+                    <a
+                      href={selectedThreadGmailUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted"
+                      title="Open in Gmail"
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" aria-hidden="true">
+                        <path fill="currentColor" d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" />
+                      </svg>
+                    </a>
+                  )}
                   <button type="button" onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/inbox/${selectedThread.id}`); toast('Thread link copied') }}
                     className="p-1 rounded text-gray-400 hover:text-white hover:bg-surface-muted" title="Copy thread link">
                     <Link2 className="w-3.5 h-3.5" />
