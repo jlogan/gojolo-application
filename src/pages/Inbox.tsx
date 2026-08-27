@@ -53,7 +53,7 @@ type InboxThread = {
   gmail_labels?: string[] | null
   /** False when latest message is not in Gmail \\Inbox (label-only / archived in Gmail). */
   in_gmail_inbox?: boolean
-  /** Gmail X-GM-THRID for mail.google.com deep links (Gmail IMAP accounts only). */
+  /** Gmail X-GM-THRID for correlation (not used for Gmail web links). */
   gmail_thread_id?: string | null
 }
 type InboxMessage = {
@@ -62,6 +62,8 @@ type InboxMessage = {
   body: string | null; html_body: string | null; received_at: string
   imap_account_id?: string | null
   external_uid?: number | null
+  external_id?: string | null
+  message_id_header?: string | null
   is_draft?: boolean | null
 }
 type InboxComment = {
@@ -869,7 +871,7 @@ export default function Inbox() {
     if (!background) setMessagesLoading(true)
     let msgs: InboxMessage[] = []
     const { data, error: queryError } = await supabase.from('inbox_messages')
-      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, is_draft')
+      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, is_draft')
       .eq('thread_id', tid).order('received_at', { ascending: true })
     msgs = (data as InboxMessage[]) ?? []
     debugLog('fetchMessages', { event: 'messages_query', threadId: tid, count: msgs.length, error: queryError?.message, messages: msgs.map(m => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.html_body?.trim()), external_uid: m.external_uid, direction: m.direction })) }, tid)
@@ -913,7 +915,7 @@ export default function Inbox() {
             })
             if (res.ok) {
               const { data: dataAfter } = await supabase.from('inbox_messages')
-                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid')
+                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, is_draft')
                 .eq('thread_id', tid).order('received_at', { ascending: true })
               msgs = (dataAfter as InboxMessage[]) ?? []
               debugLog('fetchMessages', { event: 'after_backfill', threadId: tid, count: msgs.length }, tid)
@@ -1340,8 +1342,8 @@ export default function Inbox() {
 
   const selectedThread = threads.find(t => t.id === selectedThreadId) ?? selectedThreadFallback
   const selectedThreadGmailUrl = useMemo(
-    () => (selectedThread ? getGmailThreadUrlForThread(selectedThread, imapAccounts) : null),
-    [selectedThread, imapAccounts],
+    () => (selectedThread ? getGmailThreadUrlForThread(selectedThread, imapAccounts, messages) : null),
+    [selectedThread, imapAccounts, messages],
   )
   const getUserName = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.display_name ?? uid.slice(0, 8)
   const getUserAvatar = (uid: string) => inboxUsers.find(u => u.user_id === uid)?.avatar_url ?? null
