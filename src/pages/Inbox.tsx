@@ -851,6 +851,18 @@ export default function Inbox() {
     }
   }, [])
 
+  const applyThreadGmailIdInState = useCallback((threadId: string, gmailThreadId: string | null | undefined) => {
+    const id = gmailThreadId?.trim()
+    if (!id) return
+    setThreads(prev => prev.map(t => (t.id === threadId ? { ...t, gmail_thread_id: id } : t)))
+    setSelectedThreadFallback(prev => (prev?.id === threadId ? { ...prev, gmail_thread_id: id } : prev))
+  }, [])
+
+  const refreshThreadGmailIdInState = useCallback(async (threadId: string) => {
+    const { data } = await supabase.from('inbox_threads').select('gmail_thread_id').eq('id', threadId).maybeSingle()
+    applyThreadGmailIdInState(threadId, (data as { gmail_thread_id?: string | null } | null)?.gmail_thread_id)
+  }, [applyThreadGmailIdInState])
+
   const fetchMessages = useCallback(async (tid: string, options?: { background?: boolean }) => {
     const background = options?.background ?? false
     debugLog('fetchMessages', { event: 'START', threadId: tid, background }, tid)
@@ -1013,6 +1025,7 @@ export default function Inbox() {
                 return merged.sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
               })
               fetchAttachments(tid)
+              void refreshThreadGmailIdInState(tid)
               if (result.hasMore) {
                 const retry = () => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, 'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY }, body: JSON.stringify({ threadId: tid }) })
                   .then(async (res) => {
@@ -1042,6 +1055,7 @@ export default function Inbox() {
                           return mergeDraftMessageBodyFromFetch(p, entry, threadSubject)
                         }).sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime()))
                       fetchAttachments(tid)
+                      void refreshThreadGmailIdInState(tid)
                       if (r.hasMore) setTimeout(retry, 800)
                     }
                   })
@@ -1062,7 +1076,7 @@ export default function Inbox() {
       console.log('[Inbox] Skipping fetch-thread-bodies: no messages', { threadId: tid })
       debugLog('fetchMessages', { event: 'SKIP_fetch_thread_bodies', reason: 'no_messages', threadId: tid }, tid)
     }
-  }, [userId, fetchAttachments, debugLog, clearComposeIfDraftDeleted, maybeCleanupThreadAfterDraftDeletes, markMessagesBodyLoading, syncBodyFetchStatus])
+  }, [userId, fetchAttachments, debugLog, clearComposeIfDraftDeleted, maybeCleanupThreadAfterDraftDeletes, markMessagesBodyLoading, syncBodyFetchStatus, refreshThreadGmailIdInState])
 
   const fetchComments = useCallback(async (tid: string) => {
     const { data } = await supabase.from('inbox_comments').select('id, thread_id, user_id, content, mentions, created_at')
@@ -2401,6 +2415,7 @@ export default function Inbox() {
         fromImap?: boolean
         forceRefresh?: boolean
         bodyUnavailable?: boolean
+        gmailThreadId?: string | null
       }
       const elapsedMs = Math.round(performance.now() - t0)
       console.log('[Inbox:imap-reload] response', {
@@ -2453,6 +2468,9 @@ export default function Inbox() {
       })
       await fetchAttachments(m.thread_id)
 
+      if (data.gmailThreadId) applyThreadGmailIdInState(m.thread_id, data.gmailThreadId)
+      else void refreshThreadGmailIdInState(m.thread_id)
+
       const { data: attRows } = await supabase
         .from('inbox_attachments')
         .select('id, file_name, file_size, content_type')
@@ -2502,7 +2520,7 @@ export default function Inbox() {
     } finally {
       setImapReloadingId(null)
     }
-  }, [fetchAttachments, debugLog, toast])
+  }, [fetchAttachments, debugLog, toast, applyThreadGmailIdInState, refreshThreadGmailIdInState])
 
   const attachmentsByMessageId = useMemo(() => {
     const m = new Map<string, Attachment[]>()

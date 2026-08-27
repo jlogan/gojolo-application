@@ -158,10 +158,20 @@ Deno.serve(async (req: Request) => {
 
       if (!source) {
         const unavailableBody = unavailableBodyText('missing')
-        await service.from('inbox_messages').update({ body: unavailableBody, html_body: null }).eq('id', msg.id)
+        await service.from('inbox_messages').update({ body: unavailableBody, html_body: null, ...gmailIdFields }).eq('id', msg.id)
+        let gmailThreadId: string | null = null
+        if (isGmail && (gmailIdFields.gmail_thread_id || gmailIdFields.gmail_message_id)) {
+          await syncThreadGmailIds(service, msg.thread_id as string, '[imap-fetch-body]')
+          const { data: threadRow } = await service
+            .from('inbox_threads')
+            .select('gmail_thread_id')
+            .eq('id', msg.thread_id)
+            .maybeSingle()
+          gmailThreadId = (threadRow as { gmail_thread_id?: string | null } | null)?.gmail_thread_id ?? null
+        }
         await lock.release()
         await client.logout().catch(() => client.close())
-        return json({ error: 'Message source not found on IMAP server', body: unavailableBody, htmlBody: null, bodyUnavailable: true }, 404)
+        return json({ error: 'Message source not found on IMAP server', body: unavailableBody, htmlBody: null, bodyUnavailable: true, ...(gmailThreadId ? { gmailThreadId } : {}) }, 404)
       }
 
       const parsed = await PostalMime.parse(source)
@@ -258,8 +268,15 @@ Deno.serve(async (req: Request) => {
       }
 
       await service.from('inbox_messages').update({ body: storedBody, html_body: storedHtml, ...gmailIdFields }).eq('id', msg.id)
+      let gmailThreadId: string | null = null
       if (isGmail && (gmailIdFields.gmail_thread_id || gmailIdFields.gmail_message_id)) {
         await syncThreadGmailIds(service, msg.thread_id as string, '[imap-fetch-body]')
+        const { data: threadRow } = await service
+          .from('inbox_threads')
+          .select('gmail_thread_id')
+          .eq('id', msg.thread_id)
+          .maybeSingle()
+        gmailThreadId = (threadRow as { gmail_thread_id?: string | null } | null)?.gmail_thread_id ?? null
       }
 
       await lock.release()
@@ -274,6 +291,7 @@ Deno.serve(async (req: Request) => {
           forceRefresh: force,
           attachmentCount,
           bodyUnavailable: true,
+          ...(gmailThreadId ? { gmailThreadId } : {}),
         }, 422)
       }
 
@@ -283,6 +301,7 @@ Deno.serve(async (req: Request) => {
         fromImap: true,
         forceRefresh: force,
         attachmentCount,
+        ...(gmailThreadId ? { gmailThreadId } : {}),
       })
     } catch (err) {
       await lock.release().catch(() => {})
