@@ -148,24 +148,62 @@ export function getInvoiceFollowUpPath(
   return getInvoiceSendPath(inv, 'overdue_followup')
 }
 
-/** Compact shared styling for Send / Resend / Follow Up invoice actions (detail page, mobile). */
-export const INVOICE_EMAIL_ACTION_BUTTON_BASE =
-  'inline-flex items-center justify-center gap-1 rounded-md px-2 py-1 text-xs font-medium leading-none shrink-0 whitespace-nowrap'
+/** Uniform height for invoice action buttons across list, detail, and compose views. */
+export const INVOICE_ACTION_BUTTON_BASE =
+  'inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium leading-none shrink-0 whitespace-nowrap'
 
 /** Icon-only square buttons for tight table/list action columns. */
-export const INVOICE_EMAIL_ACTION_ICON_BUTTON_BASE =
-  'inline-flex items-center justify-center size-7 rounded-md shrink-0'
+export const INVOICE_ACTION_ICON_BUTTON_BASE =
+  'inline-flex items-center justify-center size-8 rounded-lg shrink-0'
+
+/** @deprecated Use INVOICE_ACTION_BUTTON_BASE */
+export const INVOICE_EMAIL_ACTION_BUTTON_BASE = INVOICE_ACTION_BUTTON_BASE
+
+/** @deprecated Use INVOICE_ACTION_ICON_BUTTON_BASE */
+export const INVOICE_EMAIL_ACTION_ICON_BUTTON_BASE = INVOICE_ACTION_ICON_BUTTON_BASE
+
+export function invoiceDetailSecondaryButtonClass(): string {
+  return `${INVOICE_ACTION_BUTTON_BASE} border border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 disabled:opacity-50`
+}
+
+export function invoiceDetailPrimaryButtonClass(): string {
+  return `${INVOICE_ACTION_BUTTON_BASE} bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50`
+}
+
+export function invoiceDetailDangerButtonClass(): string {
+  return `${INVOICE_ACTION_BUTTON_BASE} border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50`
+}
+
+export function invoiceDetailDangerSolidButtonClass(): string {
+  return `${INVOICE_ACTION_BUTTON_BASE} border border-red-600/50 bg-red-600/10 text-red-400 hover:bg-red-600/20 disabled:opacity-50`
+}
+
+export function invoiceRecurringStopButtonClass(): string {
+  return `${INVOICE_ACTION_BUTTON_BASE} border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 disabled:opacity-50`
+}
+
+export function invoiceRecurringActionButtonClass(variant: 'edit' | 'stop'): string {
+  return variant === 'edit'
+    ? `${INVOICE_ACTION_BUTTON_BASE} border border-purple-500/40 text-purple-200 hover:bg-purple-500/10`
+    : invoiceRecurringStopButtonClass()
+}
+
+export function invoiceRecurringActionIconButtonClass(variant: 'edit' | 'stop'): string {
+  return variant === 'edit'
+    ? `${INVOICE_ACTION_ICON_BUTTON_BASE} border border-purple-500/40 text-purple-200 hover:bg-purple-500/10`
+    : `${INVOICE_ACTION_ICON_BUTTON_BASE} border border-purple-500/30 text-purple-300 hover:bg-purple-500/10 disabled:opacity-50`
+}
 
 export function invoiceEmailActionButtonClass(variant: 'send' | 'followup'): string {
   return variant === 'followup'
-    ? `${INVOICE_EMAIL_ACTION_BUTTON_BASE} bg-red-600/90 text-white hover:bg-red-700`
-    : `${INVOICE_EMAIL_ACTION_BUTTON_BASE} bg-blue-600/90 text-white hover:bg-blue-700`
+    ? `${INVOICE_ACTION_BUTTON_BASE} bg-red-600/90 text-white hover:bg-red-700`
+    : `${INVOICE_ACTION_BUTTON_BASE} bg-blue-600/90 text-white hover:bg-blue-700`
 }
 
 export function invoiceEmailActionIconButtonClass(variant: 'send' | 'followup'): string {
   return variant === 'followup'
-    ? `${INVOICE_EMAIL_ACTION_ICON_BUTTON_BASE} bg-red-600/90 text-white hover:bg-red-700`
-    : `${INVOICE_EMAIL_ACTION_ICON_BUTTON_BASE} bg-blue-600/90 text-white hover:bg-blue-700`
+    ? `${INVOICE_ACTION_ICON_BUTTON_BASE} bg-red-600/90 text-white hover:bg-red-700`
+    : `${INVOICE_ACTION_ICON_BUTTON_BASE} bg-blue-600/90 text-white hover:bg-blue-700`
 }
 
 export function getInvoiceEmailActionLabels(kind: InvoiceEmailKind): {

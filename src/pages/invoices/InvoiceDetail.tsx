@@ -5,7 +5,18 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { downloadInvoicePdfFromData } from '@/lib/invoicePdf'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
-import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, invoiceEmailActionButtonClass, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
+import {
+  getInvoiceFollowUpPath,
+  getInvoiceSendPath,
+  getInvoiceEmailActionLabels,
+  invoiceEmailActionButtonClass,
+  invoiceDetailDangerButtonClass,
+  invoiceDetailDangerSolidButtonClass,
+  invoiceDetailPrimaryButtonClass,
+  invoiceDetailSecondaryButtonClass,
+  invoiceRecurringStopButtonClass,
+  resolveInvoiceEmailKind,
+} from '@/lib/invoiceEmailContent'
 import DateInput from '@/components/DateInput'
 import {
   ArrowLeft, Pencil, Download, CreditCard, Send, XCircle,
@@ -469,7 +480,7 @@ export default function InvoiceDetail() {
         <button
           onClick={handleDownloadPdf}
           disabled={pdfLoading}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:bg-white/10 disabled:opacity-50"
+          className={invoiceDetailSecondaryButtonClass()}
         >
           <Download size={14} />
           {pdfLoading ? 'Generating…' : 'PDF'}
@@ -486,7 +497,7 @@ export default function InvoiceDetail() {
                 setTimeout(() => setCopyLinkDone(false), 2000)
               })
             }}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:bg-white/10"
+            className={invoiceDetailSecondaryButtonClass()}
             title="Copy public link"
           >
             {copyLinkDone ? <CheckCheck size={14} className="text-green-400" /> : <Link2 size={14} />}
@@ -520,7 +531,7 @@ export default function InvoiceDetail() {
         {canEdit && (
           <Link
             to={`/invoices/${invoice.id}/edit`}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-gray-300 hover:bg-white/10"
+            className={invoiceDetailSecondaryButtonClass()}
           >
             <Pencil size={14} /> Edit
           </Link>
@@ -531,7 +542,7 @@ export default function InvoiceDetail() {
           <button
             onClick={() => updateStatus('unpaid')}
             disabled={actionLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+            className={invoiceDetailPrimaryButtonClass()}
           >
             <Send size={14} /> Mark as Sent
           </button>
@@ -542,7 +553,7 @@ export default function InvoiceDetail() {
             type="button"
             onClick={handleStopRecurrence}
             disabled={actionLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-sm text-purple-300 hover:bg-purple-500/20 disabled:opacity-50"
+            className={invoiceRecurringStopButtonClass()}
           >
             <CircleStop size={14} /> Stop Recurrence
           </button>
@@ -553,7 +564,7 @@ export default function InvoiceDetail() {
           <button
             onClick={() => updateStatus('cancelled', { confirmMessage: `Cancel ${directionLabel} ${invoiceNumber}? This action will stop this ${directionLabel.toLowerCase()} from being sent or paid.` })}
             disabled={actionLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+            className={invoiceDetailDangerButtonClass()}
           >
             <XCircle size={14} /> Cancel
           </button>
@@ -564,7 +575,7 @@ export default function InvoiceDetail() {
           <button
             onClick={handleDelete}
             disabled={actionLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-red-600/50 bg-red-600/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-600/20 disabled:opacity-50"
+            className={invoiceDetailDangerSolidButtonClass()}
           >
             <XCircle size={14} /> Delete
           </button>
@@ -738,7 +749,7 @@ export default function InvoiceDetail() {
                       type="button"
                       onClick={handleStopRecurrence}
                       disabled={actionLoading}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 px-2.5 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-500/20 disabled:opacity-50"
+                      className={invoiceRecurringStopButtonClass()}
                     >
                       <CircleStop size={14} /> Stop recurrence
                     </button>

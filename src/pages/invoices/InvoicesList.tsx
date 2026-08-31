@@ -4,7 +4,15 @@ import { useOrg } from '@/contexts/OrgContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { stopInvoiceRecurrence } from '@/lib/invoiceRecurrence'
-import { getInvoiceFollowUpPath, getInvoiceSendPath, getInvoiceEmailActionLabels, invoiceEmailActionIconButtonClass, resolveInvoiceEmailKind } from '@/lib/invoiceEmailContent'
+import {
+  getInvoiceFollowUpPath,
+  getInvoiceSendPath,
+  getInvoiceEmailActionLabels,
+  invoiceEmailActionIconButtonClass,
+  invoiceRecurringActionButtonClass,
+  invoiceRecurringActionIconButtonClass,
+  resolveInvoiceEmailKind,
+} from '@/lib/invoiceEmailContent'
 import { Plus, FileText, Search, Send, Pencil, CircleStop, Clock } from 'lucide-react'
 
 type InvoiceRow = {
@@ -137,6 +145,18 @@ function InvoiceListEmailActions({ inv }: { inv: InvoiceRow }) {
       )}
     </>
   )
+}
+
+const LIST_GRID_CLASS = {
+  default: 'md:grid-cols-[minmax(72px,1fr)_minmax(110px,2fr)_minmax(90px,1.5fr)_92px_76px_76px_84px_96px_72px]',
+  recurring: 'md:grid-cols-[minmax(72px,1fr)_minmax(110px,2fr)_minmax(90px,1.5fr)_92px_76px_76px_84px_112px_72px]',
+  paid: 'md:grid-cols-[minmax(72px,1fr)_minmax(110px,2fr)_minmax(90px,1.5fr)_92px_76px_76px_96px_96px_72px]',
+} as const
+
+function getListGridClass(isPaidView: boolean, recurringOnly: boolean): string {
+  if (isPaidView) return LIST_GRID_CLASS.paid
+  if (recurringOnly) return LIST_GRID_CLASS.recurring
+  return LIST_GRID_CLASS.default
 }
 
 function SortHeader({
@@ -307,6 +327,7 @@ export default function InvoicesList() {
   const entityLabelPlural = isOutbound ? 'Invoices' : 'Bills'
   const pageLabelPlural = recurringOnly ? 'Recurring Schedules' : entityLabelPlural
   const counterpartyLabel = isOutbound ? 'Client' : 'Vendor'
+  const listGridClass = getListGridClass(isPaidView, recurringOnly)
 
   return (
     <div className="p-4 md:p-6" data-testid="invoices-page">
@@ -402,8 +423,9 @@ export default function InvoicesList() {
         </div>
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">
+          <div className="overflow-x-auto">
           {/* Table header — hidden on mobile */}
-          <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_72px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-400 uppercase tracking-wider bg-surface-muted/50 border-b border-border">
+          <div className={`hidden md:grid ${listGridClass} gap-2 px-4 py-2.5 min-w-[840px] text-xs font-medium text-gray-400 uppercase tracking-wider bg-surface-muted/50 border-b border-border`}>
             <SortHeader field="number" label="#" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
             <SortHeader field="company" label={counterpartyLabel} sortField={sortField} sortDir={sortDir} onSort={handleSort} />
             <SortHeader field="project" label="Project" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -437,44 +459,48 @@ export default function InvoicesList() {
                   className="w-full text-left hover:bg-surface-muted transition-colors cursor-pointer"
                 >
                   {/* Desktop row */}
-                  <div className="hidden md:grid md:grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(100px,1.5fr)_100px_100px_100px_100px_100px_72px] gap-2 items-center px-4 py-3">
-                    <span className="text-sm font-medium text-white truncate">{invoiceNumber(inv)}</span>
-                    <span className="text-sm text-gray-300 truncate">{companyName(inv.companies)}</span>
-                    <span className="text-sm text-gray-400 truncate">{projectName(inv.projects)}</span>
-                    <span className="flex flex-col items-start gap-1">
+                  <div className={`hidden md:grid ${listGridClass} gap-2 items-center px-4 py-2.5 min-w-[840px]`}>
+                    <span className="text-sm font-medium text-white truncate min-w-0">{invoiceNumber(inv)}</span>
+                    <span className="text-sm text-gray-300 truncate min-w-0">{companyName(inv.companies)}</span>
+                    <span className="text-sm text-gray-400 truncate min-w-0">{projectName(inv.projects)}</span>
+                    <span className="flex flex-row flex-wrap items-center gap-1 min-w-0">
                       <StatusBadge status={inv.status} />
                       {inv.is_recurring && <RecurringBadge interval={inv.recurring_interval} nextDate={inv.next_recurring_date} />}
                     </span>
-                    <span className="text-sm text-white text-right tabular-nums">{formatCurrency(inv.total)}</span>
-                    <span className="text-sm text-gray-300 text-right tabular-nums">{formatCurrency(inv.amount_due)}</span>
+                    <span className="text-sm text-white text-right tabular-nums whitespace-nowrap">{formatCurrency(inv.total)}</span>
+                    <span className="text-sm text-gray-300 text-right tabular-nums whitespace-nowrap">{formatCurrency(inv.amount_due)}</span>
                     {isPaidView ? (
                       <>
-                        <span className="text-xs text-gray-400">{formatDate(inv.paid_date)}</span>
+                        <span className="text-xs text-gray-400 whitespace-nowrap tabular-nums truncate min-w-0">{formatDate(inv.paid_date)}</span>
                         <span />
                       </>
                     ) : (
                       <>
-                        <span className="text-xs text-gray-400">{formatDate(inv.issue_date)}</span>
-                        <span className="text-xs text-gray-400">{formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
+                        <span className="text-xs text-gray-400 whitespace-nowrap tabular-nums truncate min-w-0">{formatDate(inv.issue_date)}</span>
+                        <span className="text-xs text-gray-400 whitespace-nowrap tabular-nums truncate min-w-0">{formatDate(recurringOnly ? inv.next_recurring_date : inv.due_date)}</span>
                       </>
                     )}
-                    <span className="flex justify-end items-center gap-1">
+                    <span className="flex justify-end items-center gap-1 shrink-0 min-w-[72px]">
                       {inv.is_recurring && !isVendor ? (
                         <>
                           <Link
                             to={`/invoices/${inv.id}/edit`}
                             onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
+                            className={invoiceRecurringActionIconButtonClass('edit')}
+                            aria-label="Edit schedule"
+                            title="Edit schedule"
                           >
-                            <Pencil className="w-3.5 h-3.5" /> Edit
+                            <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
                           </Link>
                           <button
                             type="button"
                             onClick={(e) => handleStopRecurrence(inv, e)}
                             disabled={stoppingId === inv.id}
-                            className="inline-flex items-center gap-1 rounded-lg border border-purple-500/30 px-2.5 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-500/10 disabled:opacity-50"
+                            className={invoiceRecurringActionIconButtonClass('stop')}
+                            aria-label="Stop recurrence"
+                            title="Stop recurrence"
                           >
-                            <CircleStop className="w-3.5 h-3.5" /> Stop
+                            <CircleStop className="w-3.5 h-3.5" aria-hidden="true" />
                           </button>
                         </>
                       ) : canSendInvoice(inv, isVendor) && (
@@ -512,17 +538,17 @@ export default function InvoicesList() {
                         <Link
                           to={`/invoices/${inv.id}/edit`}
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 rounded-lg border border-purple-500/40 px-2.5 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/10"
+                          className={invoiceRecurringActionButtonClass('edit')}
                         >
-                          <Pencil className="w-3.5 h-3.5" /> Edit Schedule
+                          <Pencil className="w-3.5 h-3.5" aria-hidden="true" /> Edit Schedule
                         </Link>
                         <button
                           type="button"
                           onClick={(e) => handleStopRecurrence(inv, e)}
                           disabled={stoppingId === inv.id}
-                          className="inline-flex items-center gap-1 rounded-lg border border-purple-500/30 px-2.5 py-1.5 text-xs font-medium text-purple-300 hover:bg-purple-500/10 disabled:opacity-50"
+                          className={invoiceRecurringActionButtonClass('stop')}
                         >
-                          <CircleStop className="w-3.5 h-3.5" /> Stop Recurrence
+                          <CircleStop className="w-3.5 h-3.5" aria-hidden="true" /> Stop Recurrence
                         </button>
                       </div>
                     ) : canSendInvoice(inv, isVendor) && (
@@ -535,6 +561,7 @@ export default function InvoicesList() {
               </li>
             ))}
           </ul>
+          </div>
         </div>
       )}
     </div>
