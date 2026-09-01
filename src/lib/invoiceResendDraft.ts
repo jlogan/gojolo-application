@@ -156,15 +156,10 @@ function validateInvoiceForInboxDraft(
 }
 
 function pickSendFromAddress(accounts: ImapAccount[]): { accountId: string; email: string } | null {
-  if (accounts.length === 0) return null
-  for (const account of accounts) {
-    const addresses = [account.email, ...((account.addresses ?? []) as string[])]
-    const preferred = addresses.find((email) => email?.trim().toLowerCase() === 'jay@jaylogan.com')
-    if (preferred) {
-      return { accountId: account.id, email: preferred.trim() }
-    }
-  }
-  return { accountId: accounts[0].id, email: accounts[0].email.trim() }
+  const first = accounts[0]
+  const email = first?.email?.trim()
+  if (!first || !email) return null
+  return { accountId: first.id, email }
 }
 
 export async function loadInvoiceInboxDraftPayload(

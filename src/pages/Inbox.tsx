@@ -1662,11 +1662,34 @@ export default function Inbox() {
     }
   }
 
+  // Parse "Name <email>" or plain email into lowercase email
+  const parseEmail = (s: string | null): string | null => {
+    if (!s?.trim()) return null
+    const m = s.trim().match(/<([^>]+)>/)
+    return m ? m[1].trim().toLowerCase() : s.trim().toLowerCase()
+  }
+
+  const resolveMailboxLabelFromEmail = (emailRaw: string | null | undefined): string | null => {
+    const mailbox = parseEmail(emailRaw ?? null) ?? emailRaw?.trim().toLowerCase() ?? null
+    if (!mailbox) return null
+    for (const acc of imapAccounts) {
+      const addresses = [acc.email, ...(acc.addresses ?? [])]
+      const matched = addresses.find((email) => email?.trim().toLowerCase() === mailbox)
+      if (matched) {
+        const label = acc.label?.trim()
+        return label ? `${label} <${matched.trim()}>` : matched.trim()
+      }
+    }
+    return emailRaw?.trim() ?? null
+  }
+
   const getMailboxLabel = (thread: InboxThread): string | null => {
+    if (thread.mailbox_address?.trim()) {
+      return resolveMailboxLabelFromEmail(thread.mailbox_address)
+    }
     const account = imapAccounts.find(acc => acc.id === thread.imap_account_id)
     if (account?.label && account.email) return `${account.label} <${account.email}>`
     if (account?.email) return account.email
-    if (thread.mailbox_address?.trim()) return thread.mailbox_address.trim()
     return null
   }
 
@@ -1689,11 +1712,15 @@ export default function Inbox() {
     return addrs
   }
 
-  // Parse "Name <email>" or plain email into lowercase email
-  const parseEmail = (s: string | null): string | null => {
-    if (!s?.trim()) return null
-    const m = s.trim().match(/<([^>]+)>/)
-    return m ? m[1].trim().toLowerCase() : s.trim().toLowerCase()
+  const getThreadMailboxLabel = (thread: InboxThread, threadMessages?: InboxMessage[]): string | null => {
+    if (threadMessages?.length) {
+      const lastOutbound = [...threadMessages]
+        .filter((m) => m.direction === 'outbound' && !m.is_draft)
+        .sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime())[0]
+      const fromSent = resolveMailboxLabelFromEmail(lastOutbound?.from_identifier)
+      if (fromSent) return fromSent
+    }
+    return getMailboxLabel(thread)
   }
 
   // Find which sendable address to use based on our address in the last message.
@@ -2024,9 +2051,18 @@ export default function Inbox() {
     }
 
     const sentThreadIdForAdvance = sentThreadId
+    const sentMailboxAddress = (selectedSendable?.email || selectedFromAddress || '').trim().toLowerCase()
+    const sentAccountId = selectedSendable?.accountId || selectedAccountId || null
     const shouldAdvanceSelection = !!sentThreadIdForAdvance && replyMode !== 'compose' && (filter === 'inbox' || filter === 'assigned')
     if (sentThreadIdForAdvance && replyMode !== 'compose') {
-      setThreads(prev => prev.map(t => t.id === sentThreadIdForAdvance ? { ...t, status: 'closed' } : t))
+      setThreads(prev => prev.map(t => t.id === sentThreadIdForAdvance
+        ? {
+          ...t,
+          status: 'closed',
+          ...(sentAccountId ? { imap_account_id: sentAccountId } : {}),
+          ...(sentMailboxAddress ? { mailbox_address: sentMailboxAddress } : {}),
+        }
+        : t))
       // Replying is an inbox-zero action: close the Jolo thread and archive the
       // underlying Gmail/IMAP thread so it leaves the mail provider Inbox while
       // remaining available on the server.
@@ -2162,7 +2198,18 @@ export default function Inbox() {
       return
     }
 
-    await supabase.from('inbox_threads').update({ subject, last_message_at: now, updated_at: now }).eq('id', threadId)
+    const accountId = selectedSendable?.accountId || selectedAccountId || null
+    const mailboxAddress = fromEmail.toLowerCase()
+    await supabase.from('inbox_threads').update({
+      subject,
+      last_message_at: now,
+      updated_at: now,
+      imap_account_id: accountId,
+      mailbox_address: mailboxAddress,
+    }).eq('id', threadId)
+    setThreads(prev => prev.map(t => t.id === threadId
+      ? { ...t, subject, last_message_at: now, imap_account_id: accountId, mailbox_address: mailboxAddress }
+      : t))
 
     const payload = {
       thread_id: threadId,
@@ -2976,11 +3023,14 @@ export default function Inbox() {
                     setSelectedThreadId(null); setReplyMode(null)
                   }} className="md:hidden p-1 rounded text-gray-400 hover:text-white"><ChevronRight className="w-4 h-4 rotate-180" /></button>
                   <h2 className="text-white font-medium truncate flex-1 text-sm">{selectedThread.subject || '(No subject)'}</h2>
-                  {getMailboxLabel(selectedThread) && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 bg-surface-muted text-gray-300" title="Mailbox/account">
-                      Mailbox {getMailboxLabel(selectedThread)}
-                    </span>
-                  )}
+                  {(() => {
+                    const mailboxLabel = selectedThread ? getThreadMailboxLabel(selectedThread, messages) : null
+                    return mailboxLabel ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 bg-surface-muted text-gray-300" title="Mailbox/account">
+                        Mailbox {mailboxLabel}
+                      </span>
+                    ) : null
+                  })()}
                   <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${selectedThread.status === 'open' ? 'bg-accent/20 text-accent' : selectedThread.status === 'closed' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>{selectedThread.status}</span>
                   {selectedThreadGmailUrl && (
                     <a
