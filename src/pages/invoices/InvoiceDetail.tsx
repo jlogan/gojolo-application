@@ -785,7 +785,7 @@ export default function InvoiceDetail() {
                     <td className="px-4 py-3">
                       <div className="text-white">{item.description}</div>
                       {item.long_description && (
-                        <div className="text-xs text-gray-500 mt-0.5">{item.long_description}</div>
+                        <div className="text-xs text-gray-500 mt-0.5 whitespace-pre-wrap">{item.long_description}</div>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right text-gray-300">
