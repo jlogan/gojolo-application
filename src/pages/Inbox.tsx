@@ -122,7 +122,7 @@ const FILTERS: { id: InboxFilter; label: string; icon: React.ComponentType<{ cla
   { id: 'all', label: 'All', icon: List },
 ]
 
-/** Gmail-style primary inbox in the All-tab label dropdown (in \\Inbox, no user labels). */
+/** All-tab Gmail label dropdown default — no label filter (show all non-trash threads). */
 const GMAIL_DEFAULT_INBOX_LABEL = '__inbox__'
 
 function threadHasCustomGmailLabels(t: Pick<InboxThread, 'gmail_labels'>): boolean {
@@ -139,7 +139,7 @@ function resolveInboxThreadSearchParams(
   }
   if (filter === 'all') {
     if (!selectedGmailLabel || selectedGmailLabel === GMAIL_DEFAULT_INBOX_LABEL) {
-      return { p_filter: 'inbox', p_gmail_label: null, p_gmail_label_mode: 'no_custom_labels' }
+      return { p_filter: 'all', p_gmail_label: null, p_gmail_label_mode: null }
     }
     return { p_filter: 'all', p_gmail_label: selectedGmailLabel, p_gmail_label_mode: 'include' }
   }
@@ -1406,11 +1406,7 @@ export default function Inbox() {
   const threadMatchesFilter = (t: InboxThread) => {
     if (mailboxFilterId && t.imap_account_id !== mailboxFilterId) return false
     if (hasGmailAccounts && filter === 'all') {
-      if (!selectedGmailLabel || selectedGmailLabel === GMAIL_DEFAULT_INBOX_LABEL) {
-        if (t.status !== 'open') return false
-        if (t.in_gmail_inbox === false) return false
-        if (threadHasCustomGmailLabels(t)) return false
-      } else if (!t.gmail_labels?.includes(selectedGmailLabel)) {
+      if (selectedGmailLabel && selectedGmailLabel !== GMAIL_DEFAULT_INBOX_LABEL && !t.gmail_labels?.includes(selectedGmailLabel)) {
         return false
       }
     } else if (hasGmailAccounts && filter === 'inbox') {
@@ -2784,7 +2780,7 @@ export default function Inbox() {
                         : 'border-border bg-surface-muted text-gray-200'
                     }`}
                   >
-                    <option value={GMAIL_DEFAULT_INBOX_LABEL}>Inbox</option>
+                    <option value={GMAIL_DEFAULT_INBOX_LABEL}>All labels</option>
                     {gmailLabelOptions.map(opt => (
                       <option key={opt.label} value={opt.label}>
                         {opt.label} ({Number(opt.thread_count)})
