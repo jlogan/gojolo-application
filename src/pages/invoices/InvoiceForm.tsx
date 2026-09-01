@@ -1295,12 +1295,17 @@ export default function InvoiceForm() {
                     </div>
                   </div>
 
-                  {/* Long description (expandable) */}
-                  {item.long_description && (
+                  {/* Time log / line item details */}
+                  {(item.long_description || item.time_log_ids.length > 0) && (
                     <div className="mt-2 ml-8 md:ml-8">
-                      <p className="text-xs text-gray-500 whitespace-pre-wrap">
-                        {item.long_description}
-                      </p>
+                      <textarea
+                        value={item.long_description}
+                        onChange={(e) => updateItem(idx, { long_description: e.target.value })}
+                        rows={4}
+                        className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs text-gray-300 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-accent resize-y whitespace-pre-wrap"
+                        placeholder="Time log details…"
+                        aria-label="Line item details"
+                      />
                     </div>
                   )}
                 </div>
