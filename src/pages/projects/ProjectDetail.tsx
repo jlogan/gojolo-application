@@ -25,7 +25,13 @@ import {
   taskStatusLabel,
 } from '@/lib/taskStatus'
 import { buildTaskArtifactPath } from '@/lib/taskArtifactStorage'
-import { fetchOutboundInvoiceLinkedTimeLogIds, isTimeLogBilled } from '@/lib/timeLogBilling'
+import {
+  fetchOutboundInvoiceLinksForTimeLogs,
+  isTimeLogBilled,
+  isTimeLogManuallyBilled,
+  type TimeLogInvoiceSummary,
+} from '@/lib/timeLogBilling'
+import TimeLogBilledChip from '@/components/TimeLogBilledChip'
 
 type Task = {
   id: string; title: string; status: string; priority: string;
@@ -175,6 +181,7 @@ export default function ProjectDetail() {
 
   // Project time logs
   const [timeLogs, setTimeLogs] = useState<ProjectTimeLog[]>([])
+  const [timeLogInvoiceLinks, setTimeLogInvoiceLinks] = useState<Map<string, TimeLogInvoiceSummary[]>>(new Map())
   const [timeLogsLoading, setTimeLogsLoading] = useState(false)
 
   const fetchProject = useCallback(async () => {
@@ -296,7 +303,7 @@ export default function ProjectDetail() {
       }
     })
 
-    const invoiceLinkedIds = await fetchOutboundInvoiceLinkedTimeLogIds(
+    const { linkedIds: invoiceLinkedIds, invoicesByTimeLogId } = await fetchOutboundInvoiceLinksForTimeLogs(
       supabase,
       mapped.map((t) => t.id),
     )
@@ -305,6 +312,7 @@ export default function ProjectDetail() {
       ...t,
       billed: isTimeLogBilled(t.id, t.billed, invoiceLinkedIds),
     })))
+    setTimeLogInvoiceLinks(invoicesByTimeLogId)
     setTimeLogsLoading(false)
   }, [id])
 
@@ -1025,6 +1033,7 @@ export default function ProjectDetail() {
             <ProjectTimeLogsPanel
               projectId={id!}
               logs={timeLogs}
+              invoiceLinksByLogId={timeLogInvoiceLinks}
               loading={timeLogsLoading}
               totalMinutes={timeLogTotalMinutes}
               billedMinutes={timeLogBilledMinutes}
@@ -1265,6 +1274,7 @@ function ProjectTaskKanban({
 function ProjectTimeLogsPanel({
   projectId,
   logs,
+  invoiceLinksByLogId,
   loading,
   totalMinutes,
   billedMinutes,
@@ -1272,6 +1282,7 @@ function ProjectTimeLogsPanel({
 }: {
   projectId: string
   logs: ProjectTimeLog[]
+  invoiceLinksByLogId: Map<string, TimeLogInvoiceSummary[]>
   loading: boolean
   totalMinutes: number
   billedMinutes: number
@@ -1328,9 +1339,11 @@ function ProjectTimeLogsPanel({
                   {hasRates && t.hourly_rate != null && (
                     <span className="text-gray-500">${Number(t.hourly_rate).toFixed(2)}/hr</span>
                   )}
-                  {t.billed
-                    ? <span className="inline-flex px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">✓ Billed</span>
-                    : <span className="inline-flex px-2 py-0.5 rounded-full bg-gray-500/20 text-gray-500">○ Unbilled</span>}
+                  <TimeLogBilledChip
+                    billed={t.billed}
+                    invoices={invoiceLinksByLogId.get(t.id)}
+                    manualOnly={isTimeLogManuallyBilled(t.billed, invoiceLinksByLogId.get(t.id))}
+                  />
                 </div>
                 {t.description && (
                   <p className="text-xs text-gray-400 break-words">{t.description}</p>
@@ -1374,9 +1387,11 @@ function ProjectTimeLogsPanel({
                       </td>
                     )}
                     <td className="px-4 py-2 text-center whitespace-nowrap">
-                      {t.billed
-                        ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-green-500/20 text-green-400">✓ Billed</span>
-                        : <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-gray-500/20 text-gray-500">○ Unbilled</span>}
+                      <TimeLogBilledChip
+                        billed={t.billed}
+                        invoices={invoiceLinksByLogId.get(t.id)}
+                        manualOnly={isTimeLogManuallyBilled(t.billed, invoiceLinksByLogId.get(t.id))}
+                      />
                     </td>
                   </tr>
                 ))}

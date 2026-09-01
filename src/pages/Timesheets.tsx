@@ -10,7 +10,13 @@ import {
   getDateRangeForPreset,
   type DateRangePreset,
 } from '@/lib/dateRanges'
-import { fetchOutboundInvoiceLinkedTimeLogIds, isTimeLogBilled } from '@/lib/timeLogBilling'
+import {
+  fetchOutboundInvoiceLinksForTimeLogs,
+  isTimeLogBilled,
+  isTimeLogManuallyBilled,
+  type TimeLogInvoiceSummary,
+} from '@/lib/timeLogBilling'
+import TimeLogBilledChip from '@/components/TimeLogBilledChip'
 import { ChevronDown, ChevronUp, Plus, X, FileText } from 'lucide-react'
 
 type TimeLogRow = {
@@ -41,6 +47,7 @@ export default function Timesheets() {
   const [searchParams] = useSearchParams()
 
   const [entries, setEntries] = useState<TimeLogRow[]>([])
+  const [invoiceLinksByLogId, setInvoiceLinksByLogId] = useState<Map<string, TimeLogInvoiceSummary[]>>(new Map())
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState<'date' | 'project' | 'user'>('date')
   const [sortDesc, setSortDesc] = useState(true)
@@ -116,7 +123,7 @@ export default function Timesheets() {
 
     // Outbound invoice linkage is authoritative; fall back to time_logs.billed for manual marks
     // and when the invoice_items query or DB trigger is the source of truth.
-    const invoiceLinkedIds = await fetchOutboundInvoiceLinkedTimeLogIds(
+    const { linkedIds: invoiceLinkedIds, invoicesByTimeLogId } = await fetchOutboundInvoiceLinksForTimeLogs(
       supabase,
       mapped.map((t) => t.id),
     )
@@ -125,6 +132,7 @@ export default function Timesheets() {
       billed: isTimeLogBilled(t.id, t.billed, invoiceLinkedIds),
     }))
     setEntries(mappedWithBilled)
+    setInvoiceLinksByLogId(invoicesByTimeLogId)
 
     // Build unique users list for filter
     const seen = new Set<string>()
@@ -669,15 +677,15 @@ export default function Timesheets() {
                     </td>
                   )}
                   <td className="px-4 py-2 text-center">
-                    <button type="button" onClick={() => toggleBilled(t)} disabled={togglingId === t.id}
-                      title={t.billed ? 'Mark as unbilled' : 'Mark as billed'}
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-colors disabled:opacity-50 ${
-                        t.billed
-                          ? 'bg-green-500/20 text-green-400 hover:bg-red-500/20 hover:text-red-400'
-                          : 'bg-gray-500/20 text-gray-500 hover:bg-green-500/20 hover:text-green-400'
-                      }`}>
-                      {togglingId === t.id ? '…' : t.billed ? '✓ Billed' : '○ Unbilled'}
-                    </button>
+                    <TimeLogBilledChip
+                      billed={t.billed}
+                      invoices={invoiceLinksByLogId.get(t.id)}
+                      manualOnly={isTimeLogManuallyBilled(t.billed, invoiceLinksByLogId.get(t.id))}
+                      interactive
+                      onClick={() => toggleBilled(t)}
+                      disabled={togglingId === t.id}
+                      toggling={togglingId === t.id}
+                    />
                   </td>
                 </tr>
               ))}
