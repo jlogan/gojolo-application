@@ -1,5 +1,45 @@
 import { supabase } from '@/lib/supabase'
-import type { InvoiceEmailKind } from '@/lib/invoiceEmailContent'
+import {
+  isInvoiceEmailHtml,
+  resolveInvoiceDraftDisplayKind,
+  type InvoiceEmailKind,
+} from '@/lib/invoiceEmailContent'
+
+export type InvoiceInboxNavigationSendContext = {
+  invoiceId: string
+  kind: InvoiceEmailKind
+  status: string
+}
+
+export type ThreadInvoiceLinkForSend = {
+  invoice_id: string
+  invoice?: { status: string } | null
+}
+
+/** Resolve invoice send metadata when replying in a thread (navigation ref or thread link fallback). */
+export function resolveInvoiceEmailSendOnThreadReply(args: {
+  navigationContext?: InvoiceInboxNavigationSendContext | null
+  threadInvoiceLinks: ThreadInvoiceLinkForSend[]
+  subject?: string | null
+  html?: string | null
+}): InvoiceInboxNavigationSendContext | null {
+  const nav = args.navigationContext
+  const linked = args.threadInvoiceLinks[0]
+  const invoiceId = nav?.invoiceId ?? linked?.invoice_id ?? null
+  if (!invoiceId) return null
+
+  if (!nav && !isInvoiceEmailHtml(args.html)) return null
+
+  return {
+    invoiceId,
+    kind: nav?.kind ?? resolveInvoiceDraftDisplayKind({
+      contextKind: null,
+      subject: args.subject,
+      html: args.html,
+    }),
+    status: nav?.status ?? linked?.invoice?.status ?? 'draft',
+  }
+}
 
 export type InboxMessageThreadCheck = {
   is_draft?: boolean | null

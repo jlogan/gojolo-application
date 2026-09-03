@@ -20,6 +20,7 @@ import {
 import {
   cleanupThreadAfterDraftRemoved,
   recordInvoiceEmailSend,
+  resolveInvoiceEmailSendOnThreadReply,
 } from '@/lib/invoiceEmailThread'
 import {
   INVOICE_INBOX_DRAFT_QUERY_PARAMS,
@@ -2007,15 +2008,20 @@ export default function Inbox() {
       else setMessages(prev => prev.filter(msg => !msg.is_draft))
     }
 
-    const invoiceDraftCtx = invoiceInboxDraftContextRef.current
-    if (invoiceDraftCtx?.invoiceId && sentThreadId) {
+    const invoiceSendCtx = resolveInvoiceEmailSendOnThreadReply({
+      navigationContext: invoiceInboxDraftContextRef.current,
+      threadInvoiceLinks,
+      subject: replySubject,
+      html: bodyForApi,
+    })
+    if (invoiceSendCtx && sentThreadId) {
       invoiceInboxDraftContextRef.current = null
       await recordInvoiceEmailSend({
-        invoiceId: invoiceDraftCtx.invoiceId,
+        invoiceId: invoiceSendCtx.invoiceId,
         threadId: sentThreadId,
         userId: userId ?? undefined,
-        kind: invoiceDraftCtx.kind,
-        status: invoiceDraftCtx.status,
+        kind: invoiceSendCtx.kind,
+        status: invoiceSendCtx.status,
       })
       if (userId) {
         await supabase.from('inbox_thread_assignments').insert({ thread_id: sentThreadId, user_id: userId }).then(({ error: assignErr }) => {
