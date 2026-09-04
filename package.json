@@ -7,6 +7,7 @@
     "dev": "node scripts/ensure-notification-sound.mjs && vite",
     "build": "node scripts/ensure-notification-sound.mjs && vite build",
     "typecheck": "tsc -b",
+    "verify:roster-csv": "node scripts/verify-roster-csv.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

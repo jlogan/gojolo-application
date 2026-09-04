@@ -12,6 +12,7 @@ import RichTextEditor from '@/components/inbox/RichTextEditor'
 import DateInput from '@/components/DateInput'
 import LinkedInvoices from '@/components/LinkedInvoices'
 import CredentialsPanel from '@/components/CredentialsPanel'
+import ProjectRosterPanel from '@/components/ProjectRosterPanel'
 import {
   TASK_STATUS_FLOW,
   TASK_STATUS_CONFIG,
@@ -1114,6 +1115,8 @@ export default function ProjectDetail() {
             title="Credentials"
             description="Project-specific credentials plus credentials inherited from the linked company. Reveal/copy requires identity confirmation."
           />
+
+          <ProjectRosterPanel projectId={project.id} />
 
           {/* Company (single) */}
           <section className="rounded-lg border border-border bg-surface-elevated p-4">
