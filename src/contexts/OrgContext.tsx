@@ -145,7 +145,7 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
     const run = async () => {
       await supabase.rpc('ensure_my_profile')
       const { data: profile } = await supabase.from('profiles').select('email').eq('id', user.id).maybeSingle()
-      if (user.email && profile && (profile as { email: string | null }).email !== user.email) {
+      if (user.email && profile && !(profile as { email: string | null }).email) {
         await supabase.from('profiles').update({ email: user.email }).eq('id', user.id)
       }
       const { data: consumed } = await supabase.rpc('consume_my_invitations')

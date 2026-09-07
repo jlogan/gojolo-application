@@ -120,6 +120,10 @@ export default function Admin() {
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteMessage, setInviteMessage] = useState<string | null>(null)
   const [membersMessage, setMembersMessage] = useState<string | null>(null)
+  const [editingMemberUserId, setEditingMemberUserId] = useState<string | null>(null)
+  const [editMemberName, setEditMemberName] = useState('')
+  const [editMemberEmail, setEditMemberEmail] = useState('')
+  const [editMemberLoading, setEditMemberLoading] = useState(false)
 
   const [imapLabel, setImapLabel] = useState('')
   const [imapAliases, setImapAliases] = useState('')
@@ -388,6 +392,46 @@ Bank Address: 210 E Main St, Rogersville TN 37857`)
       return
     }
     await refetchUsers()
+  }
+
+  const startEditMember = (member: OrgMember) => {
+    const profile = Array.isArray(member.profiles) ? member.profiles[0] : member.profiles
+    setMembersMessage(null)
+    setEditingMemberUserId(member.user_id)
+    setEditMemberName(profile?.display_name ?? '')
+    setEditMemberEmail(profile?.email ?? '')
+  }
+
+  const cancelEditMember = () => {
+    setEditingMemberUserId(null)
+    setEditMemberName('')
+    setEditMemberEmail('')
+  }
+
+  const handleSaveMemberProfile = async (userId: string) => {
+    if (!currentOrg?.id) return
+    const email = editMemberEmail.trim().toLowerCase()
+    if (!email) {
+      setMembersMessage('Failed to update user: email is required')
+      return
+    }
+    setEditMemberLoading(true)
+    setMembersMessage(null)
+    const { error } = await supabase.rpc('update_org_member_profile', {
+      p_org_id: currentOrg.id,
+      p_user_id: userId,
+      p_display_name: editMemberName.trim() || null,
+      p_email: email,
+    })
+    setEditMemberLoading(false)
+    if (error) {
+      setMembersMessage(`Failed to update user: ${error.message}`)
+      return
+    }
+    cancelEditMember()
+    setMembersMessage('User profile updated.')
+    await refetchUsers()
+    await refetch()
   }
 
   const handleRemoveUser = async (userId: string) => {
@@ -952,23 +996,66 @@ Bank Address: 210 E Main St, Rogersville TN 37857`)
                         <tbody className="divide-y divide-border">
                           {members.map((m) => {
                             const profile = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles
+                            const isEditing = editingMemberUserId === m.user_id
                             return (
                               <tr key={m.user_id} className="hover:bg-surface-muted/30">
                                 <td className="px-4 py-3">
-                                  <p className="text-gray-200 font-medium">{profile?.display_name ?? '—'}</p>
-                                  <p className="text-gray-500 text-xs">{profile?.email ?? '—'}</p>
+                                  {isEditing ? (
+                                    <div className="space-y-2">
+                                      <input
+                                        type="text"
+                                        value={editMemberName}
+                                        onChange={(e) => setEditMemberName(e.target.value)}
+                                        placeholder="Name"
+                                        className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                                        data-testid={`member-name-${m.user_id}`}
+                                      />
+                                      <input
+                                        type="email"
+                                        value={editMemberEmail}
+                                        onChange={(e) => setEditMemberEmail(e.target.value)}
+                                        placeholder="email@example.com"
+                                        className="w-full rounded border border-border bg-surface-muted px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent"
+                                        data-testid={`member-email-${m.user_id}`}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <p className="text-gray-200 font-medium">{profile?.display_name ?? '—'}</p>
+                                      <p className="text-gray-500 text-xs">{profile?.email ?? '—'}</p>
+                                    </>
+                                  )}
                                 </td>
                                 <td className="px-4 py-3">
-                                  <select value={m.role_id} onChange={(e) => handleChangeUserRole(m.user_id, e.target.value)}
-                                    className="rounded border border-border bg-surface-muted px-2 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent">
+                                  <select value={m.role_id} onChange={(e) => handleChangeUserRole(m.user_id, e.target.value)} disabled={isEditing}
+                                    className="rounded border border-border bg-surface-muted px-2 py-1 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50">
                                     {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                                   </select>
                                 </td>
                                 <td className="px-4 py-3 text-right">
-                                  <button type="button" onClick={() => handleRemoveUser(m.user_id)}
-                                    className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted" title="Remove user">
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
+                                  {isEditing ? (
+                                    <div className="flex items-center justify-end gap-2">
+                                      <button type="button" onClick={cancelEditMember} disabled={editMemberLoading}
+                                        className="text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50">
+                                        Cancel
+                                      </button>
+                                      <button type="button" onClick={() => handleSaveMemberProfile(m.user_id)} disabled={editMemberLoading || !editMemberEmail.trim()}
+                                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-accent text-accent-foreground text-xs font-medium hover:opacity-90 disabled:opacity-50">
+                                        <Check className="w-3 h-3" /> {editMemberLoading ? 'Saving…' : 'Save'}
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-end gap-1">
+                                      <button type="button" onClick={() => startEditMember(m)}
+                                        className="p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-muted" title="Edit user">
+                                        <Pencil className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button type="button" onClick={() => handleRemoveUser(m.user_id)}
+                                        className="p-1.5 rounded text-gray-400 hover:text-red-400 hover:bg-surface-muted" title="Remove user">
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  )}
                                 </td>
                               </tr>
                             )

@@ -1,0 +1,3 @@
+-- Placeholder for a migration already present in the linked Supabase project's migration history.
+-- The remote database records version 20260828213000, but the SQL file was not present locally.
+-- Keep this file so future `supabase db push --linked` runs can compare local/remote history.
