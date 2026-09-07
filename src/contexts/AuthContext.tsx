@@ -2,12 +2,21 @@ import { createContext, useContext, useEffect, useState, useCallback } from 'rea
 import { Session, User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 
+export type AppProfile = {
+  id: string
+  display_name: string | null
+  email: string | null
+  avatar_url: string | null
+}
+
 type AuthState = {
   session: Session | null
   user: User | null
+  profile: AppProfile | null
   loading: boolean
   signInWithGoogle: () => Promise<void>
   signOut: () => Promise<void>
+  refetchProfile: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
@@ -15,7 +24,21 @@ const AuthContext = createContext<AuthState | null>(null)
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [user, setUser] = useState<User | null>(null)
+  const [profile, setProfile] = useState<AppProfile | null>(null)
   const [loading, setLoading] = useState(true)
+
+  const loadProfile = useCallback(async (userId: string | undefined) => {
+    if (!userId) {
+      setProfile(null)
+      return
+    }
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, display_name, email, avatar_url')
+      .eq('id', userId)
+      .maybeSingle()
+    setProfile((data as AppProfile | null) ?? null)
+  }, [])
 
   const ensureProfile = useCallback(async (authUser: User | null) => {
     if (!authUser) return
@@ -50,29 +73,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session)
-      setUser(session?.user ?? null)
-      await ensureProfile(session?.user ?? null)
+      const nextUser = session?.user ?? null
+      setUser(nextUser)
+      await ensureProfile(nextUser)
+      await loadProfile(nextUser?.id)
       void syncProfileAvatarToStorage(session)
       setLoading(false)
     }).catch(() => {
       setSession(null)
       setUser(null)
+      setProfile(null)
       setLoading(false)
     })
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
+      const nextUser = session?.user ?? null
       setSession(session)
-      setUser(session?.user ?? null)
-      void ensureProfile(session?.user ?? null)
+      setUser(nextUser)
+      void ensureProfile(nextUser).then(() => loadProfile(nextUser?.id))
       if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
         void syncProfileAvatarToStorage(session)
       }
     })
 
     return () => subscription.unsubscribe()
-  }, [ensureProfile, syncProfileAvatarToStorage])
+  }, [ensureProfile, loadProfile, syncProfileAvatarToStorage])
+
+  useEffect(() => {
+    if (!user?.id) {
+      setProfile(null)
+      return
+    }
+    const channel = supabase
+      .channel(`profile-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` },
+        () => { void loadProfile(user.id) },
+      )
+      .subscribe()
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [user?.id, loadProfile])
 
   const signInWithGoogle = useCallback(async () => {
     await supabase.auth.signInWithOAuth({
@@ -93,9 +138,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value: AuthState = {
     session,
     user,
+    profile,
     loading,
     signInWithGoogle,
     signOut,
+    refetchProfile: () => loadProfile(user?.id),
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useOrg } from '@/contexts/OrgContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import ResumeTemplatesPage from '@/pages/leads/ResumeTemplatesPage'
 import {
@@ -101,6 +102,7 @@ export default function Admin() {
   const navigate = useNavigate()
   const location = useLocation()
   const { isPlatformAdmin, currentOrg, isOrgAdmin, refetch } = useOrg()
+  const { user, refetchProfile } = useAuth()
   const [section, setSection] = useState<AdminSection>(location.pathname.includes('/admin/resume-templates') ? 'resume_templates' : 'users')
   const [roles, setRoles] = useState<Role[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
@@ -432,6 +434,7 @@ Bank Address: 210 E Main St, Rogersville TN 37857`)
     setMembersMessage('User profile updated.')
     await refetchUsers()
     await refetch()
+    if (userId === user?.id) await refetchProfile()
   }
 
   const handleRemoveUser = async (userId: string) => {

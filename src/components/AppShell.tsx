@@ -86,7 +86,7 @@ const VENDOR_NAV: NavItem[] = [
 ]
 
 export default function AppShell() {
-  const { signOut } = useAuth()
+  const { signOut, profile } = useAuth()
   const { currentOrg, isPlatformAdmin, isOrgAdmin, isVendor } = useOrg()
   const { unreadCount } = useNotifications()
   const location = useLocation()
@@ -345,7 +345,7 @@ export default function AppShell() {
             onClick={() => setSidebarOpen(false)}
           >
             <User className="w-4 h-4 shrink-0" />
-            Profile
+            <span className="truncate">{profile?.display_name?.trim() || profile?.email?.trim() || 'Profile'}</span>
           </Link>
           <button
             type="button"

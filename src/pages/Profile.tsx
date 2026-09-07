@@ -6,7 +6,7 @@ import { useNotifications } from '@/contexts/NotificationsContext'
 import { supabase } from '@/lib/supabase'
 import { ArrowLeft, Key, Mail, Bell } from 'lucide-react'
 
-type ProfileRow = { id: string; display_name: string | null; avatar_url: string | null }
+type ProfileRow = { id: string; display_name: string | null; email: string | null; avatar_url: string | null }
 
 const NOTIFICATION_TYPES = [
   { id: 'task_assigned', label: 'Task Assigned To You', description: 'When a task is assigned to you' },
@@ -18,7 +18,7 @@ const NOTIFICATION_TYPES = [
 type NotificationChannel = 'slack' | 'email' | 'both'
 
 export default function Profile() {
-  const { user } = useAuth()
+  const { user, profile, refetchProfile } = useAuth()
   const { currentOrg } = useOrg()
   const { soundEnabled, setSoundEnabled } = useNotifications()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -44,14 +44,14 @@ export default function Profile() {
   const [notificationSaving, setNotificationSaving] = useState(false)
   const [notificationMessage, setNotificationMessage] = useState<string | null>(null)
 
-  const email = user?.email ?? ''
+  const email = profile?.email ?? user?.email ?? ''
   const provider = user?.app_metadata?.provider ?? 'email'
 
   useEffect(() => {
     if (!user?.id) return
     supabase
       .from('profiles')
-      .select('id, display_name, avatar_url')
+      .select('id, display_name, email, avatar_url')
       .eq('id', user.id)
       .single()
       .then(({ data }) => {
@@ -60,7 +60,7 @@ export default function Profile() {
         }
         setProfileLoading(false)
       })
-  }, [user?.id])
+  }, [user?.id, profile?.display_name])
 
   const loadNotificationPrefs = useCallback(async () => {
     if (!user?.id || !currentOrg?.id) return
@@ -114,6 +114,7 @@ export default function Profile() {
     if (error) {
       setProfileMessage(error.message)
     } else {
+      await refetchProfile()
       setProfileMessage('Saved.')
     }
     setProfileSaving(false)
