@@ -60,14 +60,12 @@ Deno.serve(async (req: Request) => {
 
     const { data: pub } = admin.storage.from(AVATAR_BUCKET).getPublicUrl(path)
     const publicUrl = pub.publicUrl
-    const displayName = meta.full_name ?? meta.name ?? user.email ?? null
+    // Avatar sync must never overwrite workspace-managed identity fields.
     const { error: updateErr } = await admin
       .from('profiles')
       .update({
         avatar_url: publicUrl,
         google_avatar_url: avatarSourceUrl,
-        display_name: displayName,
-        email: user.email ?? null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', user.id)

@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       display_name: userMeta.full_name ?? userMeta.name ?? authUser.email ?? null,
       email: authUser.email ?? null,
       avatar_url: userMeta.avatar_url ?? userMeta.picture ?? null,
-    }, { onConflict: 'id' })
+    }, { onConflict: 'id', ignoreDuplicates: true })
   }, [])
 
   const syncProfileAvatarToStorage = useCallback(async (sessionToSync: Session | null) => {
