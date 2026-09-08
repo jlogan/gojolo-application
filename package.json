@@ -8,7 +8,8 @@
     "build": "node scripts/ensure-notification-sound.mjs && vite build",
     "typecheck": "tsc -b",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:bill-edit": "node scripts/verify-bill-edit.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

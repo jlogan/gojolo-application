@@ -7,6 +7,7 @@ import RecordBillPaymentModal, { type BillPaymentFormValues } from '@/components
 import DeleteBillPaymentConfirmModal from '@/components/bills/DeleteBillPaymentConfirmModal'
 import CancelBillConfirmModal from '@/components/bills/CancelBillConfirmModal'
 import { billPaymentMethodLabel } from '@/lib/billPaymentMethods'
+import { canEditOpenBill } from '@/lib/billEdit'
 import { billStatusLabel, canCancelBill, canRecordBillPayment } from '@/lib/billStatus'
 import { supabase } from '@/lib/supabase'
 
@@ -135,6 +136,16 @@ export default function BillDetail() {
 
   const canAdminBillActions = isOrgAdmin && !isVendor
   const canRecordPayment = canAdminBillActions && bill != null && canRecordBillPayment(bill.status)
+  const canEditBill =
+    bill != null &&
+    canEditOpenBill({
+      isOrgAdmin,
+      isVendor,
+      direction: 'inbound',
+      orgId: currentOrg?.id,
+      currentOrgId: currentOrg?.id,
+      status: bill.status,
+    })
 
   if (loading) return <div className="p-6 text-gray-400">Loading bill...</div>
   if (!bill) {
@@ -197,6 +208,16 @@ export default function BillDetail() {
               >
                 Move to Open
               </button>
+            )}
+            {canEditBill && (
+              <Link
+                to={`/bills/${bill.id}/edit`}
+                className="px-3 py-2 rounded-lg border border-border text-sm text-gray-200 hover:text-white hover:bg-surface-muted inline-flex items-center gap-1.5"
+                data-testid="bill-edit"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                Edit
+              </Link>
             )}
             {canRecordPayment && (
               <button
