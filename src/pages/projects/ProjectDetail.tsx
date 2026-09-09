@@ -26,6 +26,11 @@ import {
 } from '@/lib/taskStatus'
 import { buildTaskArtifactPath } from '@/lib/taskArtifactStorage'
 import {
+  getStoredProjectTaskView,
+  storeProjectTaskView,
+  type TaskPresentationView,
+} from '@/lib/projectTaskView'
+import {
   fetchOutboundInvoiceLinksForTimeLogs,
   isTimeLogBilled,
   isTimeLogManuallyBilled,
@@ -112,8 +117,6 @@ function getTaskAssigneeUserIds(
   return []
 }
 
-type TaskPresentationView = 'list' | 'kanban'
-
 function formatTaskTimeLogged(totalMinutes: number): string | null {
   if (totalMinutes <= 0) return null
   const h = Math.floor(totalMinutes / 60)
@@ -176,8 +179,20 @@ export default function ProjectDetail() {
   const [filterPriority, setFilterPriority] = useState<TaskPriorityFilter>('')
   const [filterAssignee, setFilterAssignee] = useState('')
   const [filterDuePreset, setFilterDuePreset] = useState<TaskDuePreset>('all')
-  const [taskPresentationView, setTaskPresentationView] = useState<TaskPresentationView>('list')
+  const [taskPresentationView, setTaskPresentationView] = useState<TaskPresentationView>(() =>
+    getStoredProjectTaskView(localStorage, id ?? ''),
+  )
   const [showTaskFilters, setShowTaskFilters] = useState(false)
+
+  useEffect(() => {
+    if (!id) return
+    setTaskPresentationView(getStoredProjectTaskView(localStorage, id))
+  }, [id])
+
+  const updateTaskPresentationView = (view: TaskPresentationView) => {
+    setTaskPresentationView(view)
+    if (id) storeProjectTaskView(localStorage, id, view)
+  }
 
   // Project time logs
   const [timeLogs, setTimeLogs] = useState<ProjectTimeLog[]>([])
@@ -718,7 +733,7 @@ export default function ProjectDetail() {
                   >
                     <button
                       type="button"
-                      onClick={() => setTaskPresentationView('list')}
+                      onClick={() => updateTaskPresentationView('list')}
                       aria-pressed={taskPresentationView === 'list'}
                       className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm transition-colors ${
                         taskPresentationView === 'list'
@@ -731,7 +746,7 @@ export default function ProjectDetail() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setTaskPresentationView('kanban')}
+                      onClick={() => updateTaskPresentationView('kanban')}
                       aria-pressed={taskPresentationView === 'kanban'}
                       className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border-l border-border transition-colors ${
                         taskPresentationView === 'kanban'
