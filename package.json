@@ -9,7 +9,8 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:bill-edit": "node scripts/verify-bill-edit.mjs"
+    "test:bill-edit": "node scripts/verify-bill-edit.mjs",
+    "test:project-task-view": "node scripts/verify-project-task-view.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
