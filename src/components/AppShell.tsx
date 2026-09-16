@@ -154,8 +154,8 @@ export default function AppShell() {
         data-testid="sidebar"
       >
         <div className="flex items-center justify-between h-14 px-4 border-b border-border shrink-0">
-          <Link to="/" className="inline-flex items-center" data-testid="logo" aria-label="JoLo home">
-            <img src="/jolo-logo.png" alt="JoLo" className="h-9 w-auto object-contain" />
+          <Link to="/" className="font-semibold text-white" data-testid="logo">
+            jolo
           </Link>
           <button
             type="button"

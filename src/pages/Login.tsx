@@ -72,12 +72,7 @@ export default function Login() {
       data-testid="login-page"
     >
       <div className="w-full max-w-sm text-center">
-        <img
-          src="/jolo-logo.png"
-          alt="JoLo"
-          className="mx-auto mb-4 h-16 w-auto object-contain"
-          data-testid="login-logo"
-        />
+        <h1 className="text-2xl font-semibold text-white mb-2">jolo</h1>
         <p className="text-gray-400 text-sm mb-8">
           Business software, <span className="text-accent font-medium">not CRM.</span>
         </p>

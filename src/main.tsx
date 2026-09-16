@@ -58,7 +58,9 @@ try {
         padding: '2rem', textAlign: 'center',
       }}>
         <div style={{ maxWidth: '28rem' }}>
-          <img src="/jolo-logo.png" alt="JoLo" style={{ height: '4rem', width: 'auto', margin: '0 auto 1rem', objectFit: 'contain' }} />
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 600, color: '#fff', marginBottom: '0.75rem' }}>
+            jolo
+          </h1>
           <p style={{ fontSize: '0.875rem', color: '#a1a1aa', marginBottom: '1.5rem' }}>
             Missing environment variables. The app cannot connect to Supabase.
           </p>

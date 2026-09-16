@@ -372,21 +372,10 @@ function buildInvoiceSubject(kind: InvoiceEmailKind, invoiceNumber: string): str
   }
 }
 
-const INVOICE_EMAIL_LOGO_URL = 'https://app.gojolo.io/jolo-logo-email.png'
-
-function buildInvoiceEmailLogoHeader(): string {
-  return [
-    '<div style="margin:0 0 28px;padding:18px 20px;border-radius:16px;background:#0f0f0f;text-align:center;">',
-    `<img src="${INVOICE_EMAIL_LOGO_URL}" width="160" alt="JoLo" style="display:block;width:160px;max-width:70%;height:auto;margin:0 auto;border:0;outline:none;text-decoration:none;" />`,
-    '</div>',
-  ].join('')
-}
-
 export function finalizeInvoiceEmailHtml(html: string): string {
   return [
     '<div style="margin:0;padding:0;background:#ffffff;">',
     '<div style="max-width:680px;margin:0;padding:32px 28px;font-family:Arial,Helvetica,sans-serif;color:#111827;">',
-    buildInvoiceEmailLogoHeader(),
     html,
     '</div>',
     '</div>',
