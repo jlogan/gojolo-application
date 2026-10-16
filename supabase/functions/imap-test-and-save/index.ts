@@ -1,11 +1,13 @@
 // Test IMAP/SMTP connection and optionally save account (credentials encrypted server-side).
-// Requires: ENCRYPTION_KEY (32-byte hex) in secrets for saving.
+// Requires: ENCRYPTION_KEY (32-byte hex) when creating an account or saving a new IMAP/SMTP password.
+// Metadata-only updates work without ENCRYPTION_KEY (existing encrypted columns are left unchanged).
 // Call with Authorization: Bearer <user jwt>. User must be org admin for the given org.
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { ImapFlow } from 'npm:imapflow'
 import nodemailer from 'npm:nodemailer'
+import { imapSaveRequiresEncryptionKey } from '../_shared/imapAccountSave.mjs'
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!
@@ -187,7 +189,17 @@ serve(async (req) => {
   }
 
   if (save) {
-    if (!encryptionKeyHex || encryptionKeyHex.length < 64) {
+    const smtpPasswordToSave =
+      smtpHost?.trim() && smtpUsername?.trim() && smtpPassword && String(smtpPassword).trim()
+        ? String(smtpPassword).trim()
+        : null
+    const encryptionConfigured = Boolean(encryptionKeyHex && encryptionKeyHex.length >= 64)
+    const needsEncryptionKey = imapSaveRequiresEncryptionKey({
+      isUpdate,
+      hasImapPassword: Boolean(passwordToTest),
+      hasSmtpPassword: Boolean(smtpPasswordToSave),
+    })
+    if (needsEncryptionKey && !encryptionConfigured) {
       return new Response(
         JSON.stringify({ error: 'Server not configured for saving (ENCRYPTION_KEY missing)' }),
         { status: 200, headers: { ...cors(), 'Content-Type': 'application/json' } }
@@ -203,9 +215,9 @@ serve(async (req) => {
     const service = createClient(supabaseUrl, serviceKey)
 
     let credentialsEncrypted: string | null = null
-    if (passwordToTest) {
+    if (passwordToTest && encryptionConfigured) {
       try {
-        credentialsEncrypted = await encrypt(passwordToTest, encryptionKeyHex.slice(0, 64))
+        credentialsEncrypted = await encrypt(passwordToTest, encryptionKeyHex!.slice(0, 64))
       } catch (e) {
         return new Response(
           JSON.stringify({ error: 'Encryption failed' }),
@@ -215,9 +227,9 @@ serve(async (req) => {
     }
 
     let smtpCredentialsEncrypted: string | null = null
-    if (smtpHost?.trim() && smtpUsername?.trim() && smtpPassword) {
+    if (smtpPasswordToSave && encryptionConfigured) {
       try {
-        smtpCredentialsEncrypted = await encrypt(smtpPassword, encryptionKeyHex.slice(0, 64))
+        smtpCredentialsEncrypted = await encrypt(smtpPasswordToSave, encryptionKeyHex!.slice(0, 64))
       } catch {
         return new Response(
           JSON.stringify({ error: 'SMTP encryption failed' }),
