@@ -4,9 +4,10 @@ import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
 import Placeholder from '@tiptap/extension-placeholder'
 import Underline from '@tiptap/extension-underline'
+import Image from '@tiptap/extension-image'
 import {
   Bold, Italic, Underline as UnderlineIcon, Strikethrough,
-  List, ListOrdered, Link as LinkIcon, Undo, Redo,
+  List, ListOrdered, Link as LinkIcon, Undo, Redo, ImageIcon,
 } from 'lucide-react'
 
 export type MentionableUser = {
@@ -35,6 +36,33 @@ function isEffectivelyEmptyHtml(html: string): boolean {
 function htmlEquivalent(a: string, b: string): boolean {
   if (a === b) return true
   return isEffectivelyEmptyHtml(a) && isEffectivelyEmptyHtml(b)
+}
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/')
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+}
+
+async function insertInlineImages(editorInstance: Editor, files: File[]) {
+  for (const file of files) {
+    if (!isImageFile(file)) continue
+    try {
+      const src = await readFileAsDataUrl(file)
+      if (src && !editorInstance.isDestroyed) {
+        editorInstance.chain().focus().setImage({ src }).run()
+      }
+    } catch {
+      // skip unreadable image
+    }
+  }
 }
 
 function getMentionLabel(user: MentionableUser): string {
@@ -111,6 +139,20 @@ export default function RichTextEditor({
     highlightIndexRef.current = 0
   }, [closeMention])
 
+  const addImageFromFile = useCallback(() => {
+    const editorInstance = editorRef.current
+    if (!editorInstance) return
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = () => {
+      const file = input.files?.[0]
+      if (!file) return
+      void insertInlineImages(editorInstance, [file])
+    }
+    input.click()
+  }, [])
+
   const insertMention = useCallback((user: MentionableUser) => {
     const editorInstance = editorRef.current
     const range = mentionRangeRef.current
@@ -129,6 +171,11 @@ export default function RichTextEditor({
       StarterKit,
       Underline,
       Link.configure({ openOnClick: false }),
+      Image.configure({
+        inline: false,
+        allowBase64: true,
+        HTMLAttributes: { class: 'inbox-editor-inline-image' },
+      }),
       Placeholder.configure({ placeholder }),
     ],
     content,
@@ -184,14 +231,26 @@ export default function RichTextEditor({
         return false
       },
       handlePaste: (_view, event) => {
-        if (!onFilesPasted) return false
         const files = Array.from(event.clipboardData?.items ?? [])
           .filter(item => item.kind === 'file')
           .map(item => item.getAsFile())
           .filter((file): file is File => Boolean(file))
         if (files.length === 0) return false
+
+        const imageFiles = files.filter(isImageFile)
+        const nonImageFiles = files.filter(f => !isImageFile(f))
+
+        if (imageFiles.length === 0) {
+          if (!onFilesPasted || nonImageFiles.length === 0) return false
+          event.preventDefault()
+          onFilesPasted(nonImageFiles)
+          return true
+        }
+
         event.preventDefault()
-        onFilesPasted(files)
+        const editorInstance = editorRef.current
+        if (editorInstance) void insertInlineImages(editorInstance, imageFiles)
+        if (nonImageFiles.length > 0 && onFilesPasted) onFilesPasted(nonImageFiles)
         return true
       },
     },
@@ -264,6 +323,9 @@ export default function RichTextEditor({
             <ListOrdered className="w-4 h-4" />
           </button>
           <div className="w-px h-5 bg-border mx-1" />
+          <button type="button" onClick={addImageFromFile} className={btnClass(false)} title="Insert image">
+            <ImageIcon className="w-4 h-4" />
+          </button>
           <button type="button" onClick={openLinkInput} className={btnClass(editor.isActive('link'))} title="Add link">
             <LinkIcon className="w-4 h-4" />
           </button>

@@ -330,6 +330,7 @@ export default function EmailComposeForm({
           key={bodyEditorKey}
           content={html}
           onChange={onHtmlChange}
+          onFilesPasted={onAttachmentsChange ? appendFiles : undefined}
           placeholder="Write your message…"
           autofocus={autofocus}
           minHeight={minHeight}

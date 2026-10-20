@@ -142,6 +142,20 @@ select option {
   opacity: 0.9;
 }
 
+.inbox-editor-content img,
+.inbox-editor-content .inbox-editor-inline-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.75rem auto;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+}
+
+.inbox-editor-content p:has(> img.inbox-editor-inline-image:only-child) {
+  margin: 0.75rem 0;
+}
+
 /* Invoice email compose: make the preloaded template look like a formatted email inside the shared WYSIWYG editor. */
 .invoice-email-draft-compose .inbox-editor-content {
   background: #ffffff;

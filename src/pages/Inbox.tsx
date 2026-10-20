@@ -168,6 +168,7 @@ function stripHtmlToText(html: string, maxLen: number): string {
 
 /** True when TipTap/HTML body has no visible text (allows attachment-only send). */
 function isHtmlBodyEffectivelyEmpty(html: string): boolean {
+  if (/<img\b/i.test(html)) return false
   const text = html
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
@@ -183,17 +184,30 @@ function sanitizeInboxStorageFileName(name: string): string {
   return base.length > 180 ? base.slice(0, 180) : base
 }
 
-/** Render comment content with @mentions in amber, non-mention text in white (for display in thread) */
+/** Render internal team note content with @mentions highlighted (Missive-style inline chat). */
 function renderCommentContentWithMentions(content: string): React.ReactNode {
   if (!content) return null
   const parts = content.split(MENTION_REGEX)
   return parts.map((part, i) =>
     part.startsWith('@') ? (
-      <span key={i} className="text-amber-400 font-medium">{part}</span>
+      <span key={i} className="text-accent font-medium">{part}</span>
     ) : (
-      <span key={i} className="text-white">{part}</span>
+      <span key={i} className="text-gray-200">{part}</span>
     )
   )
+}
+
+function formatTimelineTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+  } catch {
+    return iso
+  }
 }
 
 /** Return HTML string with mention spans (for contenteditable; inline styles so they apply when set via innerHTML) */
@@ -3022,7 +3036,7 @@ export default function Inbox() {
               <div className="flex-1 min-h-0 p-4">{renderReplyForm(true)}</div>
             </div>
           ) : selectedThread && (
-            <>
+            <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
               {/* Thread header */}
               <div className="border-b border-border px-4 py-2.5 shrink-0">
                 <div className="flex items-center gap-2 mb-2">
@@ -3180,8 +3194,13 @@ export default function Inbox() {
                 )}
               </div>
 
-              {/* Timeline */}
-              <div className="flex-1 overflow-y-auto" onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+              {/* Conversation timeline (email + internal team notes interleaved) */}
+              <div
+                className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+              >
                 {isDragging && <div className="mx-4 mt-4 p-4 rounded-lg border-2 border-dashed border-accent bg-accent/5 text-center text-accent text-sm">Drop files to attach</div>}
                 <div className="p-4 space-y-4">
                   {threadLevelAttachments.length > 0 && (
@@ -3205,22 +3224,33 @@ export default function Inbox() {
                     return timeline.map((item) => {
                       if (item.kind === 'comment') {
                         const c = item.data
+                        const authorName = c.display_name ?? getUserName(c.user_id)
                         return (
-                          <div key={`cmt-${c.id}`} className="flex gap-3">
+                          <div
+                            key={`cmt-${c.id}`}
+                            className="flex gap-2.5 py-0.5"
+                            data-testid="inbox-internal-note"
+                          >
                             {c.avatar_url ? (
-                              <img src={c.avatar_url} alt="" className="w-8 h-8 rounded-full shrink-0 mt-0.5" />
+                              <img src={c.avatar_url} alt="" className="w-7 h-7 rounded-full shrink-0 mt-5" />
                             ) : (
-                              <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5 text-[11px] font-medium text-amber-400">
-                                {(c.display_name ?? '?')[0].toUpperCase()}
+                              <div className="w-7 h-7 rounded-full bg-surface-muted border border-border flex items-center justify-center shrink-0 mt-5 text-[10px] font-medium text-gray-300">
+                                {(authorName ?? '?')[0].toUpperCase()}
                               </div>
                             )}
-                            <div className="flex-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
-                              <div className="flex items-baseline gap-2 text-[11px] mb-1">
-                                <span className="text-amber-400 font-medium">{c.display_name ?? getUserName(c.user_id)}</span>
-                                <span className="text-gray-500">{new Date(c.created_at).toLocaleString()}</span>
-                                <span className="text-amber-500/50 ml-auto text-[10px]">internal comment</span>
+                            <div className="flex-1 min-w-0 max-w-3xl">
+                              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0 text-[11px] text-gray-500 mb-1 px-1">
+                                <span className="font-medium text-gray-300">{authorName}</span>
+                                <span>{formatTimelineTime(c.created_at)}</span>
+                                <span className="rounded-full bg-surface-muted px-1.5 py-0 text-[10px] text-gray-500 border border-border/60">
+                                  Team note
+                                </span>
                               </div>
-                              <p className="text-sm text-white whitespace-pre-wrap break-words">{renderCommentContentWithMentions(c.content)}</p>
+                              <div className="inline-block max-w-full rounded-2xl rounded-tl-md border border-border/70 bg-surface-muted/80 px-3.5 py-2.5 shadow-sm">
+                                <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                                  {renderCommentContentWithMentions(c.content)}
+                                </p>
+                              </div>
                             </div>
                           </div>
                         )
@@ -3250,7 +3280,10 @@ export default function Inbox() {
                         )
                       }
                       return (<React.Fragment key={`msg-${m.id}`}>
-                        <article className={`rounded-lg border overflow-hidden group/msg ${isDraftMsg ? 'border-yellow-500/50 bg-yellow-500/5' : 'border-border'}`}>
+                        <article
+                          data-testid="inbox-email-message"
+                          className={`rounded-lg border overflow-hidden group/msg shadow-sm ${isDraftMsg ? 'border-yellow-500/50 bg-yellow-500/5' : 'border-border bg-surface-elevated/30'}`}
+                        >
                           <header onClick={() => setExpandedMsgs(prev => { const n = new Set(prev); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n })}
                             className={`px-4 py-2 text-[11px] text-gray-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 bg-surface-elevated/50 ${!isExpanded ? 'cursor-pointer hover:bg-surface-muted/50' : 'border-b border-border'}`}>
                             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 flex-1 min-w-0">
@@ -3407,20 +3440,28 @@ export default function Inbox() {
                 </div>
               </div>
 
-              {/* Comment input */}
-              <div className="border-t border-border px-4 py-2.5 shrink-0">
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
-                  <div className="flex-1 relative">
+              {/* Sticky internal team chat (Missive-style — always visible at bottom of thread) */}
+              <div
+                className="shrink-0 z-20 border-t border-border bg-surface-elevated/95 px-4 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm"
+                data-testid="inbox-team-chat-composer"
+              >
+                <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+                  Chat with your team
+                </p>
+                <div className="flex items-end gap-2">
+                  <MessageSquare className="w-4 h-4 text-gray-400 shrink-0 mb-2.5" aria-hidden />
+                  <div className="flex-1 relative min-w-0">
                     {!commentText && (
-                      <div className="pointer-events-none absolute inset-0 flex items-center px-3 py-1.5 text-sm text-gray-500" aria-hidden>
-                        Add an internal comment… (type @ to mention)
+                      <div className="pointer-events-none absolute inset-0 flex items-center px-3 py-2 text-sm text-gray-500" aria-hidden>
+                        Chat with your team… (type @ to mention)
                       </div>
                     )}
                     <div
                       ref={commentInputRef}
                       contentEditable
                       suppressContentEditableWarning
+                      role="textbox"
+                      aria-label="Internal team chat"
                       onInput={(e) => {
                         const text = (e.target as HTMLDivElement).innerText
                         setCommentText(text)
@@ -3428,16 +3469,16 @@ export default function Inbox() {
                         else if (!text.includes('@')) setShowMentionPicker(false)
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && commentText.trim()) {
+                        if (e.key === 'Enter' && !e.shiftKey && commentText.trim()) {
                           e.preventDefault()
                           handleAddComment()
                         }
                       }}
-                      className="min-h-[38px] w-full rounded border border-border bg-surface-muted px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                      className="max-h-32 min-h-[44px] w-full overflow-y-auto rounded-xl border border-border bg-surface-muted px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-accent/40"
                       style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
                     />
                     {showMentionPicker && (
-                      <div className="absolute bottom-full left-0 mb-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-64 z-10">
+                      <div className="absolute bottom-full left-0 mb-1 bg-surface-elevated border border-border rounded-lg shadow-lg py-1 max-h-40 overflow-y-auto w-64 z-30">
                         {inboxUsers.map(u => (
                           <button key={u.user_id} type="button" onClick={() => insertMention(u)}
                             className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-surface-muted">{u.display_name ?? u.email}</button>
@@ -3445,11 +3486,18 @@ export default function Inbox() {
                       </div>
                     )}
                   </div>
-                  <button type="button" onClick={handleAddComment} disabled={!commentText.trim()}
-                    className="px-3 py-1.5 rounded bg-amber-500/20 text-amber-400 text-sm font-medium hover:bg-amber-500/30 disabled:opacity-50">Comment</button>
+                  <button
+                    type="button"
+                    onClick={handleAddComment}
+                    disabled={!commentText.trim()}
+                    className="mb-0.5 shrink-0 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
+                  >
+                    Send
+                  </button>
                 </div>
+                <p className="mt-1.5 text-[10px] text-gray-600">Enter to send · Shift+Enter for a new line · Visible only to your team</p>
               </div>
-            </>
+            </div>
           )}
         </div>
       </div>
