@@ -35,7 +35,7 @@ import {
   refreshInvoiceInboxDraftEditorContent,
   resolveKindForInvoiceDraftEditor,
 } from '@/lib/invoiceResendDraft'
-import { getGmailThreadUrlForThread } from '@/lib/inboxGmail'
+import { getGmailMessageUrlForMessage, getGmailThreadUrlForThread } from '@/lib/inboxGmail'
 import type { InvoiceDraftNavigationState } from '@/pages/invoices/InvoiceEmailDraft'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -54,7 +54,7 @@ type InboxThread = {
   gmail_labels?: string[] | null
   /** False when latest message is not in Gmail \\Inbox (label-only / archived in Gmail). */
   in_gmail_inbox?: boolean
-  /** Gmail X-GM-THRID for correlation (not used for Gmail web links). */
+  /** Gmail X-GM-THRID (ImapFlow threadId) for Gmail web thread links when synced. */
   gmail_thread_id?: string | null
 }
 type InboxMessage = {
@@ -65,6 +65,8 @@ type InboxMessage = {
   external_uid?: number | null
   external_id?: string | null
   message_id_header?: string | null
+  gmail_thread_id?: string | null
+  gmail_message_id?: string | null
   is_draft?: boolean | null
 }
 type InboxComment = {
@@ -872,7 +874,7 @@ export default function Inbox() {
     if (!background) setMessagesLoading(true)
     let msgs: InboxMessage[] = []
     const { data, error: queryError } = await supabase.from('inbox_messages')
-      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, is_draft')
+      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, gmail_thread_id, gmail_message_id, is_draft')
       .eq('thread_id', tid).order('received_at', { ascending: true })
     msgs = (data as InboxMessage[]) ?? []
     debugLog('fetchMessages', { event: 'messages_query', threadId: tid, count: msgs.length, error: queryError?.message, messages: msgs.map(m => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.html_body?.trim()), external_uid: m.external_uid, direction: m.direction })) }, tid)
@@ -916,7 +918,7 @@ export default function Inbox() {
             })
             if (res.ok) {
               const { data: dataAfter } = await supabase.from('inbox_messages')
-                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, is_draft')
+                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, gmail_thread_id, gmail_message_id, is_draft')
                 .eq('thread_id', tid).order('received_at', { ascending: true })
               msgs = (dataAfter as InboxMessage[]) ?? []
               debugLog('fetchMessages', { event: 'after_backfill', threadId: tid, count: msgs.length }, tid)
@@ -3230,6 +3232,9 @@ export default function Inbox() {
                       const bodyDisplay = isExpanded ? cleanMessageBody(m, messageFetchStatus) : { html: false, content: '', loading: false, failed: false, unavailable: false }
                       const { html, content, loading: bodyLoading, failed: bodyFailed, unavailable: bodyUnavailable } = bodyDisplay
                       const msgAttachments = attachmentsByMessageId.get(m.id) ?? []
+                      const messageGmailUrl = selectedThread
+                        ? getGmailMessageUrlForMessage(m, selectedThread, imapAccounts)
+                        : null
                       const displayContent = isDraftMsg && html ? prepareDraftHtmlForDisplay(content) : content
                       const sanitized = html
                         ? sanitizeEmailHtml(resolveInlineEmailImages(displayContent, msgAttachments))
@@ -3263,6 +3268,20 @@ export default function Inbox() {
                               <span className="ml-auto">{new Date(m.received_at).toLocaleString()}</span>
                             </div>
                             {isExpanded && <div className="flex items-center gap-0.5 opacity-0 group-hover/msg:opacity-100 transition-opacity shrink-0">
+                              {messageGmailUrl && (
+                                <a
+                                  href={messageGmailUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Open in Gmail"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="p-1 rounded text-gray-500 hover:text-white hover:bg-surface-muted shrink-0"
+                                >
+                                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path fill="currentColor" d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z" />
+                                  </svg>
+                                </a>
+                              )}
                               {m.imap_account_id && m.external_uid != null && (
                                 <button
                                   type="button"
