@@ -36,6 +36,7 @@ import {
   resolveKindForInvoiceDraftEditor,
 } from '@/lib/invoiceResendDraft'
 import { getGmailMessageUrlForMessage, getGmailThreadUrlForThread } from '@/lib/inboxGmail'
+import { getOutboundSenderUserId } from '@/lib/inboxMessageAttribution'
 import type { InvoiceDraftNavigationState } from '@/pages/invoices/InvoiceEmailDraft'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -67,6 +68,7 @@ type InboxMessage = {
   message_id_header?: string | null
   gmail_thread_id?: string | null
   gmail_message_id?: string | null
+  meta?: Record<string, unknown> | null
   is_draft?: boolean | null
 }
 type InboxComment = {
@@ -888,7 +890,7 @@ export default function Inbox() {
     if (!background) setMessagesLoading(true)
     let msgs: InboxMessage[] = []
     const { data, error: queryError } = await supabase.from('inbox_messages')
-      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, gmail_thread_id, gmail_message_id, is_draft')
+      .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, gmail_thread_id, gmail_message_id, meta, is_draft')
       .eq('thread_id', tid).order('received_at', { ascending: true })
     msgs = (data as InboxMessage[]) ?? []
     debugLog('fetchMessages', { event: 'messages_query', threadId: tid, count: msgs.length, error: queryError?.message, messages: msgs.map(m => ({ id: m.id, hasBody: !!(m.body?.trim()), hasHtmlBody: !!(m.html_body?.trim()), external_uid: m.external_uid, direction: m.direction })) }, tid)
@@ -932,7 +934,7 @@ export default function Inbox() {
             })
             if (res.ok) {
               const { data: dataAfter } = await supabase.from('inbox_messages')
-                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, gmail_thread_id, gmail_message_id, is_draft')
+                .select('id, thread_id, channel, direction, from_identifier, to_identifier, cc, body, html_body, received_at, imap_account_id, external_uid, external_id, message_id_header, gmail_thread_id, gmail_message_id, meta, is_draft')
                 .eq('thread_id', tid).order('received_at', { ascending: true })
               msgs = (dataAfter as InboxMessage[]) ?? []
               debugLog('fetchMessages', { event: 'after_backfill', threadId: tid, count: msgs.length }, tid)
@@ -3257,6 +3259,7 @@ export default function Inbox() {
                       }
                       const m = item.data
                       const isDraftMsg = !!m.is_draft
+                      const sentByUserId = getOutboundSenderUserId(m)
                       const isExpanded = isDraftMsg || m.id === lastMsgId || expandedMsgs.has(m.id)
                       const messageFetchStatus = bodyFetchStatus[m.id] ?? (isUnavailableBodyText(m.body) ? 'unavailable' : null)
                       const bodyDisplay = isExpanded ? cleanMessageBody(m, messageFetchStatus) : { html: false, content: '', loading: false, failed: false, unavailable: false }
@@ -3289,6 +3292,14 @@ export default function Inbox() {
                             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 flex-1 min-w-0">
                               {isDraftMsg && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 shrink-0">DRAFT</span>}
                               <span><span className="text-gray-500">From:</span> {renderEmail(m.from_identifier)}</span>
+                              {sentByUserId && (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent shrink-0"
+                                  title="Sent from GoJoLo"
+                                >
+                                  <span className="text-accent/70">Sent by</span> {getUserName(sentByUserId)}
+                                </span>
+                              )}
                               {isExpanded && m.to_identifier && <span><span className="text-gray-500">To:</span> {renderEmail(m.to_identifier)}</span>}
                               {isExpanded && m.cc && <span><span className="text-gray-500">Cc:</span> {m.cc}</span>}
                               {!isExpanded && preview && <span className="text-gray-500 truncate ml-2">{preview}</span>}

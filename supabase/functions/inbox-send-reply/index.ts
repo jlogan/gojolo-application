@@ -86,6 +86,9 @@ Deno.serve(async (req: Request) => {
     isHtml && hasAttachments && !bodyTrim ? '<p></p>' : (bodyContent ?? '')
 
   const service = createClient(supabaseUrl, serviceKey)
+  const authToken = auth.replace(/^Bearer\s+/i, '')
+  const { data: { user }, error: userErr } = await service.auth.getUser(authToken)
+  if (userErr || !user?.id) return jsonRes({ error: 'Invalid token' }, 401)
 
   let orgId: string
   let imapAccountId: string
@@ -120,8 +123,6 @@ Deno.serve(async (req: Request) => {
     console.log(`[inbox-send-reply] ${reqId} reply context: orgId=${orgId}, imapAccountId=${imapAccountId}, toAddress=${toAddress}, subject=${subject?.slice(0, 50)}`)
   } else {
     if (!accountId) {
-      const { data: { user }, error: uErr } = await createClient(supabaseUrl, serviceKey).auth.getUser(auth.replace('Bearer ', ''))
-      if (uErr || !user) return jsonRes({ error: 'Invalid token' }, 401)
       const { data: orgs } = await service.from('organization_users').select('org_id').eq('user_id', user.id).limit(1)
       if (!orgs?.length) return jsonRes({ error: 'No org membership' })
       orgId = orgs[0].org_id as string
@@ -243,6 +244,7 @@ Deno.serve(async (req: Request) => {
       thread_id: saveThreadId, channel: 'email', direction: 'outbound',
       from_identifier: effectiveFromAddress, to_identifier: toAddress,
       cc: cc?.trim() || null, bcc: bcc?.trim() || null, imap_account_id: account.id, received_at: now,
+      meta: { sent_by_user_id: user.id, sent_via: 'gojolo' },
     }
     if (isHtml) { msgPayload.html_body = effectiveBody; msgPayload.body = stripHtml(effectiveBody) }
     else { msgPayload.body = effectiveBody }
