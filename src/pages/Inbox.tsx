@@ -37,6 +37,7 @@ import {
 } from '@/lib/invoiceResendDraft'
 import { getGmailMessageUrlForMessage, getGmailThreadUrlForThread } from '@/lib/inboxGmail'
 import { getOutboundSenderUserId } from '@/lib/inboxMessageAttribution'
+import { normalizeInboxBody } from '@/lib/inboxBodyDisplay'
 import type { InvoiceDraftNavigationState } from '@/pages/invoices/InvoiceEmailDraft'
 
 type InboxFilter = 'inbox' | 'assigned' | 'closed' | 'trash' | 'all'
@@ -454,14 +455,14 @@ export default function Inbox() {
   const invoiceInboxDraftContextRef = useRef<{ invoiceId: string; kind: InvoiceEmailKind; status: string } | null>(null)
   const pendingInvoiceDraftEditorRef = useRef<{ draftMessageId: string } | null>(null)
 
-  const looksLikeHtml = (t: string | null) => t != null && /<\s*(html|div|p|table|body|span)[\s>]/i.test(t)
   const decodeQP = (s: string) => s.replace(/=\r?\n/g, '').replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
 
   const cleanMessageBody = (
     msg: InboxMessage,
     fetchStatus?: BodyFetchStatus | null,
   ): { html: boolean; content: string; loading?: boolean; failed?: boolean; unavailable?: boolean } => {
-    if (msg.html_body?.trim()) return { html: true, content: msg.html_body }
+    const storedHtml = msg.html_body?.trim() ? normalizeInboxBody(msg.html_body) : null
+    if (storedHtml?.content.trim()) return { html: true, content: storedHtml.content }
     const body = msg.body
     if (isUnavailableBodyText(body)) {
       return { html: false, content: body!.trim(), unavailable: true }
@@ -490,23 +491,24 @@ export default function Inbox() {
       return { html: false, content: 'Downloading message...', loading: true }
     }
     const raw = body.trim()
-    const bm = raw.match(/boundary="?([^"\s;]+)"?/i)
+    const normalizedRaw = normalizeInboxBody(raw)
+    if (normalizedRaw.html) return { html: true, content: normalizedRaw.content }
+    const bm = normalizedRaw.content.match(/boundary="?([^"\s;]+)"?/i)
     if (bm?.[1]) {
-      const parts = raw.split(new RegExp(`--${bm[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:--)?\\s*`, 'g'))
+      const parts = normalizedRaw.content.split(new RegExp(`--${bm[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:--)?\\s*`, 'g'))
       let hp = '', tp = ''
       for (const p of parts) {
         if (!p.trim()) continue
         const he = p.indexOf('\n\n') >= 0 ? p.indexOf('\n\n') + 2 : p.indexOf('\r\n\r\n') >= 0 ? p.indexOf('\r\n\r\n') + 4 : 0
         const isQp = /Content-Transfer-Encoding:\s*quoted-printable/i.test(p)
         const c = isQp ? decodeQP(p.slice(he).replace(/\r\n/g, '\n').trim()) : p.slice(he).replace(/\r\n/g, '\n').trim()
-        if (/Content-Type:\s*text\/html/i.test(p) && c) hp = c
+        if (/Content-Type:\s*text\/html/i.test(p) && c) hp = normalizeInboxBody(c).content
         else if (/Content-Type:\s*text\/plain/i.test(p) && c && !hp) tp = c
       }
       if (hp) return { html: true, content: hp }
       if (tp) return { html: false, content: tp }
     }
-    if (looksLikeHtml(raw)) return { html: true, content: raw }
-    return { html: false, content: raw }
+    return { html: false, content: normalizedRaw.content }
   }
 
   const syncBodyFetchStatus = useCallback((
@@ -1545,8 +1547,16 @@ export default function Inbox() {
   const handleUnassign = async (uid: string) => {
     if (!selectedThreadId) return
     setActionLoading(true)
-    await supabase.from('inbox_thread_assignments').delete().eq('thread_id', selectedThreadId).eq('user_id', uid)
-    await fetchThreads(); setActionLoading(false); toast('Unassigned')
+    const { error } = await supabase.from('inbox_thread_assignments').delete().eq('thread_id', selectedThreadId).eq('user_id', uid)
+    if (error) {
+      console.warn('[Inbox] Unassign error:', error.message)
+      setActionLoading(false)
+      toast(`Could not unassign: ${error.message}`)
+      return
+    }
+    await fetchThreads()
+    setActionLoading(false)
+    toast('Unassigned')
   }
 
   const handleAssignMultiple = async (uids: string[]) => {
@@ -1556,11 +1566,13 @@ export default function Inbox() {
     const subject = selectedThread?.subject ?? '(No subject)'
     const assignerName = user?.id ? getUserName(user.id) : 'Someone'
     const rows = uids.map(user_id => ({ thread_id: selectedThreadId, user_id }))
-    const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert(rows)
+    const { error: assignErr } = await supabase
+      .from('inbox_thread_assignments')
+      .upsert(rows, { onConflict: 'thread_id,user_id', ignoreDuplicates: true })
     if (assignErr) {
       console.warn('[Inbox] Multi-assign error:', assignErr.message)
       setActionLoading(false)
-      toast(assignErr.message)
+      toast(`Could not assign thread: ${assignErr.message}`)
       return
     }
     const { data: { session } } = await supabase.auth.getSession()
@@ -1572,10 +1584,6 @@ export default function Inbox() {
           body: JSON.stringify({ event_type: 'thread_assigned', user_id: uid, org_id: currentOrg.id, payload: { thread_id: selectedThreadId, subject, assigner_name: assignerName } }),
         }).catch(() => {})
       }
-      // Assignment transfers Jolo ownership/attention only. Do not archive Gmail here:
-      // Jay's inbox-zero rule is that assign-to-user removes the thread from the
-      // assigner's Jolo Inbox via assignment filtering, while the underlying Gmail
-      // Inbox state remains unchanged until someone explicitly replies/closes/trashes it.
     }
     setShowAssignPopover(false)
     setSelectedAssignUserIds(new Set())
@@ -1590,7 +1598,9 @@ export default function Inbox() {
     const assignerName = user?.id ? getUserName(user.id) : 'Someone'
     const { data: { session } } = await supabase.auth.getSession()
     const rows = [...selectedIds].map(thread_id => ({ thread_id, user_id: uid }))
-    const { error: assignErr } = await supabase.from('inbox_thread_assignments').insert(rows)
+    const { error: assignErr } = await supabase
+      .from('inbox_thread_assignments')
+      .upsert(rows, { onConflict: 'thread_id,user_id', ignoreDuplicates: true })
     if (assignErr) {
       console.warn('[Inbox] Bulk assign error:', assignErr.message)
       setActionLoading(false)
@@ -1637,7 +1647,13 @@ export default function Inbox() {
       .from('inbox_threads')
       .update(statusUpdate)
       .eq('id', selectedThreadId)
-    if (!statusErr && status === 'archived' && currentOrg?.id && user?.id) {
+    if (statusErr) {
+      console.warn('[Inbox] Thread status update error:', statusErr.message)
+      setActionLoading(false)
+      toast(`Could not update thread: ${statusErr.message}`)
+      return
+    }
+    if (status === 'archived' && currentOrg?.id && user?.id) {
       void supabase
         .from('inbox_debug_log')
         .insert({
@@ -3077,15 +3093,29 @@ export default function Inbox() {
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {/* Reordered: Read/Unread → Reply → All → Fwd → Close → Trash → Assign → Assignees */}
                   <button type="button" onClick={async () => {
+                    if (!userId || actionLoading) return
                     const isRead = !isUnread(selectedThread)
+                    setActionLoading(true)
+                    const result = isRead
+                      ? await supabase.from('inbox_thread_reads').delete().eq('thread_id', selectedThread.id).eq('user_id', userId)
+                      : await supabase.from('inbox_thread_reads').upsert(
+                        { thread_id: selectedThread.id, user_id: userId, last_read_at: new Date().toISOString() },
+                        { onConflict: 'thread_id,user_id' },
+                      )
+                    if (result.error) {
+                      console.warn('[Inbox] Read-state update error:', result.error.message)
+                      setActionLoading(false)
+                      toast(`Could not mark thread ${isRead ? 'unread' : 'read'}: ${result.error.message}`)
+                      return
+                    }
                     if (isRead) {
-                      await supabase.from('inbox_thread_reads').delete().eq('thread_id', selectedThread.id).eq('user_id', userId!)
                       setReadStatuses(prev => prev.filter(r => r.thread_id !== selectedThread.id))
                     } else {
                       setReadStatuses(prev => [...prev.filter(r => r.thread_id !== selectedThread.id), { thread_id: selectedThread.id, last_read_at: new Date().toISOString() }])
                     }
+                    setActionLoading(false)
                     toast(isRead ? 'Marked unread' : 'Marked read')
-                  }} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80">
+                  }} disabled={actionLoading || !userId} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80 disabled:opacity-50">
                     <Mail className="w-3 h-3" /> {isUnread(selectedThread) ? 'Read' : 'Unread'}
                   </button>
                   <button type="button" onClick={() => openReply('reply')} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-surface-muted text-gray-200 hover:bg-surface-muted/80"><Reply className="w-3 h-3" /> Reply</button>
